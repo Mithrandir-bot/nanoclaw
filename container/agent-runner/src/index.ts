@@ -107,7 +107,10 @@ async function readStdin(): Promise<string> {
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
+let hadAnyOutput = false;
+
 function writeOutput(output: ContainerOutput): void {
+  hadAnyOutput = true;
   console.log(OUTPUT_START_MARKER);
   console.log(JSON.stringify(output));
   console.log(OUTPUT_END_MARKER);
@@ -536,11 +539,29 @@ async function main(): Promise<void> {
 
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
+  // currentSdkEnv may switch to OpenRouter fallback on first failure
+  let currentSdkEnv = sdkEnv;
   try {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      let queryResult: Awaited<ReturnType<typeof runQuery>>;
+      try {
+        queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, currentSdkEnv, resumeAt);
+      } catch (apiErr) {
+        // If nothing was sent to the user yet and we have an OpenRouter key, fall back
+        const openrouterKey = sdkEnv.OPENROUTER_API_KEY;
+        if (!hadAnyOutput && openrouterKey && currentSdkEnv === sdkEnv) {
+          log(`Primary API failed (${apiErr instanceof Error ? apiErr.message : String(apiErr)}), retrying with OpenRouter fallback...`);
+          const fallbackEnv = { ...sdkEnv };
+          delete fallbackEnv.CLAUDE_CODE_OAUTH_TOKEN;
+          fallbackEnv.ANTHROPIC_API_KEY = openrouterKey;
+          fallbackEnv.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api/v1';
+          currentSdkEnv = fallbackEnv;
+          continue; // retry the loop with fallback env
+        }
+        throw apiErr;
+      }
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
