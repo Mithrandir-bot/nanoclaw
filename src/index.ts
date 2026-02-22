@@ -182,8 +182,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   };
 
   await channel.setTyping?.(chatJid, true);
-  let hadError = false;
+
+  // Keep typing indicator alive — Discord's expires after ~10s
+  const typingInterval = setInterval(() => {
+    channel.setTyping?.(chatJid, true)?.catch(() => {});
+  }, 8000);
+
+  // Send a text ack if the agent hasn't responded within 8s
   let outputSentToUser = false;
+  const ackTimer = setTimeout(() => {
+    if (!outputSentToUser) {
+      channel.sendMessage(chatJid, '⏳ On it...').catch(() => {});
+    }
+  }, 8000);
+
+  let hadError = false;
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
@@ -193,6 +206,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
+        clearTimeout(ackTimer);
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
       }
@@ -209,6 +223,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   });
 
+  clearInterval(typingInterval);
+  clearTimeout(ackTimer);
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
 
