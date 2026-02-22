@@ -1,11 +1,16 @@
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   Client,
   Events,
   GatewayIntentBits,
+  Message,
   TextChannel,
+  ThreadChannel,
 } from 'discord.js';
 
-import { ASSISTANT_NAME } from '../config.js';
+import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { logger } from '../logger.js';
 import {
   Channel,
@@ -14,21 +19,27 @@ import {
   RegisteredGroup,
 } from '../types.js';
 
-const MAX_MESSAGE_LENGTH = 2000;
+export type ApprovalCallback = (
+  action: string,
+  userId: string,
+  messageId: string,
+) => void;
 
 export interface DiscordChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
+  onApproval?: ApprovalCallback;
 }
 
 export class DiscordChannel implements Channel {
   name = 'discord';
 
   private client: Client | null = null;
-  private connected = false;
-  private botToken: string;
   private opts: DiscordChannelOpts;
+  private botToken: string;
+  /** Maps parent channelId → threadId for routing replies into threads */
+  private activeThreads = new Map<string, string>();
 
   constructor(botToken: string, opts: DiscordChannelOpts) {
     this.botToken = botToken;
@@ -41,137 +52,257 @@ export class DiscordChannel implements Channel {
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
+        GatewayIntentBits.DirectMessages,
       ],
     });
 
-    this.client.on(Events.ClientReady, (readyClient) => {
-      this.connected = true;
-      logger.info(
-        { username: readyClient.user.username, id: readyClient.user.id },
-        'Discord bot connected',
-      );
-      console.log(`\n  Discord bot: ${readyClient.user.tag}`);
-      console.log(
-        `  Use /channelid in a channel to get its registration ID\n`,
-      );
-    });
-
-    this.client.on(Events.MessageCreate, async (message) => {
-      // Skip bot messages to avoid loops
+    this.client.on(Events.MessageCreate, async (message: Message) => {
+      // Ignore bot messages (including own)
       if (message.author.bot) return;
 
-      // Only handle text channels in guilds
-      if (!message.guildId || !message.channelId) return;
+      // Thread support: if message is in a thread, resolve to parent channel
+      // so it matches the registered group, but track the thread for replies
+      let channelId = message.channelId;
+      if (message.channel.isThread()) {
+        const thread = message.channel as ThreadChannel;
+        const parentId = thread.parentId;
+        if (parentId) {
+          this.activeThreads.set(parentId, channelId);
+          channelId = parentId;
+        }
+      }
 
-      const chatJid = `dc:${message.channelId}`;
+      const chatJid = `dc:${channelId}`;
+      let content = message.content;
       const timestamp = message.createdAt.toISOString();
       const senderName =
         message.member?.displayName ||
-        message.author.globalName ||
+        message.author.displayName ||
         message.author.username;
       const sender = message.author.id;
-      const content = message.content;
+      const msgId = message.id;
 
-      if (!content) return;
+      // Determine chat name
+      let chatName: string;
+      if (message.guild) {
+        const textChannel = message.channel as TextChannel;
+        chatName = `${message.guild.name} #${textChannel.name}`;
+      } else {
+        chatName = senderName;
+      }
 
-      const channelName =
-        message.channel instanceof TextChannel
-          ? `#${message.channel.name}`
-          : chatJid;
+      // Translate Discord @bot mentions into TRIGGER_PATTERN format.
+      // Discord mentions look like <@botUserId> — these won't match
+      // TRIGGER_PATTERN (e.g., ^@Andy\b), so we prepend the trigger
+      // when the bot is @mentioned.
+      if (this.client?.user) {
+        const botId = this.client.user.id;
+        const isBotMentioned =
+          message.mentions.users.has(botId) ||
+          content.includes(`<@${botId}>`) ||
+          content.includes(`<@!${botId}>`);
+
+        if (isBotMentioned) {
+          // Strip the <@botId> mention to avoid visual clutter
+          content = content
+            .replace(new RegExp(`<@!?${botId}>`, 'g'), '')
+            .trim();
+          // Prepend trigger if not already present
+          if (!TRIGGER_PATTERN.test(content)) {
+            content = `@${ASSISTANT_NAME} ${content}`;
+          }
+        }
+      }
+
+      // Handle attachments — store placeholders so the agent knows something was sent
+      if (message.attachments.size > 0) {
+        const attachmentDescriptions = [...message.attachments.values()].map((att) => {
+          const contentType = att.contentType || '';
+          if (contentType.startsWith('image/')) {
+            return `[Image: ${att.name || 'image'}]`;
+          } else if (contentType.startsWith('video/')) {
+            return `[Video: ${att.name || 'video'}]`;
+          } else if (contentType.startsWith('audio/')) {
+            return `[Audio: ${att.name || 'audio'}]`;
+          } else {
+            return `[File: ${att.name || 'file'}]`;
+          }
+        });
+        if (content) {
+          content = `${content}\n${attachmentDescriptions.join('\n')}`;
+        } else {
+          content = attachmentDescriptions.join('\n');
+        }
+      }
+
+      // Handle reply context — include who the user is replying to
+      if (message.reference?.messageId) {
+        try {
+          const repliedTo = await message.channel.messages.fetch(
+            message.reference.messageId,
+          );
+          const replyAuthor =
+            repliedTo.member?.displayName ||
+            repliedTo.author.displayName ||
+            repliedTo.author.username;
+          content = `[Reply to ${replyAuthor}] ${content}`;
+        } catch {
+          // Referenced message may have been deleted
+        }
+      }
 
       // Store chat metadata for discovery
-      this.opts.onChatMetadata(chatJid, timestamp, channelName, 'discord', false);
+      this.opts.onChatMetadata(chatJid, timestamp, chatName);
 
       // Only deliver full message for registered groups
       const group = this.opts.registeredGroups()[chatJid];
       if (!group) {
         logger.debug(
-          { chatJid, channelName },
+          { chatJid, chatName },
           'Message from unregistered Discord channel',
         );
         return;
       }
 
+      // Deliver message — startMessageLoop() will pick it up
       this.opts.onMessage(chatJid, {
-        id: message.id,
+        id: msgId,
         chat_jid: chatJid,
         sender,
         sender_name: senderName,
         content,
         timestamp,
         is_from_me: false,
-        is_bot_message: false,
       });
 
       logger.info(
-        { chatJid, channelName, sender: senderName },
+        { chatJid, chatName, sender: senderName },
         'Discord message stored',
       );
     });
 
-    // /channelid helper — lets user discover channel IDs for registration
+    // Handle button interactions (approval workflow)
     this.client.on(Events.InteractionCreate, async (interaction) => {
-      if (!interaction.isChatInputCommand()) return;
-      if (interaction.commandName !== 'channelid') return;
+      if (!interaction.isButton()) return;
 
-      const channelId = interaction.channelId;
-      const jid = `dc:${channelId}`;
-      await interaction.reply({
-        content: `Channel ID: \`${jid}\`\nRegister with: \`DISCORD_CHANNEL_JID=${jid}\``,
-        ephemeral: true,
+      const [action, refId] = interaction.customId.split(':');
+      if (!action || !refId) return;
+
+      logger.info(
+        { action, refId, user: interaction.user.tag },
+        'Discord button interaction',
+      );
+
+      if (this.opts.onApproval) {
+        this.opts.onApproval(action, interaction.user.id, refId);
+      }
+
+      await interaction.update({
+        content: `${interaction.message.content}\n\n**${action === 'approve' ? 'Approved' : 'Rejected'}** by ${interaction.user.displayName}`,
+        components: [], // Remove buttons after click
       });
     });
 
+    // Handle errors gracefully
     this.client.on(Events.Error, (err) => {
-      logger.error({ err }, 'Discord client error');
+      logger.error({ err: err.message }, 'Discord client error');
     });
 
-    return new Promise<void>((resolve, reject) => {
-      this.client!.once(Events.ClientReady, () => resolve());
-      this.client!.login(this.botToken).catch(reject);
+    return new Promise<void>((resolve) => {
+      this.client!.once(Events.ClientReady, (readyClient) => {
+        logger.info(
+          { username: readyClient.user.tag, id: readyClient.user.id },
+          'Discord bot connected',
+        );
+        console.log(`\n  Discord bot: ${readyClient.user.tag}`);
+        console.log(
+          `  Use /chatid command or check channel IDs in Discord settings\n`,
+        );
+        resolve();
+      });
+
+      this.client!.login(this.botToken);
     });
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
-    if (!this.client || !this.connected) {
-      logger.warn({ jid }, 'Discord not connected, cannot send message');
+    if (!this.client) {
+      logger.warn('Discord client not initialized');
       return;
     }
 
-    const channelId = jid.replace(/^dc:/, '');
     try {
-      const channel = await this.client.channels.fetch(channelId);
-      if (!channel || !(channel instanceof TextChannel)) {
-        logger.warn({ jid }, 'Discord channel not found or not a text channel');
+      const channelId = jid.replace(/^dc:/, '');
+
+      // Thread support: if a thread is active for this channel, reply there
+      const threadId = this.activeThreads.get(channelId);
+      const targetId = threadId ?? channelId;
+      const channel = await this.client.channels.fetch(targetId);
+
+      if (!channel || !('send' in channel)) {
+        logger.warn({ jid }, 'Discord channel not found or not text-based');
         return;
       }
 
-      // Prefix with assistant name so it's clear who's speaking
-      const prefixed = `**${ASSISTANT_NAME}:** ${text}`;
+      const textChannel = channel as TextChannel;
 
-      if (prefixed.length <= MAX_MESSAGE_LENGTH) {
-        await channel.send(prefixed);
+      // Discord has a 2000 character limit per message — split if needed
+      const MAX_LENGTH = 2000;
+      if (text.length <= MAX_LENGTH) {
+        await textChannel.send(text);
       } else {
-        // Split on the prefix once, then send remaining chunks plain
-        const chunks: string[] = [];
-        let remaining = prefixed;
-        while (remaining.length > 0) {
-          chunks.push(remaining.slice(0, MAX_MESSAGE_LENGTH));
-          remaining = remaining.slice(MAX_MESSAGE_LENGTH);
-        }
-        for (const chunk of chunks) {
-          await channel.send(chunk);
+        for (let i = 0; i < text.length; i += MAX_LENGTH) {
+          await textChannel.send(text.slice(i, i + MAX_LENGTH));
         }
       }
-
-      logger.info({ jid, length: prefixed.length }, 'Discord message sent');
+      logger.info(
+        { jid, threadId: threadId ?? null, length: text.length },
+        'Discord message sent',
+      );
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Discord message');
     }
   }
 
+  /** Send a message with Approve/Reject buttons for agent operation approval */
+  async sendApprovalRequest(
+    jid: string,
+    text: string,
+    refId: string,
+  ): Promise<void> {
+    if (!this.client) return;
+
+    try {
+      const channelId = jid.replace(/^dc:/, '');
+      const threadId = this.activeThreads.get(channelId);
+      const channel = await this.client.channels.fetch(threadId ?? channelId);
+
+      if (!channel || !('send' in channel)) return;
+
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`approve:${refId}`)
+          .setLabel('Approve')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`reject:${refId}`)
+          .setLabel('Reject')
+          .setStyle(ButtonStyle.Danger),
+      );
+
+      await (channel as TextChannel).send({
+        content: text,
+        components: [row],
+      });
+
+      logger.info({ jid, refId }, 'Discord approval request sent');
+    } catch (err) {
+      logger.error({ jid, err }, 'Failed to send Discord approval request');
+    }
+  }
+
   isConnected(): boolean {
-    return this.connected;
+    return this.client !== null && this.client.isReady();
   }
 
   ownsJid(jid: string): boolean {
@@ -180,20 +311,19 @@ export class DiscordChannel implements Channel {
 
   async disconnect(): Promise<void> {
     if (this.client) {
-      this.connected = false;
       this.client.destroy();
       this.client = null;
-      logger.info('Discord bot disconnected');
+      logger.info('Discord bot stopped');
     }
   }
 
   async setTyping(jid: string, isTyping: boolean): Promise<void> {
-    if (!this.client || !this.connected || !isTyping) return;
-    const channelId = jid.replace(/^dc:/, '');
+    if (!this.client || !isTyping) return;
     try {
+      const channelId = jid.replace(/^dc:/, '');
       const channel = await this.client.channels.fetch(channelId);
-      if (channel instanceof TextChannel) {
-        await channel.sendTyping();
+      if (channel && 'sendTyping' in channel) {
+        await (channel as TextChannel).sendTyping();
       }
     } catch (err) {
       logger.debug({ jid, err }, 'Failed to send Discord typing indicator');
