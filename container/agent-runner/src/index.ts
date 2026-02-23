@@ -15,6 +15,8 @@
  */
 
 import fs from 'fs';
+import http from 'http';
+import https from 'https';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
@@ -500,6 +502,53 @@ async function runQuery(
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
 
+/**
+ * Start a local HTTP proxy for OpenRouter fallback.
+ * OpenRouter doesn't implement GET /v1/models/{id} (used by the Claude Code SDK
+ * for model validation), so it returns 404 which the SDK treats as a model error.
+ * This proxy intercepts that endpoint and returns a stub 200, forwarding
+ * everything else to https://openrouter.ai/api/v1.
+ */
+function startOpenRouterProxy(): Promise<{ port: number; close: () => void }> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      const url = req.url || '/';
+
+      // Stub out model validation requests that OpenRouter doesn't implement
+      if (req.method === 'GET' && /^\/v1\/models\/[^/]/.test(url)) {
+        const modelId = url.split('/v1/models/')[1]?.split('?')[0] || 'claude';
+        log(`[proxy] Stubbing model validation for: ${modelId}`);
+        const body = JSON.stringify({ id: modelId, type: 'model', display_name: modelId, created_at: '2024-01-01T00:00:00Z' });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
+        res.end(body);
+        return;
+      }
+
+      // Forward everything else to OpenRouter
+      const options: https.RequestOptions = {
+        hostname: 'openrouter.ai',
+        port: 443,
+        path: `/api${url}`,
+        method: req.method,
+        headers: { ...req.headers, host: 'openrouter.ai' },
+      };
+
+      const proxyReq = https.request(options, (proxyRes) => {
+        res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+        proxyRes.pipe(res);
+      });
+      proxyReq.on('error', (err) => { res.writeHead(502); res.end(err.message); });
+      req.pipe(proxyReq);
+    });
+
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address() as { port: number };
+      resolve({ port: addr.port, close: () => server.close() });
+    });
+    server.on('error', reject);
+  });
+}
+
 async function main(): Promise<void> {
   let containerInput: ContainerInput;
 
@@ -549,6 +598,7 @@ async function main(): Promise<void> {
   let resumeAt: string | undefined;
   // currentSdkEnv may switch to OpenRouter fallback on first failure
   let currentSdkEnv = sdkEnv;
+  let openRouterProxy: { port: number; close: () => void } | null = null;
   try {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
@@ -561,13 +611,13 @@ async function main(): Promise<void> {
         const openrouterKey = sdkEnv.OPENROUTER_API_KEY;
         if (!hadAnyOutput && openrouterKey && currentSdkEnv === sdkEnv) {
           log(`Primary API failed (${apiErr instanceof Error ? apiErr.message : String(apiErr)}), retrying with OpenRouter fallback...`);
+          // Start a local proxy to handle OpenRouter's missing model validation endpoint
+          openRouterProxy = await startOpenRouterProxy();
+          log(`[proxy] Started on port ${openRouterProxy.port}`);
           const fallbackEnv = { ...sdkEnv };
           delete fallbackEnv.CLAUDE_CODE_OAUTH_TOKEN;
           fallbackEnv.ANTHROPIC_API_KEY = openrouterKey;
-          fallbackEnv.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api/v1';
-          // Use a model ID that both Claude Code SDK validates and OpenRouter has.
-          // claude-3-5-sonnet-20241022 is well-supported on both platforms.
-          fallbackEnv.ANTHROPIC_MODEL = 'claude-3-5-sonnet-20241022';
+          fallbackEnv.ANTHROPIC_BASE_URL = `http://127.0.0.1:${openRouterProxy.port}`;
           currentSdkEnv = fallbackEnv;
           continue; // retry the loop with fallback env
         }
@@ -613,6 +663,8 @@ async function main(): Promise<void> {
       error: errorMessage
     });
     process.exit(1);
+  } finally {
+    openRouterProxy?.close();
   }
 }
 
