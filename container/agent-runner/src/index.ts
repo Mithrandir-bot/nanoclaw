@@ -480,6 +480,13 @@ async function runQuery(
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
       log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+
+      // If we haven't sent any output yet and this result looks like an auth failure,
+      // throw so the caller can fall back to OpenRouter before the user sees the error.
+      if (!hadAnyOutput && textResult && /authentication_error|Invalid bearer token|401/.test(textResult)) {
+        throw new Error(`Auth failed: ${textResult.slice(0, 300)}`);
+      }
+
       writeOutput({
         status: 'success',
         result: textResult || null,
@@ -558,6 +565,9 @@ async function main(): Promise<void> {
           delete fallbackEnv.CLAUDE_CODE_OAUTH_TOKEN;
           fallbackEnv.ANTHROPIC_API_KEY = openrouterKey;
           fallbackEnv.ANTHROPIC_BASE_URL = 'https://openrouter.ai/api/v1';
+          // Use a model ID that both Claude Code SDK validates and OpenRouter has.
+          // claude-3-5-sonnet-20241022 is well-supported on both platforms.
+          fallbackEnv.ANTHROPIC_MODEL = 'claude-3-5-sonnet-20241022';
           currentSdkEnv = fallbackEnv;
           continue; // retry the loop with fallback env
         }
