@@ -483,10 +483,11 @@ async function runQuery(
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
       log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
 
-      // If we haven't sent any output yet and this result looks like an auth failure,
-      // throw so the caller can fall back to OpenRouter before the user sees the error.
-      if (!hadAnyOutput && textResult && /authentication_error|Invalid bearer token|401/.test(textResult)) {
-        throw new Error(`Auth failed: ${textResult.slice(0, 300)}`);
+      // If we haven't sent any output yet and this result looks like an API failure
+      // (auth error, rate limit, credit exhaustion), throw so the caller can fall back
+      // to OpenRouter before the user sees the error.
+      if (!hadAnyOutput && textResult && /authentication_error|Invalid bearer token|rate_limit_error|overloaded_error|credit|billing|quota|429|401/.test(textResult)) {
+        throw new Error(`API unavailable: ${textResult.slice(0, 300)}`);
       }
 
       writeOutput({
@@ -594,11 +595,51 @@ async function main(): Promise<void> {
     prompt += '\n' + pending.join('\n');
   }
 
+  // Flag file written to the group folder to signal persistent OpenRouter mode.
+  // The host (container-runner) reads this to skip Anthropic on future sessions.
+  const OPENROUTER_FLAG = '/workspace/group/.openrouter_mode';
+
+  const buildOpenRouterEnv = async (baseEnv: Record<string, string | undefined>, key: string) => {
+    const proxy = await startOpenRouterProxy();
+    log(`[proxy] Started on port ${proxy.port}`);
+    const env = { ...baseEnv };
+    delete env.CLAUDE_CODE_OAUTH_TOKEN;
+    env.ANTHROPIC_API_KEY = key;
+    env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${proxy.port}`;
+    return { env, proxy };
+  };
+
+  const writeOpenRouterFlag = (reason: string) => {
+    try {
+      fs.writeFileSync(OPENROUTER_FLAG, JSON.stringify({ since: new Date().toISOString(), reason }));
+      log(`[fallback] Wrote OpenRouter mode flag (reason: ${reason})`);
+    } catch { /* non-critical */ }
+  };
+
+  const clearOpenRouterFlag = () => {
+    try {
+      if (fs.existsSync(OPENROUTER_FLAG)) {
+        fs.unlinkSync(OPENROUTER_FLAG);
+        log('[fallback] Cleared OpenRouter mode flag — Anthropic is working again');
+      }
+    } catch { /* non-critical */ }
+  };
+
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
-  // currentSdkEnv may switch to OpenRouter fallback on first failure
   let currentSdkEnv = sdkEnv;
   let openRouterProxy: { port: number; close: () => void } | null = null;
+  let usingOpenRouter = false;
+
+  // If container-runner detected persistent OpenRouter mode, start proxy immediately
+  if (sdkEnv.USE_OPENROUTER_DIRECT === '1' && sdkEnv.OPENROUTER_API_KEY) {
+    log('[fallback] Starting in OpenRouter direct mode (credits previously exhausted)');
+    const { env, proxy } = await buildOpenRouterEnv(sdkEnv, sdkEnv.OPENROUTER_API_KEY);
+    currentSdkEnv = env;
+    openRouterProxy = proxy;
+    usingOpenRouter = true;
+  }
+
   try {
     while (true) {
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
@@ -606,19 +647,21 @@ async function main(): Promise<void> {
       let queryResult: Awaited<ReturnType<typeof runQuery>>;
       try {
         queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, currentSdkEnv, resumeAt);
+        // Anthropic succeeded — clear any stale fallback flag
+        if (!usingOpenRouter) clearOpenRouterFlag();
       } catch (apiErr) {
         // If nothing was sent to the user yet and we have an OpenRouter key, fall back
         const openrouterKey = sdkEnv.OPENROUTER_API_KEY;
         if (!hadAnyOutput && openrouterKey && currentSdkEnv === sdkEnv) {
-          log(`Primary API failed (${apiErr instanceof Error ? apiErr.message : String(apiErr)}), retrying with OpenRouter fallback...`);
-          // Start a local proxy to handle OpenRouter's missing model validation endpoint
-          openRouterProxy = await startOpenRouterProxy();
-          log(`[proxy] Started on port ${openRouterProxy.port}`);
-          const fallbackEnv = { ...sdkEnv };
-          delete fallbackEnv.CLAUDE_CODE_OAUTH_TOKEN;
-          fallbackEnv.ANTHROPIC_API_KEY = openrouterKey;
-          fallbackEnv.ANTHROPIC_BASE_URL = `http://127.0.0.1:${openRouterProxy.port}`;
-          currentSdkEnv = fallbackEnv;
+          const errMsg = apiErr instanceof Error ? apiErr.message : String(apiErr);
+          log(`Primary API unavailable (${errMsg}), retrying with OpenRouter fallback...`);
+          // Determine if this is a persistent condition (rate limit / credits) vs transient auth
+          const isPersistent = /rate_limit|overloaded|credit|billing|quota|429/.test(errMsg);
+          if (isPersistent) writeOpenRouterFlag('rate_limit_or_credits');
+          const { env, proxy } = await buildOpenRouterEnv(sdkEnv, openrouterKey);
+          currentSdkEnv = env;
+          openRouterProxy = proxy;
+          usingOpenRouter = true;
           continue; // retry the loop with fallback env
         }
         throw apiErr;

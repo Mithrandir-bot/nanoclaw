@@ -184,9 +184,32 @@ function buildVolumeMounts(
 /**
  * Read allowed secrets from .env for passing to the container via stdin.
  * Secrets are never written to disk or mounted as files.
+ *
+ * If a persistent OpenRouter fallback flag exists and is fresh (< 4h old),
+ * pass USE_OPENROUTER_DIRECT=1 so the container skips Anthropic entirely.
+ * When the flag is stale (>= 4h), let the container try Anthropic normally —
+ * if Anthropic works again the agent-runner will clear the flag.
  */
 function readSecrets(): Record<string, string> {
-  return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY']);
+  const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY']);
+
+  const flagPath = path.join(GROUPS_DIR, 'main', '.openrouter_mode');
+  if (fs.existsSync(flagPath)) {
+    try {
+      const flag = JSON.parse(fs.readFileSync(flagPath, 'utf-8'));
+      const ageHours = (Date.now() - new Date(flag.since).getTime()) / 3_600_000;
+      if (ageHours < 4 && secrets.OPENROUTER_API_KEY) {
+        logger.info({ ageHours: ageHours.toFixed(1), reason: flag.reason }, 'OpenRouter direct mode active');
+        secrets.USE_OPENROUTER_DIRECT = '1';
+      } else {
+        logger.info({ ageHours: ageHours.toFixed(1) }, 'OpenRouter flag stale — retrying Anthropic');
+      }
+    } catch {
+      // Corrupt flag — ignore
+    }
+  }
+
+  return secrets;
 }
 
 function buildContainerArgs(mounts: VolumeMount[], containerName: string): string[] {
