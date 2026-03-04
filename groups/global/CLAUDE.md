@@ -109,6 +109,24 @@ curl -s -X POST "https://www.googleapis.com/drive/v3/files" \
 
 **Obsidian is source of truth** — save everything there first, then publish to Drive on demand or when you produce a completed output.
 
+## Existing Infrastructure — Do Not Recommend Installing
+
+Before recommending tools, services, or integrations, check this list. These are already set up and available in your environment:
+
+| Capability | How to use it | Details |
+|-----------|---------------|---------|
+| **Obsidian vault** (synced) | Mounted at `/workspace/extra/obsidian-vault` (read/write) | Continuous sync via `obsidian-headless` service. Read INDEX.md for full contents. Already your source of truth — no setup needed. |
+| **Web browser** | `agent-browser open <url>`, then `agent-browser snapshot -i` | Full headless browser: click, fill forms, screenshots, data extraction. See agent-browser skill docs. |
+| **Google Drive** | REST API with pre-configured OAuth tokens | Mithrandir Archive with per-channel folders. See Drive section above. |
+| **Google services** | OAuth tokens in env vars | Gmail, Calendar, Drive, Sheets, YouTube, Ads, Merchant, Maps, Contacts — all authenticated. |
+| **GitHub** | `$GITHUB_TOKEN` env var | API access for repos, issues, PRs. |
+| **Encrypted secrets store** | `mcp__nanoclaw__list_secrets` / `mcp__nanoclaw__store_secret` | Persistent credential storage across sessions. |
+| **Scheduled tasks** | IPC: schedule_task | Cron-style or one-shot scheduled execution. |
+| **Cross-channel messaging** | `mcp__nanoclaw__send_message(chat_jid, text)` | Send messages to any registered channel. |
+| **Sub-agents** | Claude tool_use with Task tool | Spawn parallel sub-agents for concurrent research. |
+
+*When making recommendations, never suggest installing or setting up something from this list. Instead, show how to use the existing capability.*
+
 ## Your Workspace
 
 Files you create are saved in `/workspace/group/`. Use this for notes, research, or anything that should persist.

@@ -212,6 +212,26 @@ async function runTask(
   updateTaskAfterRun(task.id, nextRun, resultSummary);
 }
 
+/**
+ * Compute and persist the next run time for a task BEFORE dispatching it.
+ * This prevents the scheduler from re-enqueuing the same task on the next poll
+ * while the container is still running.
+ */
+function advanceNextRun(task: ScheduledTask): void {
+  let nextRun: string | null = null;
+  if (task.schedule_type === 'cron') {
+    const interval = CronExpressionParser.parse(task.schedule_value, {
+      tz: TIMEZONE,
+    });
+    nextRun = interval.next().toISOString();
+  } else if (task.schedule_type === 'interval') {
+    const ms = parseInt(task.schedule_value, 10);
+    nextRun = new Date(Date.now() + ms).toISOString();
+  }
+  // 'once' tasks: set next_run to null so they won't be picked up again
+  updateTask(task.id, { next_run: nextRun });
+}
+
 let schedulerRunning = false;
 
 export function startSchedulerLoop(deps: SchedulerDependencies): void {
@@ -235,6 +255,9 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
         if (!currentTask || currentTask.status !== 'active') {
           continue;
         }
+
+        // Advance next_run NOW so subsequent polls don't re-enqueue this task
+        advanceNextRun(currentTask);
 
         deps.queue.enqueueTask(currentTask.chat_jid, currentTask.id, () =>
           runTask(currentTask, deps),
