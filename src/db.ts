@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
@@ -5,7 +6,12 @@ import path from 'path';
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
-import { NewMessage, RegisteredGroup, ScheduledTask, TaskRunLog } from './types.js';
+import {
+  NewMessage,
+  RegisteredGroup,
+  ScheduledTask,
+  TaskRunLog,
+} from './types.js';
 
 let db: Database.Database;
 
@@ -77,6 +83,13 @@ function createSchema(database: Database.Database): void {
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1
     );
+    CREATE TABLE IF NOT EXISTS secrets (
+      name TEXT PRIMARY KEY,
+      encrypted_value TEXT NOT NULL,
+      description TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -94,26 +107,30 @@ function createSchema(database: Database.Database): void {
       `ALTER TABLE messages ADD COLUMN is_bot_message INTEGER DEFAULT 0`,
     );
     // Backfill: mark existing bot messages that used the content prefix pattern
-    database.prepare(
-      `UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`,
-    ).run(`${ASSISTANT_NAME}:%`);
+    database
+      .prepare(`UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`)
+      .run(`${ASSISTANT_NAME}:%`);
   } catch {
     /* column already exists */
   }
 
   // Add channel and is_group columns if they don't exist (migration for existing DBs)
   try {
-    database.exec(
-      `ALTER TABLE chats ADD COLUMN channel TEXT`,
-    );
-    database.exec(
-      `ALTER TABLE chats ADD COLUMN is_group INTEGER DEFAULT 0`,
-    );
+    database.exec(`ALTER TABLE chats ADD COLUMN channel TEXT`);
+    database.exec(`ALTER TABLE chats ADD COLUMN is_group INTEGER DEFAULT 0`);
     // Backfill from JID patterns
-    database.exec(`UPDATE chats SET channel = 'whatsapp', is_group = 1 WHERE jid LIKE '%@g.us'`);
-    database.exec(`UPDATE chats SET channel = 'whatsapp', is_group = 0 WHERE jid LIKE '%@s.whatsapp.net'`);
-    database.exec(`UPDATE chats SET channel = 'discord', is_group = 1 WHERE jid LIKE 'dc:%'`);
-    database.exec(`UPDATE chats SET channel = 'telegram', is_group = 1 WHERE jid LIKE 'tg:%'`);
+    database.exec(
+      `UPDATE chats SET channel = 'whatsapp', is_group = 1 WHERE jid LIKE '%@g.us'`,
+    );
+    database.exec(
+      `UPDATE chats SET channel = 'whatsapp', is_group = 0 WHERE jid LIKE '%@s.whatsapp.net'`,
+    );
+    database.exec(
+      `UPDATE chats SET channel = 'discord', is_group = 1 WHERE jid LIKE 'dc:%'`,
+    );
+    database.exec(
+      `UPDATE chats SET channel = 'telegram', is_group = 1 WHERE jid LIKE 'tg:%'`,
+    );
   } catch {
     /* columns already exist */
   }
@@ -494,6 +511,10 @@ export function setSession(groupFolder: string, sessionId: string): void {
   ).run(groupFolder, sessionId);
 }
 
+export function clearSession(groupFolder: string): void {
+  db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(groupFolder);
+}
+
 export function getAllSessions(): Record<string, string> {
   const rows = db
     .prepare('SELECT group_folder, session_id FROM sessions')
@@ -540,14 +561,12 @@ export function getRegisteredGroup(
     containerConfig: row.container_config
       ? JSON.parse(row.container_config)
       : undefined,
-    requiresTrigger: row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+    requiresTrigger:
+      row.requires_trigger === null ? undefined : row.requires_trigger === 1,
   };
 }
 
-export function setRegisteredGroup(
-  jid: string,
-  group: RegisteredGroup,
-): void {
+export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
   if (!isValidGroupFolder(group.folder)) {
     throw new Error(`Invalid group folder "${group.folder}" for JID ${jid}`);
   }
@@ -566,9 +585,7 @@ export function setRegisteredGroup(
 }
 
 export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
-  const rows = db
-    .prepare('SELECT * FROM registered_groups')
-    .all() as Array<{
+  const rows = db.prepare('SELECT * FROM registered_groups').all() as Array<{
     jid: string;
     name: string;
     folder: string;
@@ -594,8 +611,83 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       containerConfig: row.container_config
         ? JSON.parse(row.container_config)
         : undefined,
-      requiresTrigger: row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+      requiresTrigger:
+        row.requires_trigger === null ? undefined : row.requires_trigger === 1,
     };
+  }
+  return result;
+}
+
+// --- Encrypted secrets ---
+
+const ALGORITHM = 'aes-256-gcm';
+
+function getEncryptionKey(): Buffer {
+  const hex = process.env.SECRETS_ENCRYPTION_KEY;
+  if (!hex || hex.length !== 64) throw new Error('SECRETS_ENCRYPTION_KEY missing or invalid in .env');
+  return Buffer.from(hex, 'hex');
+}
+
+function encryptValue(plaintext: string): string {
+  const key = getEncryptionKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf-8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString('hex')}:${tag.toString('hex')}:${encrypted.toString('hex')}`;
+}
+
+function decryptValue(stored: string): string {
+  const key = getEncryptionKey();
+  const [ivHex, tagHex, dataHex] = stored.split(':');
+  const iv = Buffer.from(ivHex, 'hex');
+  const tag = Buffer.from(tagHex, 'hex');
+  const data = Buffer.from(dataHex, 'hex');
+  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+  decipher.setAuthTag(tag);
+  return decipher.update(data).toString('utf-8') + decipher.final('utf-8');
+}
+
+export interface SecretEntry {
+  name: string;
+  description: string;
+  updated_at: string;
+}
+
+export function storeSecret(name: string, value: string, description?: string): void {
+  const now = new Date().toISOString();
+  const encrypted = encryptValue(value);
+  db.prepare(`
+    INSERT INTO secrets (name, encrypted_value, description, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(name) DO UPDATE SET encrypted_value=excluded.encrypted_value, description=excluded.description, updated_at=excluded.updated_at
+  `).run(name, encrypted, description ?? '', now, now);
+}
+
+export function getSecret(name: string): string | undefined {
+  const row = db.prepare('SELECT encrypted_value FROM secrets WHERE name = ?').get(name) as { encrypted_value: string } | undefined;
+  if (!row) return undefined;
+  try {
+    return decryptValue(row.encrypted_value);
+  } catch {
+    logger.error({ name }, 'Failed to decrypt secret');
+    return undefined;
+  }
+}
+
+export function listSecrets(): SecretEntry[] {
+  return db.prepare('SELECT name, description, updated_at FROM secrets ORDER BY name').all() as SecretEntry[];
+}
+
+export function getAllSecretsDecrypted(): Record<string, string> {
+  const rows = db.prepare('SELECT name, encrypted_value FROM secrets').all() as { name: string; encrypted_value: string }[];
+  const result: Record<string, string> = {};
+  for (const row of rows) {
+    try {
+      result[row.name] = decryptValue(row.encrypted_value);
+    } catch {
+      logger.error({ name: row.name }, 'Failed to decrypt secret, skipping');
+    }
   }
   return result;
 }

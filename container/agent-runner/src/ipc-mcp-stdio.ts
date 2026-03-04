@@ -14,6 +14,7 @@ import { CronExpressionParser } from 'cron-parser';
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
+const SECRETS_DIR = path.join(IPC_DIR, 'messages'); // store_secret goes via messages dir
 
 // Context from environment variables (set by the agent runner)
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
@@ -277,6 +278,58 @@ Use available_groups.json to find the JID for a group. The folder name should be
     return {
       content: [{ type: 'text' as const, text: `Group "${args.name}" registered. It will start receiving messages immediately.` }],
     };
+  },
+);
+
+server.tool(
+  'store_secret',
+  `Securely store a credential, API key, password, or any sensitive value. It is encrypted at rest and injected automatically in future sessions — the user will never need to provide it again.
+
+Use this whenever the user provides:
+- Passwords or login credentials
+- API keys or tokens
+- OAuth secrets or refresh tokens
+- Any value the user says is sensitive or private
+
+The name should be a short identifier (e.g. "linkedin_password", "twitter_api_key"). The description should say what it's for.
+After storing, confirm to the user that it's been saved securely.`,
+  {
+    name: z.string().describe('Short identifier for this secret (e.g. "linkedin_password", "openai_api_key")'),
+    value: z.string().describe('The secret value to encrypt and store'),
+    description: z.string().optional().describe('What this secret is for (e.g. "LinkedIn login password for contact enrichment")'),
+  },
+  async (args) => {
+    writeIpcFile(SECRETS_DIR, {
+      type: 'store_secret',
+      name: args.name,
+      value: args.value,
+      description: args.description || '',
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+    return { content: [{ type: 'text' as const, text: `Secret "${args.name}" stored securely. It will be available as an environment variable (NANOCLAW_SECRET_${args.name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}) in future sessions.` }] };
+  },
+);
+
+server.tool(
+  'list_secrets',
+  'List all stored secrets (names and descriptions only, never values). Check this before asking the user for any credentials — it may already be stored.',
+  {},
+  async () => {
+    const manifestPath = path.join(IPC_DIR, 'secrets-manifest.json');
+    try {
+      if (!fs.existsSync(manifestPath)) {
+        return { content: [{ type: 'text' as const, text: 'No secrets stored yet.' }] };
+      }
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Array<{ name: string; description: string; updated_at: string }>;
+      if (manifest.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No secrets stored yet.' }] };
+      }
+      const lines = manifest.map(s => `- ${s.name}: ${s.description || '(no description)'} (updated ${s.updated_at.split('T')[0]})`);
+      return { content: [{ type: 'text' as const, text: `Stored secrets:\n${lines.join('\n')}\n\nAccess values via env var: NANOCLAW_SECRET_{NAME_UPPERCASE}` }] };
+    } catch {
+      return { content: [{ type: 'text' as const, text: 'No secrets stored yet.' }] };
+    }
   },
 );
 

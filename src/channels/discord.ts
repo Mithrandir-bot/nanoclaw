@@ -12,6 +12,11 @@ import {
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { logger } from '../logger.js';
+import * as fs from 'fs';
+import * as https from 'https';
+import * as http from 'http';
+import * as path from 'path';
+import { GROUPS_DIR } from '../config.js';
 import {
   Channel,
   OnChatMetadata,
@@ -30,6 +35,22 @@ export interface DiscordChannelOpts {
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
   onApproval?: ApprovalCallback;
+}
+
+function downloadBuffer(url: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith('https') ? https : http;
+    lib.get(url, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        resolve(downloadBuffer(res.headers.location));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('error', reject);
+    }).on('error', reject);
+  });
 }
 
 export class DiscordChannel implements Channel {
@@ -114,24 +135,57 @@ export class DiscordChannel implements Channel {
         }
       }
 
-      // Handle attachments — store placeholders so the agent knows something was sent
+      // Handle attachments — download and save all files to the group workspace.
+      // Agent reads them at /workspace/group/uploads/<filename>.
       if (message.attachments.size > 0) {
-        const attachmentDescriptions = [...message.attachments.values()].map((att) => {
-          const contentType = att.contentType || '';
-          if (contentType.startsWith('image/')) {
-            return `[Image: ${att.name || 'image'}]`;
-          } else if (contentType.startsWith('video/')) {
-            return `[Video: ${att.name || 'video'}]`;
-          } else if (contentType.startsWith('audio/')) {
-            return `[Audio: ${att.name || 'audio'}]`;
-          } else {
-            return `[File: ${att.name || 'file'}]`;
+        const descriptions: string[] = [];
+        const groupKey = this.opts.registeredGroups()[chatJid]?.folder;
+
+        for (const att of message.attachments.values()) {
+          if (!att.url || (att.size ?? 0) > 50_000_000) {
+            // Skip files over 50 MB
+            descriptions.push(`[File too large to download: ${att.name || 'file'}]`);
+            continue;
           }
-        });
+
+          try {
+            const buf = await downloadBuffer(att.url);
+            const safeName = (att.name || `upload-${Date.now()}`)
+              .replace(/[^a-zA-Z0-9._-]/g, '_');
+
+            if (groupKey) {
+              const uploadsDir = path.join(GROUPS_DIR, groupKey, 'uploads');
+              fs.mkdirSync(uploadsDir, { recursive: true });
+              fs.writeFileSync(path.join(uploadsDir, safeName), buf);
+              const containerPath = `/workspace/group/uploads/${safeName}`;
+              descriptions.push(`[Uploaded file: ${containerPath}]`);
+              logger.info(
+                { group: groupKey, file: safeName, bytes: buf.length },
+                'Attachment saved to workspace',
+              );
+            } else {
+              // Unregistered channel — inline text content only
+              const isText =
+                (att.contentType || '').startsWith('text/') ||
+                /\.(csv|tsv|txt|json|md|yaml|yml|xml|log)$/i.test(att.name || '');
+              if (isText) {
+                descriptions.push(
+                  `[File: ${att.name}]\n${buf.toString('utf8').slice(0, 50_000)}`,
+                );
+              } else {
+                descriptions.push(`[File: ${att.name || 'file'} — not saved, channel unregistered]`);
+              }
+            }
+          } catch (err) {
+            logger.warn({ url: att.url, err }, 'Failed to download attachment');
+            descriptions.push(`[File: ${att.name || 'file'} — download failed]`);
+          }
+        }
+
         if (content) {
-          content = `${content}\n${attachmentDescriptions.join('\n')}`;
+          content = `${content}\n${descriptions.join('\n')}`;
         } else {
-          content = attachmentDescriptions.join('\n');
+          content = descriptions.join('\n');
         }
       }
 
@@ -209,7 +263,16 @@ export class DiscordChannel implements Channel {
     });
 
     return new Promise<void>((resolve) => {
-      this.client!.once(Events.ClientReady, (readyClient) => {
+      this.client!.once(Events.ClientReady, async (readyClient) => {
+        // Sync bot username to ASSISTANT_NAME if it differs
+        if (readyClient.user.username !== ASSISTANT_NAME) {
+          try {
+            await readyClient.user.setUsername(ASSISTANT_NAME);
+            logger.info({ username: ASSISTANT_NAME }, 'Discord bot username updated');
+          } catch (err) {
+            logger.warn({ err }, 'Could not update Discord bot username (rate limited?)');
+          }
+        }
         logger.info(
           { username: readyClient.user.tag, id: readyClient.user.id },
           'Discord bot connected',

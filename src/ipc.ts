@@ -10,7 +10,7 @@ import {
   TIMEZONE,
 } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import { createTask, deleteTask, getTaskById, storeSecret, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
@@ -72,11 +72,22 @@ export function startIpcWatcher(deps: IpcDeps): void {
             const filePath = path.join(messagesDir, file);
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-              if (data.type === 'message' && data.chatJid && data.text) {
-                // Authorization: verify this group can send to this chatJid
+              if (data.type === 'store_secret' && data.name && data.value) {
+                try {
+                  storeSecret(data.name, data.value, data.description || '');
+                  logger.info({ name: data.name, sourceGroup }, 'Secret stored');
+                } catch (err) {
+                  logger.error({ name: data.name, err }, 'Failed to store secret');
+                }
+              } else if (data.type === 'message' && data.chatJid && data.text) {
+                // Authorization: verify this group can send to this chatJid.
+                // Any group may also send to the main channel so delegated
+                // agents can report results back to #general (chief-of-staff).
                 const targetGroup = registeredGroups[data.chatJid];
+                const targetIsMain = targetGroup?.folder === MAIN_GROUP_FOLDER;
                 if (
                   isMain ||
+                  targetIsMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
                   await deps.sendMessage(data.chatJid, data.text);

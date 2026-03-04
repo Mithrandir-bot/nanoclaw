@@ -37,6 +37,7 @@ interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  openRouterActivated?: boolean;
 }
 
 interface SessionEntry {
@@ -148,7 +149,7 @@ function getSessionSummary(sessionId: string, transcriptPath: string): string | 
 /**
  * Archive the full transcript to conversations/ before compaction.
  */
-function createPreCompactHook(assistantName?: string): HookCallback {
+function createPreCompactHook(assistantName?: string, groupFolder?: string): HookCallback {
   return async (input, _toolUseId, _context) => {
     const preCompact = input as PreCompactHookInput;
     const transcriptPath = preCompact.transcript_path;
@@ -182,6 +183,10 @@ function createPreCompactHook(assistantName?: string): HookCallback {
       fs.writeFileSync(filePath, markdown);
 
       log(`Archived conversation to ${filePath}`);
+
+      writeResumeFile(messages, summary, date, assistantName);
+      writeObsidianDailyNote(messages, summary, date, groupFolder, assistantName);
+      rebuildObsidianIndex();
     } catch (err) {
       log(`Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -190,10 +195,165 @@ function createPreCompactHook(assistantName?: string): HookCallback {
   };
 }
 
+/**
+ * Write RESUME.md so the agent can pick up after compaction.
+ */
+function writeResumeFile(messages: ParsedMessage[], summary: string | null, date: string, assistantName?: string): void {
+  try {
+    const recentMessages = messages.slice(-10);
+    const lines: string[] = [
+      '# Resume Context',
+      '',
+      `> Auto-compaction ran on ${date}. Read this to understand what was in progress.`,
+      '',
+    ];
+    if (summary) {
+      lines.push(`**Topic:** ${summary}`, '');
+    }
+    lines.push('## Recent Conversation', '');
+    for (const msg of recentMessages) {
+      const sender = msg.role === 'user' ? 'User' : (assistantName || 'Assistant');
+      const content = msg.content.length > 1000 ? msg.content.slice(0, 1000) + '...' : msg.content;
+      lines.push(`**${sender}:** ${content}`, '');
+    }
+    lines.push(
+      '## Instructions',
+      '',
+      'The above was the conversation state before compaction. Continue from where the work left off. Check workspace files for any work in progress.',
+    );
+    fs.writeFileSync('/workspace/group/RESUME.md', lines.join('\n'));
+    log('Wrote RESUME.md');
+  } catch (err) {
+    log(`Failed to write RESUME.md: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Append a session summary to the Obsidian daily note.
+ */
+function writeObsidianDailyNote(messages: ParsedMessage[], summary: string | null, date: string, groupFolder?: string, assistantName?: string): void {
+  const obsidianDir = '/workspace/extra/obsidian-vault';
+  if (!fs.existsSync(obsidianDir)) {
+    log('Obsidian vault not mounted, skipping daily note');
+    return;
+  }
+
+  try {
+    const dailyDir = path.join(obsidianDir, 'Daily');
+    fs.mkdirSync(dailyDir, { recursive: true });
+    const dailyNotePath = path.join(dailyDir, `${date}.md`);
+
+    const time = new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York' });
+    const channelLabel = groupFolder ? `#${groupFolder}` : 'agent';
+
+    const lastAssistantMessages = messages.filter(m => m.role === 'assistant').slice(-3);
+    const lines: string[] = [
+      '',
+      `## ${channelLabel} — ${time} ET`,
+      '',
+    ];
+    if (summary) lines.push(`**Topic:** ${summary}`, '');
+    if (lastAssistantMessages.length > 0) {
+      lines.push('**Recent work:**');
+      for (const msg of lastAssistantMessages) {
+        const excerpt = msg.content.replace(/\n+/g, ' ').slice(0, 400);
+        lines.push(`- ${excerpt}`);
+      }
+      lines.push('');
+    }
+
+    if (fs.existsSync(dailyNotePath)) {
+      fs.appendFileSync(dailyNotePath, lines.join('\n'));
+    } else {
+      fs.writeFileSync(dailyNotePath, `# ${date}\n` + lines.join('\n'));
+    }
+    log(`Updated Obsidian daily note: ${dailyNotePath}`);
+  } catch (err) {
+    log(`Failed to write Obsidian daily note: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 // Secrets to strip from Bash tool subprocess environments.
 // These are needed by claude-code for API auth but should never
 // be visible to commands Kit runs.
 const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
+
+/**
+ * Rebuild INDEX.md at the vault root so agents always have a fresh map.
+ */
+function rebuildObsidianIndex(): void {
+  const vaultDir = '/workspace/extra/obsidian-vault';
+  if (!fs.existsSync(vaultDir)) return;
+
+  try {
+    const skipDirs = new Set(['.obsidian', '.trash', 'node_modules']);
+
+    interface FEntry { relPath: string; title: string; mtime: number }
+    const byFolder = new Map<string, FEntry[]>();
+
+    function walk(dir: string) {
+      let names: string[];
+      try { names = fs.readdirSync(dir, 'utf-8') as string[]; } catch { return; }
+      for (const name of names) {
+        if (name.startsWith('.') || skipDirs.has(name)) continue;
+        const full = path.join(dir, name);
+        let stat: fs.Stats;
+        try { stat = fs.statSync(full); } catch { continue; }
+        if (stat.isDirectory()) { walk(full); continue; }
+        if (!stat.isFile() || !name.endsWith('.md') || name === 'INDEX.md') continue;
+        const rel = path.relative(vaultDir, full);
+        const folder = path.dirname(rel) === '.' ? '(root)' : path.dirname(rel);
+        let title = name.replace(/\.md$/, '');
+        try {
+          const first = fs.readFileSync(full, 'utf-8').split('\n').find(l => l.startsWith('#'));
+          if (first) title = first.replace(/^#+\s*/, '');
+        } catch { /* ignore */ }
+        if (!byFolder.has(folder)) byFolder.set(folder, []);
+        byFolder.get(folder)!.push({ relPath: rel, title, mtime: stat.mtimeMs });
+      }
+    }
+
+    walk(vaultDir);
+    for (const files of byFolder.values()) files.sort((a, b) => b.mtime - a.mtime);
+
+    const total = [...byFolder.values()].reduce((s, f) => s + f.length, 0);
+    const now = new Date();
+    const ts = now.toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+
+    const lines = [
+      '# Vault Index',
+      '',
+      `Updated: ${ts} ET — ${total} notes`,
+      '',
+      '> Read this at session start to know what exists in the vault. Regenerated daily and on context compaction.',
+      '',
+      '---',
+      '',
+    ];
+
+    const folders = [...byFolder.keys()].sort((a, b) => {
+      if (a === '(root)') return -1;
+      if (b === '(root)') return 1;
+      return a.localeCompare(b);
+    });
+
+    for (const folder of folders) {
+      const files = byFolder.get(folder)!;
+      lines.push(`## ${folder} (${files.length})`);
+      lines.push('');
+      for (const f of files.slice(0, 50)) {
+        lines.push(`- ${path.basename(f.relPath, '.md')}`);
+      }
+      if (files.length > 50) lines.push(`- ...and ${files.length - 50} more`);
+      lines.push('');
+    }
+
+    fs.writeFileSync(path.join(vaultDir, 'INDEX.md'), lines.join('\n'));
+    log(`Rebuilt Obsidian index: ${total} notes across ${byFolder.size} folders`);
+  } catch (err) {
+    log(`Failed to rebuild Obsidian index: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
 
 function createSanitizeBashHook(): HookCallback {
   return async (input, _toolUseId, _context) => {
@@ -366,6 +526,7 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
+  usingOpenRouter?: boolean,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
   stream.push(prompt);
@@ -429,6 +590,7 @@ async function runQuery(
       systemPrompt: globalClaudeMd
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
         : undefined,
+      model: usingOpenRouter ? 'anthropic/claude-haiku-4.5' : 'claude-opus-4-6',
       allowedTools: [
         'Bash',
         'Read', 'Write', 'Edit', 'Glob', 'Grep',
@@ -455,7 +617,7 @@ async function runQuery(
         },
       },
       hooks: {
-        PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
+        PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName, containerInput.groupFolder)] }],
         PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
       },
     }
@@ -483,10 +645,14 @@ async function runQuery(
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
       log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
 
-      // If we haven't sent any output yet and this result looks like an API failure
-      // (auth error, rate limit, credit exhaustion), throw so the caller can fall back
-      // to OpenRouter before the user sees the error.
-      if (!hadAnyOutput && textResult && /authentication_error|Invalid bearer token|rate_limit_error|overloaded_error|credit|billing|quota|429|401/.test(textResult)) {
+      // If we haven't sent any output yet and this result looks like an API failure,
+      // throw so the caller can fall back to OpenRouter before the user sees the error.
+      // "hit your limit" is Claude's UI rate-limit message (always subtype=success),
+      // so we check for it explicitly. All other patterns only fire on non-success
+      // subtypes to avoid false positives in normal agent text.
+      const isUiRateLimit = !hadAnyOutput && textResult && /hit your limit/i.test(textResult);
+      const isApiError = !hadAnyOutput && textResult && message.subtype !== 'success' && /authentication_error|Invalid bearer token|rate_limit_error|overloaded_error|credit|billing|quota|429|401/.test(textResult);
+      if (isUiRateLimit || isApiError) {
         throw new Error(`API unavailable: ${textResult.slice(0, 300)}`);
       }
 
@@ -642,11 +808,15 @@ async function main(): Promise<void> {
 
   try {
     while (true) {
+      // Reset per-query output flag so fallback can activate on any query,
+      // not just the first one in a session.
+      hadAnyOutput = false;
+
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
       let queryResult: Awaited<ReturnType<typeof runQuery>>;
       try {
-        queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, currentSdkEnv, resumeAt);
+        queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, currentSdkEnv, resumeAt, usingOpenRouter);
         // Anthropic succeeded — clear any stale fallback flag
         if (!usingOpenRouter) clearOpenRouterFlag();
       } catch (apiErr) {
@@ -656,12 +826,14 @@ async function main(): Promise<void> {
           const errMsg = apiErr instanceof Error ? apiErr.message : String(apiErr);
           log(`Primary API unavailable (${errMsg}), retrying with OpenRouter fallback...`);
           // Determine if this is a persistent condition (rate limit / credits) vs transient auth
-          const isPersistent = /rate_limit|overloaded|credit|billing|quota|429/.test(errMsg);
+          const isPersistent = /rate_limit|overloaded|credit|billing|quota|429|hit your limit/i.test(errMsg);
           if (isPersistent) writeOpenRouterFlag('rate_limit_or_credits');
           const { env, proxy } = await buildOpenRouterEnv(sdkEnv, openrouterKey);
           currentSdkEnv = env;
           openRouterProxy = proxy;
           usingOpenRouter = true;
+          // Signal the host to notify the user that OpenRouter is now active
+          writeOutput({ status: 'success', result: null, newSessionId: sessionId, openRouterActivated: true });
           continue; // retry the loop with fallback env
         }
         throw apiErr;

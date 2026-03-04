@@ -3,9 +3,11 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  DATA_DIR,
   DISCORD_BOT_TOKEN,
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
+  MAX_SESSION_BYTES,
   POLL_INTERVAL,
   STORE_DIR,
   TRIGGER_PATTERN,
@@ -18,8 +20,12 @@ import {
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
-import { cleanupOrphans, ensureContainerRuntimeRunning } from './container-runtime.js';
 import {
+  cleanupOrphans,
+  ensureContainerRuntimeRunning,
+} from './container-runtime.js';
+import {
+  clearSession,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -55,6 +61,9 @@ let whatsapp: WhatsAppChannel;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
+// Cancellers registered by handleMessage so IPC send_message can suppress the ack timer
+const ackCancellers = new Map<string, () => void>();
+
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
   const agentTs = getRouterState('last_agent_timestamp');
@@ -74,10 +83,7 @@ function loadState(): void {
 
 function saveState(): void {
   setRouterState('last_timestamp', lastTimestamp);
-  setRouterState(
-    'last_agent_timestamp',
-    JSON.stringify(lastAgentTimestamp),
-  );
+  setRouterState('last_agent_timestamp', JSON.stringify(lastAgentTimestamp));
 }
 
 function registerGroup(jid: string, group: RegisteredGroup): void {
@@ -123,7 +129,9 @@ export function getAvailableGroups(): import('./container-runner.js').AvailableG
 }
 
 /** @internal - exported for testing */
-export function _setRegisteredGroups(groups: Record<string, RegisteredGroup>): void {
+export function _setRegisteredGroups(
+  groups: Record<string, RegisteredGroup>,
+): void {
   registeredGroups = groups;
 }
 
@@ -137,14 +145,18 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const channel = findChannel(channels, chatJid);
   if (!channel) {
-    console.log(`Warning: no channel owns JID ${chatJid}, skipping messages`);
+    logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
     return true;
   }
 
   const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
 
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
-  const missedMessages = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
+  const missedMessages = getMessagesSince(
+    chatJid,
+    sinceTimestamp,
+    ASSISTANT_NAME,
+  );
 
   if (missedMessages.length === 0) return true;
 
@@ -176,7 +188,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const resetIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      logger.debug({ group: group.name }, 'Idle timeout, closing container stdin');
+      logger.debug(
+        { group: group.name },
+        'Idle timeout, closing container stdin',
+      );
       queue.closeStdin(chatJid);
     }, IDLE_TIMEOUT);
   };
@@ -193,18 +208,34 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const ackTimer = setTimeout(() => {
     if (!outputSentToUser) {
       channel.sendMessage(chatJid, '⏳ On it...').catch(() => {});
+      outputSentToUser = true;
     }
   }, 8000);
+  // Allow IPC send_message to cancel the ack timer (avoids duplicate "On it")
+  ackCancellers.set(chatJid, () => { clearTimeout(ackTimer); outputSentToUser = true; });
 
   let hadError = false;
+  let rateLimitNotified = false;
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
-      const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
+      const raw =
+        typeof result.result === 'string'
+          ? result.result
+          : JSON.stringify(result.result);
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
+
+      // Suppress raw Claude rate-limit message — our OpenRouter notification replaces it
+      if (/hit your limit/i.test(text)) {
+        rateLimitNotified = true;
+        logger.info({ group: group.name }, 'Rate limit message suppressed (OpenRouter notification will be sent)');
+        resetIdleTimer();
+        return;
+      }
+
       if (text) {
         clearTimeout(ackTimer);
         await channel.sendMessage(chatJid, text);
@@ -225,20 +256,36 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   clearInterval(typingInterval);
   clearTimeout(ackTimer);
+  ackCancellers.delete(chatJid);
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
+
+  // If a rate-limit was suppressed but OpenRouter didn't activate, send fallback notice
+  if (rateLimitNotified && !outputSentToUser) {
+    const resetEt = new Date();
+    resetEt.setUTCHours(23, 0, 0, 0);
+    if (resetEt < new Date()) resetEt.setUTCDate(resetEt.getUTCDate() + 1);
+    const resetTime = resetEt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York' });
+    channel.sendMessage(chatJid, `⚠️ Claude API limit reached — resets at ${resetTime} ET`).catch(() => {});
+  }
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
     // the user got their response and re-processing would send duplicates.
     if (outputSentToUser) {
-      logger.warn({ group: group.name }, 'Agent error after output was sent, skipping cursor rollback to prevent duplicates');
+      logger.warn(
+        { group: group.name },
+        'Agent error after output was sent, skipping cursor rollback to prevent duplicates',
+      );
       return true;
     }
     // Roll back cursor so retries can re-process these messages
     lastAgentTimestamp[chatJid] = previousCursor;
     saveState();
-    logger.warn({ group: group.name }, 'Agent error, rolled back message cursor for retry');
+    logger.warn(
+      { group: group.name },
+      'Agent error, rolled back message cursor for retry',
+    );
     return false;
   }
 
@@ -252,7 +299,82 @@ async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
-  const sessionId = sessions[group.folder];
+  let sessionId: string | undefined = sessions[group.folder];
+
+  // Rotate session when the JSONL transcript has grown too large.
+  // A bloated session forces ~48K cache-read tokens on every call; rotating
+  // resets that to near zero. The PreCompact hook already archives
+  // conversations/ before each compaction, so no history is lost.
+  // Also clears stale session IDs where the JSONL was deleted externally
+  // (those cause error_during_execution loops if not cleared).
+  if (sessionId) {
+    const sessionFile = path.join(
+      DATA_DIR,
+      'sessions',
+      group.folder,
+      '.claude',
+      'projects',
+      '-workspace-group',
+      `${sessionId}.jsonl`,
+    );
+    try {
+      const { size } = fs.statSync(sessionFile);
+      if (size > MAX_SESSION_BYTES) {
+        logger.warn(
+          { group: group.name, sessionId, sizeKB: Math.round(size / 1024) },
+          'Session transcript too large — rotating to fresh session',
+        );
+        // Write RESUME.md before rotating so the new session has context
+        try {
+          const resumePath = path.join(resolveGroupFolderPath(group.folder), 'RESUME.md');
+          const jsonl = fs.readFileSync(sessionFile, 'utf-8');
+          const lastMessages: string[] = [];
+          for (const line of jsonl.trim().split('\n').slice(-60)) {
+            try {
+              const obj = JSON.parse(line);
+              const msg = obj?.message;
+              if (!msg) continue;
+              const content = msg.content;
+              if (Array.isArray(content)) {
+                for (const c of content) {
+                  if (c?.type === 'text' && c.text?.length > 50 && !c.text.startsWith('<internal>')) {
+                    const role = obj.type === 'assistant' ? 'Agent' : 'User';
+                    lastMessages.push(`**${role}:** ${c.text.slice(0, 400)}`);
+                  }
+                }
+              }
+            } catch { /* skip malformed lines */ }
+          }
+          const resume = [
+            `# RESUME — Session rotated ${new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })} ET`,
+            '',
+            'The previous session transcript was too large and was rotated. Continue from where things left off.',
+            '',
+            '## Last conversation excerpt',
+            '',
+            lastMessages.slice(-10).join('\n\n'),
+          ].join('\n');
+          fs.writeFileSync(resumePath, resume);
+          logger.info({ group: group.name }, 'RESUME.md written before session rotation');
+        } catch (resumeErr) {
+          logger.warn({ group: group.name, err: resumeErr }, 'Failed to write RESUME.md before rotation');
+        }
+        delete sessions[group.folder];
+        clearSession(group.folder);
+        sessionId = undefined;
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        logger.warn(
+          { group: group.name, sessionId },
+          'Session file missing — clearing stale session ID',
+        );
+        delete sessions[group.folder];
+        clearSession(group.folder);
+        sessionId = undefined;
+      }
+    }
+  }
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -286,6 +408,26 @@ async function runAgent(
           sessions[group.folder] = output.newSessionId;
           setSession(group.folder, output.newSessionId);
         }
+        // Notify general channel when OpenRouter fallback activates
+        if (output.openRouterActivated) {
+          const resetEt = new Date();
+          resetEt.setUTCHours(23, 0, 0, 0);
+          if (resetEt < new Date()) resetEt.setUTCDate(resetEt.getUTCDate() + 1);
+          const resetTime = resetEt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York' });
+          const mainJid = Object.keys(registeredGroups).find(
+            (jid) => registeredGroups[jid].folder === MAIN_GROUP_FOLDER,
+          );
+          if (mainJid) {
+            const mainChannel = findChannel(channels, mainJid);
+            const channelName = group.folder === MAIN_GROUP_FOLDER ? 'this channel' : `#${group.folder}`;
+            mainChannel
+              ?.sendMessage(
+                mainJid,
+                `⚠️ *Claude API limit reached* for ${channelName} — switching to OpenRouter. Resets at ${resetTime} ET. Responses will continue uninterrupted.`,
+              )
+              .catch((err) => logger.warn({ err }, 'Failed to send OpenRouter notification'));
+          }
+        }
         await onOutput(output);
       }
     : undefined;
@@ -301,7 +443,8 @@ async function runAgent(
         isMain,
         assistantName: ASSISTANT_NAME,
       },
-      (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),
+      (proc, containerName) =>
+        queue.registerProcess(chatJid, proc, containerName, group.folder),
       wrappedOnOutput,
     );
 
@@ -337,7 +480,11 @@ async function startMessageLoop(): Promise<void> {
   while (true) {
     try {
       const jids = Object.keys(registeredGroups);
-      const { messages, newTimestamp } = getNewMessages(jids, lastTimestamp, ASSISTANT_NAME);
+      const { messages, newTimestamp } = getNewMessages(
+        jids,
+        lastTimestamp,
+        ASSISTANT_NAME,
+      );
 
       if (messages.length > 0) {
         logger.info({ count: messages.length }, 'New messages');
@@ -363,7 +510,7 @@ async function startMessageLoop(): Promise<void> {
 
           const channel = findChannel(channels, chatJid);
           if (!channel) {
-            console.log(`Warning: no channel owns JID ${chatJid}, skipping messages`);
+            logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
             continue;
           }
 
@@ -400,9 +547,11 @@ async function startMessageLoop(): Promise<void> {
               messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
             // Show typing indicator while the container processes the piped message
-            channel.setTyping?.(chatJid, true)?.catch((err) =>
-              logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
-            );
+            channel
+              .setTyping?.(chatJid, true)
+              ?.catch((err) =>
+                logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
+              );
           } else {
             // No active container — enqueue for a new one
             queue.enqueueMessageCheck(chatJid);
@@ -458,8 +607,13 @@ async function main(): Promise<void> {
   // Channel callbacks (shared by all channels)
   const channelOpts = {
     onMessage: (_chatJid: string, msg: NewMessage) => storeMessage(msg),
-    onChatMetadata: (chatJid: string, timestamp: string, name?: string, channel?: string, isGroup?: boolean) =>
-      storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
+    onChatMetadata: (
+      chatJid: string,
+      timestamp: string,
+      name?: string,
+      channel?: string,
+      isGroup?: boolean,
+    ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
   };
 
@@ -484,11 +638,12 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
     getSessions: () => sessions,
     queue,
-    onProcess: (groupJid, proc, containerName, groupFolder) => queue.registerProcess(groupJid, proc, containerName, groupFolder),
+    onProcess: (groupJid, proc, containerName, groupFolder) =>
+      queue.registerProcess(groupJid, proc, containerName, groupFolder),
     sendMessage: async (jid, rawText) => {
       const channel = findChannel(channels, jid);
       if (!channel) {
-        console.log(`Warning: no channel owns JID ${jid}, cannot send message`);
+        logger.warn({ jid }, 'No channel owns JID, cannot send message');
         return;
       }
       const text = formatOutbound(rawText);
@@ -497,15 +652,19 @@ async function main(): Promise<void> {
   });
   startIpcWatcher({
     sendMessage: (jid, text) => {
+      // Cancel the ack timer for this JID — agent already responded via send_message
+      ackCancellers.get(jid)?.();
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,
-    syncGroupMetadata: (force) => whatsapp?.syncGroupMetadata(force) ?? Promise.resolve(),
+    syncGroupMetadata: (force) =>
+      whatsapp?.syncGroupMetadata(force) ?? Promise.resolve(),
     getAvailableGroups,
-    writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
+    writeGroupsSnapshot: (gf, im, ag, rj) =>
+      writeGroupsSnapshot(gf, im, ag, rj),
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
@@ -518,7 +677,8 @@ async function main(): Promise<void> {
 // Guard: only run when executed directly, not when imported by tests
 const isDirectRun =
   process.argv[1] &&
-  new URL(import.meta.url).pathname === new URL(`file://${process.argv[1]}`).pathname;
+  new URL(import.meta.url).pathname ===
+    new URL(`file://${process.argv[1]}`).pathname;
 
 if (isDirectRun) {
   main().catch((err) => {

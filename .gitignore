@@ -18,9 +18,16 @@ groups/global/*
 !groups/main/CLAUDE.md
 !groups/global/CLAUDE.md
 
-# Secrets
+# Secrets & local config with credentials
 *.keys.json
 .env
+config.json
+
+# Ephemeral build markers
+.last-container-build
+
+# Backup files
+*.bak
 
 # OS
 .DS_Store
