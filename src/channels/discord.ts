@@ -23,6 +23,7 @@ import {
   OnInboundMessage,
   RegisteredGroup,
 } from '../types.js';
+import { registerChannel } from './registry.js';
 
 export type ApprovalCallback = (
   action: string,
@@ -393,3 +394,9 @@ export class DiscordChannel implements Channel {
     }
   }
 }
+
+registerChannel('discord', (opts) => {
+  const token = process.env.DISCORD_BOT_TOKEN;
+  if (!token) return null;
+  return new DiscordChannel(token, opts);
+});

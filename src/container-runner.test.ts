@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
-import fs from 'fs';
 
 // Sentinel markers must match container-runner.ts
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -37,7 +36,6 @@ vi.mock('fs', async () => {
       ...actual,
       existsSync: vi.fn(() => false),
       mkdirSync: vi.fn(),
-      chmodSync: vi.fn(),
       writeFileSync: vi.fn(),
       readFileSync: vi.fn(() => ''),
       readdirSync: vi.fn(() => []),
@@ -207,137 +205,5 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
-  });
-});
-
-// Flag path matches the mocked GROUPS_DIR + group + filename
-const OPENROUTER_FLAG_PATH = '/tmp/nanoclaw-test-groups/main/.openrouter_mode';
-
-describe('OpenRouter flag detection', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    fakeProc = createFakeProcess();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    // Restore default mock behaviour so other test suites are unaffected
-    vi.mocked(fs.existsSync).mockImplementation(() => false);
-    (fs.readFileSync as ReturnType<typeof vi.fn>).mockImplementation(() => '');
-  });
-
-  /**
-   * Attach a data listener to fakeProc.stdin, run a container, emit a success
-   * marker, close the process, and return the JSON that was written to stdin.
-   */
-  async function getStdinInput(): Promise<Record<string, unknown>> {
-    const chunks: string[] = [];
-    fakeProc.stdin.on('data', (chunk: Buffer | string) =>
-      chunks.push(String(chunk)),
-    );
-
-    const resultPromise = runContainerAgent(
-      testGroup,
-      testInput,
-      () => {},
-      vi.fn(async () => {}),
-    );
-    emitOutputMarker(fakeProc, {
-      status: 'success',
-      result: 'ok',
-      newSessionId: 'sess-test',
-    });
-    await vi.advanceTimersByTimeAsync(10);
-    fakeProc.emit('close', 0);
-    await vi.advanceTimersByTimeAsync(10);
-    await resultPromise;
-
-    return JSON.parse(chunks.join(''));
-  }
-
-  it('passes USE_OPENROUTER_DIRECT=1 when flag is fresh and key is present', async () => {
-    const freshFlag = JSON.stringify({
-      since: new Date(Date.now() - 30 * 60 * 1000).toISOString(), // 30 min ago
-      reason: 'rate_limit',
-    });
-
-    vi.mocked(fs.existsSync).mockImplementation(
-      (p) => String(p) === OPENROUTER_FLAG_PATH,
-    );
-    (fs.readFileSync as ReturnType<typeof vi.fn>).mockImplementation(
-      (p: unknown) => {
-        const s = String(p);
-        if (s.endsWith('/.env')) return 'OPENROUTER_API_KEY=test-key\n';
-        if (s === OPENROUTER_FLAG_PATH) return freshFlag;
-        return '';
-      },
-    );
-
-    const parsed = await getStdinInput();
-    expect(
-      (parsed.secrets as Record<string, string>)?.USE_OPENROUTER_DIRECT,
-    ).toBe('1');
-  });
-
-  it('does not set USE_OPENROUTER_DIRECT when flag is stale (>= 4h)', async () => {
-    const staleFlag = JSON.stringify({
-      since: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(), // 5h ago
-      reason: 'rate_limit',
-    });
-
-    vi.mocked(fs.existsSync).mockImplementation(
-      (p) => String(p) === OPENROUTER_FLAG_PATH,
-    );
-    (fs.readFileSync as ReturnType<typeof vi.fn>).mockImplementation(
-      (p: unknown) => {
-        const s = String(p);
-        if (s.endsWith('/.env')) return 'OPENROUTER_API_KEY=test-key\n';
-        if (s === OPENROUTER_FLAG_PATH) return staleFlag;
-        return '';
-      },
-    );
-
-    const parsed = await getStdinInput();
-    expect(
-      (parsed.secrets as Record<string, string>)?.USE_OPENROUTER_DIRECT,
-    ).toBeUndefined();
-  });
-
-  it('does not set USE_OPENROUTER_DIRECT when flag file is absent', async () => {
-    // existsSync returns false for all paths (default mock) — no flag
-    (fs.readFileSync as ReturnType<typeof vi.fn>).mockImplementation(
-      (p: unknown) => {
-        if (String(p).endsWith('/.env')) return 'OPENROUTER_API_KEY=test-key\n';
-        return '';
-      },
-    );
-
-    const parsed = await getStdinInput();
-    expect(
-      (parsed.secrets as Record<string, string>)?.USE_OPENROUTER_DIRECT,
-    ).toBeUndefined();
-  });
-
-  it('does not set USE_OPENROUTER_DIRECT when OPENROUTER_API_KEY is absent', async () => {
-    const freshFlag = JSON.stringify({
-      since: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
-      reason: 'rate_limit',
-    });
-
-    vi.mocked(fs.existsSync).mockImplementation(
-      (p) => String(p) === OPENROUTER_FLAG_PATH,
-    );
-    // env file present but no OPENROUTER_API_KEY
-    (fs.readFileSync as ReturnType<typeof vi.fn>).mockImplementation(
-      (p: unknown) => {
-        if (String(p) === OPENROUTER_FLAG_PATH) return freshFlag;
-        return '';
-      },
-    );
-
-    const parsed = await getStdinInput();
-    expect(
-      (parsed.secrets as Record<string, string>)?.USE_OPENROUTER_DIRECT,
-    ).toBeUndefined();
   });
 });

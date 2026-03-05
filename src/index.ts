@@ -3,17 +3,15 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
-  DATA_DIR,
-  DISCORD_BOT_TOKEN,
   IDLE_TIMEOUT,
-  MAIN_GROUP_FOLDER,
-  MAX_SESSION_BYTES,
   POLL_INTERVAL,
-  STORE_DIR,
   TRIGGER_PATTERN,
 } from './config.js';
-import { WhatsAppChannel } from './channels/whatsapp.js';
-import { DiscordChannel } from './channels/discord.js';
+import './channels/index.js';
+import {
+  getChannelFactory,
+  getRegisteredChannelNames,
+} from './channels/registry.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -25,7 +23,6 @@ import {
   ensureContainerRuntimeRunning,
 } from './container-runtime.js';
 import {
-  clearSession,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -44,6 +41,12 @@ import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
+import {
+  isSenderAllowed,
+  isTriggerAllowed,
+  loadSenderAllowlist,
+  shouldDropMessage,
+} from './sender-allowlist.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
@@ -57,7 +60,6 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
-let whatsapp: WhatsAppChannel;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
@@ -149,7 +151,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return true;
   }
 
-  const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
+  const isMainGroup = group.isMain === true;
 
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
   const missedMessages = getMessagesSince(
@@ -162,8 +164,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
-    const hasTrigger = missedMessages.some((m) =>
-      TRIGGER_PATTERN.test(m.content.trim()),
+    const allowlistCfg = loadSenderAllowlist();
+    const hasTrigger = missedMessages.some(
+      (m) =>
+        TRIGGER_PATTERN.test(m.content.trim()) &&
+        (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
     );
     if (!hasTrigger) return true;
   }
@@ -197,13 +202,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   };
 
   await channel.setTyping?.(chatJid, true);
-
   // Keep typing indicator alive — Discord's expires after ~10s
   const typingInterval = setInterval(() => {
     channel.setTyping?.(chatJid, true)?.catch(() => {});
   }, 8000);
 
-  // Send a text ack if the agent hasn't responded within 8s
+  let hadError = false;
   let outputSentToUser = false;
   const ackTimer = setTimeout(() => {
     if (!outputSentToUser) {
@@ -213,9 +217,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }, 8000);
   // Allow IPC send_message to cancel the ack timer (avoids duplicate "On it")
   ackCancellers.set(chatJid, () => { clearTimeout(ackTimer); outputSentToUser = true; });
-
-  let hadError = false;
-  let rateLimitNotified = false;
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
@@ -227,15 +228,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
-
-      // Suppress raw Claude rate-limit message — our OpenRouter notification replaces it
-      if (/hit your limit/i.test(text)) {
-        rateLimitNotified = true;
-        logger.info({ group: group.name }, 'Rate limit message suppressed (OpenRouter notification will be sent)');
-        resetIdleTimer();
-        return;
-      }
-
       if (text) {
         clearTimeout(ackTimer);
         await channel.sendMessage(chatJid, text);
@@ -259,15 +251,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   ackCancellers.delete(chatJid);
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
-
-  // If a rate-limit was suppressed but OpenRouter didn't activate, send fallback notice
-  if (rateLimitNotified && !outputSentToUser) {
-    const resetEt = new Date();
-    resetEt.setUTCHours(23, 0, 0, 0);
-    if (resetEt < new Date()) resetEt.setUTCDate(resetEt.getUTCDate() + 1);
-    const resetTime = resetEt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York' });
-    channel.sendMessage(chatJid, `⚠️ Claude API limit reached — resets at ${resetTime} ET`).catch(() => {});
-  }
 
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
@@ -298,83 +281,8 @@ async function runAgent(
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
-  const isMain = group.folder === MAIN_GROUP_FOLDER;
-  let sessionId: string | undefined = sessions[group.folder];
-
-  // Rotate session when the JSONL transcript has grown too large.
-  // A bloated session forces ~48K cache-read tokens on every call; rotating
-  // resets that to near zero. The PreCompact hook already archives
-  // conversations/ before each compaction, so no history is lost.
-  // Also clears stale session IDs where the JSONL was deleted externally
-  // (those cause error_during_execution loops if not cleared).
-  if (sessionId) {
-    const sessionFile = path.join(
-      DATA_DIR,
-      'sessions',
-      group.folder,
-      '.claude',
-      'projects',
-      '-workspace-group',
-      `${sessionId}.jsonl`,
-    );
-    try {
-      const { size } = fs.statSync(sessionFile);
-      if (size > MAX_SESSION_BYTES) {
-        logger.warn(
-          { group: group.name, sessionId, sizeKB: Math.round(size / 1024) },
-          'Session transcript too large — rotating to fresh session',
-        );
-        // Write RESUME.md before rotating so the new session has context
-        try {
-          const resumePath = path.join(resolveGroupFolderPath(group.folder), 'RESUME.md');
-          const jsonl = fs.readFileSync(sessionFile, 'utf-8');
-          const lastMessages: string[] = [];
-          for (const line of jsonl.trim().split('\n').slice(-60)) {
-            try {
-              const obj = JSON.parse(line);
-              const msg = obj?.message;
-              if (!msg) continue;
-              const content = msg.content;
-              if (Array.isArray(content)) {
-                for (const c of content) {
-                  if (c?.type === 'text' && c.text?.length > 50 && !c.text.startsWith('<internal>')) {
-                    const role = obj.type === 'assistant' ? 'Agent' : 'User';
-                    lastMessages.push(`**${role}:** ${c.text.slice(0, 400)}`);
-                  }
-                }
-              }
-            } catch { /* skip malformed lines */ }
-          }
-          const resume = [
-            `# RESUME — Session rotated ${new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })} ET`,
-            '',
-            'The previous session transcript was too large and was rotated. Continue from where things left off.',
-            '',
-            '## Last conversation excerpt',
-            '',
-            lastMessages.slice(-10).join('\n\n'),
-          ].join('\n');
-          fs.writeFileSync(resumePath, resume);
-          logger.info({ group: group.name }, 'RESUME.md written before session rotation');
-        } catch (resumeErr) {
-          logger.warn({ group: group.name, err: resumeErr }, 'Failed to write RESUME.md before rotation');
-        }
-        delete sessions[group.folder];
-        clearSession(group.folder);
-        sessionId = undefined;
-      }
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        logger.warn(
-          { group: group.name, sessionId },
-          'Session file missing — clearing stale session ID',
-        );
-        delete sessions[group.folder];
-        clearSession(group.folder);
-        sessionId = undefined;
-      }
-    }
-  }
+  const isMain = group.isMain === true;
+  const sessionId = sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -407,26 +315,6 @@ async function runAgent(
         if (output.newSessionId) {
           sessions[group.folder] = output.newSessionId;
           setSession(group.folder, output.newSessionId);
-        }
-        // Notify general channel when OpenRouter fallback activates
-        if (output.openRouterActivated) {
-          const resetEt = new Date();
-          resetEt.setUTCHours(23, 0, 0, 0);
-          if (resetEt < new Date()) resetEt.setUTCDate(resetEt.getUTCDate() + 1);
-          const resetTime = resetEt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York' });
-          const mainJid = Object.keys(registeredGroups).find(
-            (jid) => registeredGroups[jid].folder === MAIN_GROUP_FOLDER,
-          );
-          if (mainJid) {
-            const mainChannel = findChannel(channels, mainJid);
-            const channelName = group.folder === MAIN_GROUP_FOLDER ? 'this channel' : `#${group.folder}`;
-            mainChannel
-              ?.sendMessage(
-                mainJid,
-                `⚠️ *Claude API limit reached* for ${channelName} — switching to OpenRouter. Resets at ${resetTime} ET. Responses will continue uninterrupted.`,
-              )
-              .catch((err) => logger.warn({ err }, 'Failed to send OpenRouter notification'));
-          }
         }
         await onOutput(output);
       }
@@ -514,15 +402,19 @@ async function startMessageLoop(): Promise<void> {
             continue;
           }
 
-          const isMainGroup = group.folder === MAIN_GROUP_FOLDER;
+          const isMainGroup = group.isMain === true;
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
 
           // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
           if (needsTrigger) {
-            const hasTrigger = groupMessages.some((m) =>
-              TRIGGER_PATTERN.test(m.content.trim()),
+            const allowlistCfg = loadSenderAllowlist();
+            const hasTrigger = groupMessages.some(
+              (m) =>
+                TRIGGER_PATTERN.test(m.content.trim()) &&
+                (m.is_from_me ||
+                  isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
             );
             if (!hasTrigger) continue;
           }
@@ -606,7 +498,29 @@ async function main(): Promise<void> {
 
   // Channel callbacks (shared by all channels)
   const channelOpts = {
-    onMessage: (_chatJid: string, msg: NewMessage) => storeMessage(msg),
+    onMessage: (chatJid: string, msg: NewMessage) => {
+      // Sender allowlist drop mode: discard messages from denied senders before storing
+      if (
+        !msg.is_from_me &&
+        !msg.is_bot_message &&
+        registeredGroups[chatJid]
+      ) {
+        const cfg = loadSenderAllowlist();
+        if (
+          shouldDropMessage(chatJid, cfg) &&
+          !isSenderAllowed(chatJid, msg.sender, cfg)
+        ) {
+          if (cfg.logDenied) {
+            logger.debug(
+              { chatJid, sender: msg.sender },
+              'sender-allowlist: dropping message (drop mode)',
+            );
+          }
+          return;
+        }
+      }
+      storeMessage(msg);
+    },
     onChatMetadata: (
       chatJid: string,
       timestamp: string,
@@ -617,20 +531,25 @@ async function main(): Promise<void> {
     registeredGroups: () => registeredGroups,
   };
 
-  // Create and connect channels
-  const whatsappCredsPath = path.join(STORE_DIR, 'auth', 'creds.json');
-  if (fs.existsSync(whatsappCredsPath)) {
-    whatsapp = new WhatsAppChannel(channelOpts);
-    channels.push(whatsapp);
-    await whatsapp.connect();
-  } else {
-    logger.info('No WhatsApp credentials found, skipping WhatsApp channel');
+  // Create and connect all registered channels.
+  // Each channel self-registers via the barrel import above.
+  // Factories return null when credentials are missing, so unconfigured channels are skipped.
+  for (const channelName of getRegisteredChannelNames()) {
+    const factory = getChannelFactory(channelName)!;
+    const channel = factory(channelOpts);
+    if (!channel) {
+      logger.warn(
+        { channel: channelName },
+        'Channel installed but credentials missing — skipping. Check .env or re-run the channel skill.',
+      );
+      continue;
+    }
+    channels.push(channel);
+    await channel.connect();
   }
-
-  if (DISCORD_BOT_TOKEN) {
-    const discord = new DiscordChannel(DISCORD_BOT_TOKEN, channelOpts);
-    channels.push(discord);
-    await discord.connect();
+  if (channels.length === 0) {
+    logger.fatal('No channels connected');
+    process.exit(1);
   }
 
   // Start subsystems (independently of connection handler)
@@ -660,8 +579,13 @@ async function main(): Promise<void> {
     },
     registeredGroups: () => registeredGroups,
     registerGroup,
-    syncGroupMetadata: (force) =>
-      whatsapp?.syncGroupMetadata(force) ?? Promise.resolve(),
+    syncGroups: async (force: boolean) => {
+      await Promise.all(
+        channels
+          .filter((ch) => ch.syncGroups)
+          .map((ch) => ch.syncGroups!(force)),
+      );
+    },
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),

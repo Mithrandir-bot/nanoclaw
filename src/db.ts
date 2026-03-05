@@ -83,6 +83,7 @@ function createSchema(database: Database.Database): void {
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1
     );
+
     CREATE TABLE IF NOT EXISTS secrets (
       name TEXT PRIMARY KEY,
       encrypted_value TEXT NOT NULL,
@@ -110,6 +111,19 @@ function createSchema(database: Database.Database): void {
     database
       .prepare(`UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`)
       .run(`${ASSISTANT_NAME}:%`);
+  } catch {
+    /* column already exists */
+  }
+
+  // Add is_main column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN is_main INTEGER DEFAULT 0`,
+    );
+    // Backfill: existing rows with folder = 'main' are the main group
+    database.exec(
+      `UPDATE registered_groups SET is_main = 1 WHERE folder = 'main'`,
+    );
   } catch {
     /* column already exists */
   }
@@ -271,7 +285,7 @@ export function storeMessage(msg: NewMessage): void {
 }
 
 /**
- * Store a message directly (for non-WhatsApp channels that don't use Baileys proto).
+ * Store a message directly.
  */
 export function storeMessageDirect(msg: {
   id: string;
@@ -308,7 +322,7 @@ export function getNewMessages(
   // Filter bot messages using both the is_bot_message flag AND the content
   // prefix as a backstop for messages written before the migration ran.
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
     FROM messages
     WHERE timestamp > ? AND chat_jid IN (${placeholders})
       AND is_bot_message = 0 AND content NOT LIKE ?
@@ -336,7 +350,7 @@ export function getMessagesSince(
   // Filter bot messages using both the is_bot_message flag AND the content
   // prefix as a backstop for messages written before the migration ran.
   const sql = `
-    SELECT id, chat_jid, sender, sender_name, content, timestamp
+    SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
     FROM messages
     WHERE chat_jid = ? AND timestamp > ?
       AND is_bot_message = 0 AND content NOT LIKE ?
@@ -511,10 +525,6 @@ export function setSession(groupFolder: string, sessionId: string): void {
   ).run(groupFolder, sessionId);
 }
 
-export function clearSession(groupFolder: string): void {
-  db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(groupFolder);
-}
-
 export function getAllSessions(): Record<string, string> {
   const rows = db
     .prepare('SELECT group_folder, session_id FROM sessions')
@@ -542,6 +552,7 @@ export function getRegisteredGroup(
         added_at: string;
         container_config: string | null;
         requires_trigger: number | null;
+        is_main: number | null;
       }
     | undefined;
   if (!row) return undefined;
@@ -563,6 +574,7 @@ export function getRegisteredGroup(
       : undefined,
     requiresTrigger:
       row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+    isMain: row.is_main === 1 ? true : undefined,
   };
 }
 
@@ -571,8 +583,8 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     throw new Error(`Invalid group folder "${group.folder}" for JID ${jid}`);
   }
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, is_main)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jid,
     group.name,
@@ -581,6 +593,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.added_at,
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
+    group.isMain ? 1 : 0,
   );
 }
 
@@ -593,6 +606,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     added_at: string;
     container_config: string | null;
     requires_trigger: number | null;
+    is_main: number | null;
   }>;
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
@@ -613,9 +627,72 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
         : undefined,
       requiresTrigger:
         row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+      isMain: row.is_main === 1 ? true : undefined,
     };
   }
   return result;
+}
+
+// --- JSON migration ---
+
+function migrateJsonState(): void {
+  const migrateFile = (filename: string) => {
+    const filePath = path.join(DATA_DIR, filename);
+    if (!fs.existsSync(filePath)) return null;
+    try {
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      fs.renameSync(filePath, `${filePath}.migrated`);
+      return data;
+    } catch {
+      return null;
+    }
+  };
+
+  // Migrate router_state.json
+  const routerState = migrateFile('router_state.json') as {
+    last_timestamp?: string;
+    last_agent_timestamp?: Record<string, string>;
+  } | null;
+  if (routerState) {
+    if (routerState.last_timestamp) {
+      setRouterState('last_timestamp', routerState.last_timestamp);
+    }
+    if (routerState.last_agent_timestamp) {
+      setRouterState(
+        'last_agent_timestamp',
+        JSON.stringify(routerState.last_agent_timestamp),
+      );
+    }
+  }
+
+  // Migrate sessions.json
+  const sessions = migrateFile('sessions.json') as Record<
+    string,
+    string
+  > | null;
+  if (sessions) {
+    for (const [folder, sessionId] of Object.entries(sessions)) {
+      setSession(folder, sessionId);
+    }
+  }
+
+  // Migrate registered_groups.json
+  const groups = migrateFile('registered_groups.json') as Record<
+    string,
+    RegisteredGroup
+  > | null;
+  if (groups) {
+    for (const [jid, group] of Object.entries(groups)) {
+      try {
+        setRegisteredGroup(jid, group);
+      } catch (err) {
+        logger.warn(
+          { jid, folder: group.folder, err },
+          'Skipping migrated registered group with invalid folder',
+        );
+      }
+    }
+  }
 }
 
 // --- Encrypted secrets ---
@@ -690,66 +767,4 @@ export function getAllSecretsDecrypted(): Record<string, string> {
     }
   }
   return result;
-}
-
-// --- JSON migration ---
-
-function migrateJsonState(): void {
-  const migrateFile = (filename: string) => {
-    const filePath = path.join(DATA_DIR, filename);
-    if (!fs.existsSync(filePath)) return null;
-    try {
-      const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      fs.renameSync(filePath, `${filePath}.migrated`);
-      return data;
-    } catch {
-      return null;
-    }
-  };
-
-  // Migrate router_state.json
-  const routerState = migrateFile('router_state.json') as {
-    last_timestamp?: string;
-    last_agent_timestamp?: Record<string, string>;
-  } | null;
-  if (routerState) {
-    if (routerState.last_timestamp) {
-      setRouterState('last_timestamp', routerState.last_timestamp);
-    }
-    if (routerState.last_agent_timestamp) {
-      setRouterState(
-        'last_agent_timestamp',
-        JSON.stringify(routerState.last_agent_timestamp),
-      );
-    }
-  }
-
-  // Migrate sessions.json
-  const sessions = migrateFile('sessions.json') as Record<
-    string,
-    string
-  > | null;
-  if (sessions) {
-    for (const [folder, sessionId] of Object.entries(sessions)) {
-      setSession(folder, sessionId);
-    }
-  }
-
-  // Migrate registered_groups.json
-  const groups = migrateFile('registered_groups.json') as Record<
-    string,
-    RegisteredGroup
-  > | null;
-  if (groups) {
-    for (const [jid, group] of Object.entries(groups)) {
-      try {
-        setRegisteredGroup(jid, group);
-      } catch (err) {
-        logger.warn(
-          { jid, folder: group.folder, err },
-          'Skipping migrated registered group with invalid folder',
-        );
-      }
-    }
-  }
 }

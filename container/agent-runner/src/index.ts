@@ -15,8 +15,6 @@
  */
 
 import fs from 'fs';
-import http from 'http';
-import https from 'https';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput, PreToolUseHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
@@ -37,7 +35,6 @@ interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
-  openRouterActivated?: boolean;
 }
 
 interface SessionEntry {
@@ -111,10 +108,7 @@ async function readStdin(): Promise<string> {
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
-let hadAnyOutput = false;
-
 function writeOutput(output: ContainerOutput): void {
-  hadAnyOutput = true;
   console.log(OUTPUT_START_MARKER);
   console.log(JSON.stringify(output));
   console.log(OUTPUT_END_MARKER);
@@ -149,7 +143,7 @@ function getSessionSummary(sessionId: string, transcriptPath: string): string | 
 /**
  * Archive the full transcript to conversations/ before compaction.
  */
-function createPreCompactHook(assistantName?: string, groupFolder?: string): HookCallback {
+function createPreCompactHook(assistantName?: string): HookCallback {
   return async (input, _toolUseId, _context) => {
     const preCompact = input as PreCompactHookInput;
     const transcriptPath = preCompact.transcript_path;
@@ -183,10 +177,6 @@ function createPreCompactHook(assistantName?: string, groupFolder?: string): Hoo
       fs.writeFileSync(filePath, markdown);
 
       log(`Archived conversation to ${filePath}`);
-
-      writeResumeFile(messages, summary, date, assistantName);
-      writeObsidianDailyNote(messages, summary, date, groupFolder, assistantName);
-      rebuildObsidianIndex();
     } catch (err) {
       log(`Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -195,165 +185,10 @@ function createPreCompactHook(assistantName?: string, groupFolder?: string): Hoo
   };
 }
 
-/**
- * Write RESUME.md so the agent can pick up after compaction.
- */
-function writeResumeFile(messages: ParsedMessage[], summary: string | null, date: string, assistantName?: string): void {
-  try {
-    const recentMessages = messages.slice(-10);
-    const lines: string[] = [
-      '# Resume Context',
-      '',
-      `> Auto-compaction ran on ${date}. Read this to understand what was in progress.`,
-      '',
-    ];
-    if (summary) {
-      lines.push(`**Topic:** ${summary}`, '');
-    }
-    lines.push('## Recent Conversation', '');
-    for (const msg of recentMessages) {
-      const sender = msg.role === 'user' ? 'User' : (assistantName || 'Assistant');
-      const content = msg.content.length > 1000 ? msg.content.slice(0, 1000) + '...' : msg.content;
-      lines.push(`**${sender}:** ${content}`, '');
-    }
-    lines.push(
-      '## Instructions',
-      '',
-      'The above was the conversation state before compaction. Continue from where the work left off. Check workspace files for any work in progress.',
-    );
-    fs.writeFileSync('/workspace/group/RESUME.md', lines.join('\n'));
-    log('Wrote RESUME.md');
-  } catch (err) {
-    log(`Failed to write RESUME.md: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-
-/**
- * Append a session summary to the Obsidian daily note.
- */
-function writeObsidianDailyNote(messages: ParsedMessage[], summary: string | null, date: string, groupFolder?: string, assistantName?: string): void {
-  const obsidianDir = '/workspace/extra/obsidian-vault';
-  if (!fs.existsSync(obsidianDir)) {
-    log('Obsidian vault not mounted, skipping daily note');
-    return;
-  }
-
-  try {
-    const dailyDir = path.join(obsidianDir, 'Daily');
-    fs.mkdirSync(dailyDir, { recursive: true });
-    const dailyNotePath = path.join(dailyDir, `${date}.md`);
-
-    const time = new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/New_York' });
-    const channelLabel = groupFolder ? `#${groupFolder}` : 'agent';
-
-    const lastAssistantMessages = messages.filter(m => m.role === 'assistant').slice(-3);
-    const lines: string[] = [
-      '',
-      `## ${channelLabel} — ${time} ET`,
-      '',
-    ];
-    if (summary) lines.push(`**Topic:** ${summary}`, '');
-    if (lastAssistantMessages.length > 0) {
-      lines.push('**Recent work:**');
-      for (const msg of lastAssistantMessages) {
-        const excerpt = msg.content.replace(/\n+/g, ' ').slice(0, 400);
-        lines.push(`- ${excerpt}`);
-      }
-      lines.push('');
-    }
-
-    if (fs.existsSync(dailyNotePath)) {
-      fs.appendFileSync(dailyNotePath, lines.join('\n'));
-    } else {
-      fs.writeFileSync(dailyNotePath, `# ${date}\n` + lines.join('\n'));
-    }
-    log(`Updated Obsidian daily note: ${dailyNotePath}`);
-  } catch (err) {
-    log(`Failed to write Obsidian daily note: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-
 // Secrets to strip from Bash tool subprocess environments.
 // These are needed by claude-code for API auth but should never
 // be visible to commands Kit runs.
 const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
-
-/**
- * Rebuild INDEX.md at the vault root so agents always have a fresh map.
- */
-function rebuildObsidianIndex(): void {
-  const vaultDir = '/workspace/extra/obsidian-vault';
-  if (!fs.existsSync(vaultDir)) return;
-
-  try {
-    const skipDirs = new Set(['.obsidian', '.trash', 'node_modules']);
-
-    interface FEntry { relPath: string; title: string; mtime: number }
-    const byFolder = new Map<string, FEntry[]>();
-
-    function walk(dir: string) {
-      let names: string[];
-      try { names = fs.readdirSync(dir, 'utf-8') as string[]; } catch { return; }
-      for (const name of names) {
-        if (name.startsWith('.') || skipDirs.has(name)) continue;
-        const full = path.join(dir, name);
-        let stat: fs.Stats;
-        try { stat = fs.statSync(full); } catch { continue; }
-        if (stat.isDirectory()) { walk(full); continue; }
-        if (!stat.isFile() || !name.endsWith('.md') || name === 'INDEX.md') continue;
-        const rel = path.relative(vaultDir, full);
-        const folder = path.dirname(rel) === '.' ? '(root)' : path.dirname(rel);
-        let title = name.replace(/\.md$/, '');
-        try {
-          const first = fs.readFileSync(full, 'utf-8').split('\n').find(l => l.startsWith('#'));
-          if (first) title = first.replace(/^#+\s*/, '');
-        } catch { /* ignore */ }
-        if (!byFolder.has(folder)) byFolder.set(folder, []);
-        byFolder.get(folder)!.push({ relPath: rel, title, mtime: stat.mtimeMs });
-      }
-    }
-
-    walk(vaultDir);
-    for (const files of byFolder.values()) files.sort((a, b) => b.mtime - a.mtime);
-
-    const total = [...byFolder.values()].reduce((s, f) => s + f.length, 0);
-    const now = new Date();
-    const ts = now.toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
-
-    const lines = [
-      '# Vault Index',
-      '',
-      `Updated: ${ts} ET — ${total} notes`,
-      '',
-      '> Read this at session start to know what exists in the vault. Regenerated daily and on context compaction.',
-      '',
-      '---',
-      '',
-    ];
-
-    const folders = [...byFolder.keys()].sort((a, b) => {
-      if (a === '(root)') return -1;
-      if (b === '(root)') return 1;
-      return a.localeCompare(b);
-    });
-
-    for (const folder of folders) {
-      const files = byFolder.get(folder)!;
-      lines.push(`## ${folder} (${files.length})`);
-      lines.push('');
-      for (const f of files.slice(0, 50)) {
-        lines.push(`- ${path.basename(f.relPath, '.md')}`);
-      }
-      if (files.length > 50) lines.push(`- ...and ${files.length - 50} more`);
-      lines.push('');
-    }
-
-    fs.writeFileSync(path.join(vaultDir, 'INDEX.md'), lines.join('\n'));
-    log(`Rebuilt Obsidian index: ${total} notes across ${byFolder.size} folders`);
-  } catch (err) {
-    log(`Failed to rebuild Obsidian index: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
 
 function createSanitizeBashHook(): HookCallback {
   return async (input, _toolUseId, _context) => {
@@ -526,7 +361,6 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
-  usingOpenRouter?: boolean,
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
   stream.push(prompt);
@@ -590,7 +424,6 @@ async function runQuery(
       systemPrompt: globalClaudeMd
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
         : undefined,
-      model: usingOpenRouter ? 'anthropic/claude-haiku-4.5' : 'claude-opus-4-6',
       allowedTools: [
         'Bash',
         'Read', 'Write', 'Edit', 'Glob', 'Grep',
@@ -617,7 +450,7 @@ async function runQuery(
         },
       },
       hooks: {
-        PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName, containerInput.groupFolder)] }],
+        PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
         PreToolUse: [{ matcher: 'Bash', hooks: [createSanitizeBashHook()] }],
       },
     }
@@ -644,18 +477,6 @@ async function runQuery(
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
       log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
-
-      // If we haven't sent any output yet and this result looks like an API failure,
-      // throw so the caller can fall back to OpenRouter before the user sees the error.
-      // "hit your limit" is Claude's UI rate-limit message (always subtype=success),
-      // so we check for it explicitly. All other patterns only fire on non-success
-      // subtypes to avoid false positives in normal agent text.
-      const isUiRateLimit = !hadAnyOutput && textResult && /hit your limit/i.test(textResult);
-      const isApiError = !hadAnyOutput && textResult && message.subtype !== 'success' && /authentication_error|Invalid bearer token|rate_limit_error|overloaded_error|credit|billing|quota|429|401/.test(textResult);
-      if (isUiRateLimit || isApiError) {
-        throw new Error(`API unavailable: ${textResult.slice(0, 300)}`);
-      }
-
       writeOutput({
         status: 'success',
         result: textResult || null,
@@ -667,53 +488,6 @@ async function runQuery(
   ipcPolling = false;
   log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
-}
-
-/**
- * Start a local HTTP proxy for OpenRouter fallback.
- * OpenRouter doesn't implement GET /v1/models/{id} (used by the Claude Code SDK
- * for model validation), so it returns 404 which the SDK treats as a model error.
- * This proxy intercepts that endpoint and returns a stub 200, forwarding
- * everything else to https://openrouter.ai/api/v1.
- */
-function startOpenRouterProxy(): Promise<{ port: number; close: () => void }> {
-  return new Promise((resolve, reject) => {
-    const server = http.createServer((req, res) => {
-      const url = req.url || '/';
-
-      // Stub out model validation requests that OpenRouter doesn't implement
-      if (req.method === 'GET' && /^\/v1\/models\/[^/]/.test(url)) {
-        const modelId = url.split('/v1/models/')[1]?.split('?')[0] || 'claude';
-        log(`[proxy] Stubbing model validation for: ${modelId}`);
-        const body = JSON.stringify({ id: modelId, type: 'model', display_name: modelId, created_at: '2024-01-01T00:00:00Z' });
-        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
-        res.end(body);
-        return;
-      }
-
-      // Forward everything else to OpenRouter
-      const options: https.RequestOptions = {
-        hostname: 'openrouter.ai',
-        port: 443,
-        path: `/api${url}`,
-        method: req.method,
-        headers: { ...req.headers, host: 'openrouter.ai' },
-      };
-
-      const proxyReq = https.request(options, (proxyRes) => {
-        res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
-        proxyRes.pipe(res);
-      });
-      proxyReq.on('error', (err) => { res.writeHead(502); res.end(err.message); });
-      req.pipe(proxyReq);
-    });
-
-    server.listen(0, '127.0.0.1', () => {
-      const addr = server.address() as { port: number };
-      resolve({ port: addr.port, close: () => server.close() });
-    });
-    server.on('error', reject);
-  });
 }
 
 async function main(): Promise<void> {
@@ -761,83 +535,13 @@ async function main(): Promise<void> {
     prompt += '\n' + pending.join('\n');
   }
 
-  // Flag file written to the group folder to signal persistent OpenRouter mode.
-  // The host (container-runner) reads this to skip Anthropic on future sessions.
-  const OPENROUTER_FLAG = '/workspace/group/.openrouter_mode';
-
-  const buildOpenRouterEnv = async (baseEnv: Record<string, string | undefined>, key: string) => {
-    const proxy = await startOpenRouterProxy();
-    log(`[proxy] Started on port ${proxy.port}`);
-    const env = { ...baseEnv };
-    delete env.CLAUDE_CODE_OAUTH_TOKEN;
-    env.ANTHROPIC_API_KEY = key;
-    env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${proxy.port}`;
-    return { env, proxy };
-  };
-
-  const writeOpenRouterFlag = (reason: string) => {
-    try {
-      fs.writeFileSync(OPENROUTER_FLAG, JSON.stringify({ since: new Date().toISOString(), reason }));
-      log(`[fallback] Wrote OpenRouter mode flag (reason: ${reason})`);
-    } catch { /* non-critical */ }
-  };
-
-  const clearOpenRouterFlag = () => {
-    try {
-      if (fs.existsSync(OPENROUTER_FLAG)) {
-        fs.unlinkSync(OPENROUTER_FLAG);
-        log('[fallback] Cleared OpenRouter mode flag — Anthropic is working again');
-      }
-    } catch { /* non-critical */ }
-  };
-
   // Query loop: run query → wait for IPC message → run new query → repeat
   let resumeAt: string | undefined;
-  let currentSdkEnv = sdkEnv;
-  let openRouterProxy: { port: number; close: () => void } | null = null;
-  let usingOpenRouter = false;
-
-  // If container-runner detected persistent OpenRouter mode, start proxy immediately
-  if (sdkEnv.USE_OPENROUTER_DIRECT === '1' && sdkEnv.OPENROUTER_API_KEY) {
-    log('[fallback] Starting in OpenRouter direct mode (credits previously exhausted)');
-    const { env, proxy } = await buildOpenRouterEnv(sdkEnv, sdkEnv.OPENROUTER_API_KEY);
-    currentSdkEnv = env;
-    openRouterProxy = proxy;
-    usingOpenRouter = true;
-  }
-
   try {
     while (true) {
-      // Reset per-query output flag so fallback can activate on any query,
-      // not just the first one in a session.
-      hadAnyOutput = false;
-
       log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
 
-      let queryResult: Awaited<ReturnType<typeof runQuery>>;
-      try {
-        queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, currentSdkEnv, resumeAt, usingOpenRouter);
-        // Anthropic succeeded — clear any stale fallback flag
-        if (!usingOpenRouter) clearOpenRouterFlag();
-      } catch (apiErr) {
-        // If nothing was sent to the user yet and we have an OpenRouter key, fall back
-        const openrouterKey = sdkEnv.OPENROUTER_API_KEY;
-        if (!hadAnyOutput && openrouterKey && currentSdkEnv === sdkEnv) {
-          const errMsg = apiErr instanceof Error ? apiErr.message : String(apiErr);
-          log(`Primary API unavailable (${errMsg}), retrying with OpenRouter fallback...`);
-          // Determine if this is a persistent condition (rate limit / credits) vs transient auth
-          const isPersistent = /rate_limit|overloaded|credit|billing|quota|429|hit your limit/i.test(errMsg);
-          if (isPersistent) writeOpenRouterFlag('rate_limit_or_credits');
-          const { env, proxy } = await buildOpenRouterEnv(sdkEnv, openrouterKey);
-          currentSdkEnv = env;
-          openRouterProxy = proxy;
-          usingOpenRouter = true;
-          // Signal the host to notify the user that OpenRouter is now active
-          writeOutput({ status: 'success', result: null, newSessionId: sessionId, openRouterActivated: true });
-          continue; // retry the loop with fallback env
-        }
-        throw apiErr;
-      }
+      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
@@ -878,8 +582,6 @@ async function main(): Promise<void> {
       error: errorMessage
     });
     process.exit(1);
-  } finally {
-    openRouterProxy?.close();
   }
 }
 

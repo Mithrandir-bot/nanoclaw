@@ -2,12 +2,7 @@ import { ChildProcess } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
-import {
-  ASSISTANT_NAME,
-  MAIN_GROUP_FOLDER,
-  SCHEDULER_POLL_INTERVAL,
-  TIMEZONE,
-} from './config.js';
+import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -25,6 +20,47 @@ import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
+
+/**
+ * Compute the next run time for a recurring task, anchored to the
+ * task's scheduled time rather than Date.now() to prevent cumulative
+ * drift on interval-based tasks.
+ *
+ * Co-authored-by: @community-pr-601
+ */
+export function computeNextRun(task: ScheduledTask): string | null {
+  if (task.schedule_type === 'once') return null;
+
+  const now = Date.now();
+
+  if (task.schedule_type === 'cron') {
+    const interval = CronExpressionParser.parse(task.schedule_value, {
+      tz: TIMEZONE,
+    });
+    return interval.next().toISOString();
+  }
+
+  if (task.schedule_type === 'interval') {
+    const ms = parseInt(task.schedule_value, 10);
+    if (!ms || ms <= 0) {
+      // Guard against malformed interval that would cause an infinite loop
+      logger.warn(
+        { taskId: task.id, value: task.schedule_value },
+        'Invalid interval value',
+      );
+      return new Date(now + 60_000).toISOString();
+    }
+    // Anchor to the scheduled time, not now, to prevent drift.
+    // Skip past any missed intervals so we always land in the future.
+    let next = new Date(task.next_run!).getTime() + ms;
+    while (next <= now) {
+      next += ms;
+    }
+    return new Date(next).toISOString();
+  }
+
+  return null;
+}
 
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
@@ -94,7 +130,7 @@ async function runTask(
   }
 
   // Update tasks snapshot for container to read (filtered by group)
-  const isMain = task.group_folder === MAIN_GROUP_FOLDER;
+  const isMain = group.isMain === true;
   const tasks = getAllTasks();
   writeTasksSnapshot(
     task.group_folder,
@@ -192,44 +228,13 @@ async function runTask(
     error,
   });
 
-  let nextRun: string | null = null;
-  if (task.schedule_type === 'cron') {
-    const interval = CronExpressionParser.parse(task.schedule_value, {
-      tz: TIMEZONE,
-    });
-    nextRun = interval.next().toISOString();
-  } else if (task.schedule_type === 'interval') {
-    const ms = parseInt(task.schedule_value, 10);
-    nextRun = new Date(Date.now() + ms).toISOString();
-  }
-  // 'once' tasks have no next run
-
+  const nextRun = computeNextRun(task);
   const resultSummary = error
     ? `Error: ${error}`
     : result
       ? result.slice(0, 200)
       : 'Completed';
   updateTaskAfterRun(task.id, nextRun, resultSummary);
-}
-
-/**
- * Compute and persist the next run time for a task BEFORE dispatching it.
- * This prevents the scheduler from re-enqueuing the same task on the next poll
- * while the container is still running.
- */
-function advanceNextRun(task: ScheduledTask): void {
-  let nextRun: string | null = null;
-  if (task.schedule_type === 'cron') {
-    const interval = CronExpressionParser.parse(task.schedule_value, {
-      tz: TIMEZONE,
-    });
-    nextRun = interval.next().toISOString();
-  } else if (task.schedule_type === 'interval') {
-    const ms = parseInt(task.schedule_value, 10);
-    nextRun = new Date(Date.now() + ms).toISOString();
-  }
-  // 'once' tasks: set next_run to null so they won't be picked up again
-  updateTask(task.id, { next_run: nextRun });
 }
 
 let schedulerRunning = false;
@@ -255,9 +260,6 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
         if (!currentTask || currentTask.status !== 'active') {
           continue;
         }
-
-        // Advance next_run NOW so subsequent polls don't re-enqueue this task
-        advanceNextRun(currentTask);
 
         deps.queue.enqueueTask(currentTask.chat_jid, currentTask.id, () =>
           runTask(currentTask, deps),

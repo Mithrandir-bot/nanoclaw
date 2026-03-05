@@ -47,7 +47,6 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
-  openRouterActivated?: boolean;
 }
 
 interface VolumeMount {
@@ -75,6 +74,17 @@ function buildVolumeMounts(
       containerPath: '/workspace/project',
       readonly: true,
     });
+
+    // Shadow .env so the agent cannot read secrets from the mounted project root.
+    // Secrets are passed via stdin instead (see readSecrets()).
+    const envFile = path.join(projectRoot, '.env');
+    if (fs.existsSync(envFile)) {
+      mounts.push({
+        hostPath: '/dev/null',
+        containerPath: '/workspace/project/.env',
+        readonly: true,
+      });
+    }
 
     // Main also gets its group folder as the working directory
     mounts.push({
@@ -111,7 +121,6 @@ function buildVolumeMounts(
     '.claude',
   );
   fs.mkdirSync(groupSessionsDir, { recursive: true });
-  fs.chmodSync(groupSessionsDir, 0o777); // Allow container's node user (UID 1000) to write
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
   if (!fs.existsSync(settingsFile)) {
     fs.writeFileSync(
@@ -156,11 +165,9 @@ function buildVolumeMounts(
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = resolveGroupIpcPath(group.folder);
-  for (const subdir of ['messages', 'tasks', 'input']) {
-    const dirPath = path.join(groupIpcDir, subdir);
-    fs.mkdirSync(dirPath, { recursive: true });
-    fs.chmodSync(dirPath, 0o777); // Allow container's node user (UID 1000) to write/delete files
-  }
+  fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
@@ -207,11 +214,6 @@ function buildVolumeMounts(
 /**
  * Read allowed secrets from .env for passing to the container via stdin.
  * Secrets are never written to disk or mounted as files.
- *
- * If a persistent OpenRouter fallback flag exists and is fresh (< 4h old),
- * pass USE_OPENROUTER_DIRECT=1 so the container skips Anthropic entirely.
- * When the flag is stale (>= 4h), let the container try Anthropic normally —
- * if Anthropic works again the agent-runner will clear the flag.
  */
 function readSecrets(groupFolder: string): Record<string, string> {
   const secrets = readEnvFile([
@@ -233,22 +235,6 @@ function readSecrets(groupFolder: string): Record<string, string> {
     fs.writeFileSync(path.join(ipcDir, 'secrets-manifest.json'), JSON.stringify(manifest, null, 2));
   } catch (err) {
     logger.warn({ err }, 'Failed to load stored secrets');
-  }
-
-  const flagPath = path.join(GROUPS_DIR, 'main', '.openrouter_mode');
-  if (fs.existsSync(flagPath)) {
-    try {
-      const flag = JSON.parse(fs.readFileSync(flagPath, 'utf-8'));
-      const ageHours = (Date.now() - new Date(flag.since).getTime()) / 3_600_000;
-      if (ageHours < 4 && secrets.OPENROUTER_API_KEY) {
-        logger.info({ ageHours: ageHours.toFixed(1), reason: flag.reason }, 'OpenRouter direct mode active');
-        secrets.USE_OPENROUTER_DIRECT = '1';
-      } else {
-        logger.info({ ageHours: ageHours.toFixed(1) }, 'OpenRouter flag stale — retrying Anthropic');
-      }
-    } catch {
-      // Corrupt flag — ignore
-    }
   }
 
   return secrets;
@@ -341,7 +327,7 @@ export async function runContainerAgent(
     let stderrTruncated = false;
 
     // Pass secrets via stdin (never written to disk or mounted as files)
-    input.secrets = readSecrets(input.groupFolder);
+    input.secrets = readSecrets(group.folder);
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
     // Remove secrets from input so they don't appear in logs
