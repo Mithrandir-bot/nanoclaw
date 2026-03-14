@@ -34,6 +34,36 @@ export class GroupQueue {
   private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null =
     null;
   private shuttingDown = false;
+  private stateFilePath = path.join(DATA_DIR, 'queue-state.json');
+
+  /** Write a snapshot of queue state so the dashboard can read real-time activity. */
+  private writeStateSnapshot(): void {
+    try {
+      const snapshot: Record<string, {
+        active: boolean;
+        isTaskContainer: boolean;
+        runningTaskId: string | null;
+        containerName: string | null;
+        groupFolder: string | null;
+        pendingTaskCount: number;
+        pendingMessages: boolean;
+      }> = {};
+      for (const [jid, state] of this.groups) {
+        snapshot[jid] = {
+          active: state.active,
+          isTaskContainer: state.isTaskContainer,
+          runningTaskId: state.runningTaskId,
+          containerName: state.containerName,
+          groupFolder: state.groupFolder,
+          pendingTaskCount: state.pendingTasks.length,
+          pendingMessages: state.pendingMessages,
+        };
+      }
+      fs.writeFileSync(this.stateFilePath, JSON.stringify({ ts: Date.now(), groups: snapshot }));
+    } catch {
+      // Non-critical — dashboard will fall back to docker ps heuristic
+    }
+  }
 
   private getGroup(groupJid: string): GroupState {
     let state = this.groups.get(groupJid);
@@ -57,6 +87,8 @@ export class GroupQueue {
 
   setProcessMessagesFn(fn: (groupJid: string) => Promise<boolean>): void {
     this.processMessagesFn = fn;
+    // Write clean baseline so dashboard doesn't see stale state from previous process
+    this.writeStateSnapshot();
   }
 
   enqueueMessageCheck(groupJid: string): void {
@@ -139,6 +171,7 @@ export class GroupQueue {
     state.process = proc;
     state.containerName = containerName;
     if (groupFolder) state.groupFolder = groupFolder;
+    this.writeStateSnapshot();
   }
 
   /**
@@ -203,6 +236,7 @@ export class GroupQueue {
     state.isTaskContainer = false;
     state.pendingMessages = false;
     this.activeCount++;
+    this.writeStateSnapshot();
 
     logger.debug(
       { groupJid, reason, activeCount: this.activeCount },
@@ -227,6 +261,7 @@ export class GroupQueue {
       state.containerName = null;
       state.groupFolder = null;
       this.activeCount--;
+      this.writeStateSnapshot();
       this.drainGroup(groupJid);
     }
   }
@@ -238,6 +273,7 @@ export class GroupQueue {
     state.isTaskContainer = true;
     state.runningTaskId = task.id;
     this.activeCount++;
+    this.writeStateSnapshot();
 
     logger.debug(
       { groupJid, taskId: task.id, activeCount: this.activeCount },
@@ -256,6 +292,7 @@ export class GroupQueue {
       state.containerName = null;
       state.groupFolder = null;
       this.activeCount--;
+      this.writeStateSnapshot();
       this.drainGroup(groupJid);
     }
   }

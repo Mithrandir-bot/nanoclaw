@@ -29,6 +29,9 @@ config.json
 # Backup files
 *.bak
 
+# Temp files
+.tmp-*
+
 # OS
 .DS_Store
 

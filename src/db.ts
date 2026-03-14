@@ -66,6 +66,17 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_task_run_logs ON task_run_logs(task_id, run_at);
 
+    CREATE TABLE IF NOT EXISTS task_comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id TEXT NOT NULL,
+      sender TEXT NOT NULL,
+      message TEXT NOT NULL,
+      severity TEXT DEFAULT 'info',
+      read INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);
+
     CREATE TABLE IF NOT EXISTS router_state (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -148,6 +159,53 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* columns already exist */
   }
+
+  // Add cost tracking columns to task_run_logs
+  try {
+    database.exec(`ALTER TABLE task_run_logs ADD COLUMN cost_usd REAL DEFAULT 0`);
+    database.exec(`ALTER TABLE task_run_logs ADD COLUMN input_tokens INTEGER DEFAULT 0`);
+    database.exec(`ALTER TABLE task_run_logs ADD COLUMN output_tokens INTEGER DEFAULT 0`);
+  } catch {
+    /* columns already exist */
+  }
+
+  // Add Discord thread_id to scheduled_tasks for thread ↔ discussion sync
+  try {
+    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN thread_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
+  // Pending thread messages: dashboard writes here, main process polls and sends to Discord
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS pending_thread_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      thread_id TEXT NOT NULL,
+      sender TEXT NOT NULL,
+      message TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  // Project → Discord thread mapping
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS project_threads (
+      project_file TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL
+    )
+  `);
+
+  // Cross-group IPC sends: tracks when one agent sends a message to another group's channel
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS cross_group_sends (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source_group TEXT NOT NULL,
+      target_jid TEXT NOT NULL,
+      target_group TEXT NOT NULL,
+      timestamp TEXT NOT NULL
+    )
+  `);
+  database.exec(`CREATE INDEX IF NOT EXISTS idx_cgs_timestamp ON cross_group_sends(timestamp)`);
 }
 
 export function initDatabase(): void {
@@ -468,22 +526,25 @@ export function updateTaskAfterRun(
   id: string,
   nextRun: string | null,
   lastResult: string,
+  statusOverride?: string,
 ): void {
   const now = new Date().toISOString();
-  db.prepare(
-    `
-    UPDATE scheduled_tasks
-    SET next_run = ?, last_run = ?, last_result = ?, status = CASE WHEN ? IS NULL THEN 'completed' ELSE status END
-    WHERE id = ?
-  `,
-  ).run(nextRun, now, lastResult, nextRun, id);
+  if (statusOverride) {
+    db.prepare(
+      `UPDATE scheduled_tasks SET next_run = ?, last_run = ?, last_result = ?, status = ? WHERE id = ?`,
+    ).run(nextRun, now, lastResult, statusOverride, id);
+  } else {
+    db.prepare(
+      `UPDATE scheduled_tasks SET next_run = ?, last_run = ?, last_result = ?, status = CASE WHEN ? IS NULL THEN 'completed' ELSE status END WHERE id = ?`,
+    ).run(nextRun, now, lastResult, nextRun, id);
+  }
 }
 
 export function logTaskRun(log: TaskRunLog): void {
   db.prepare(
     `
-    INSERT INTO task_run_logs (task_id, run_at, duration_ms, status, result, error)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO task_run_logs (task_id, run_at, duration_ms, status, result, error, cost_usd, input_tokens, output_tokens)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     log.task_id,
@@ -492,7 +553,101 @@ export function logTaskRun(log: TaskRunLog): void {
     log.status,
     log.result,
     log.error,
+    log.cost_usd || 0,
+    log.input_tokens || 0,
+    log.output_tokens || 0,
   );
+}
+
+// --- Task comments ---
+
+export function addTaskComment(
+  taskId: string,
+  sender: string,
+  message: string,
+  severity: string = 'info',
+): void {
+  db.prepare(
+    `INSERT INTO task_comments (task_id, sender, message, severity, read, created_at)
+     VALUES (?, ?, ?, ?, 0, ?)`,
+  ).run(taskId, sender, message, severity, new Date().toISOString());
+}
+
+export function getTaskComments(
+  taskId: string,
+): Array<{ id: number; sender: string; message: string; severity: string; read: number; created_at: string }> {
+  return db.prepare(
+    'SELECT id, sender, message, severity, read, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at ASC',
+  ).all(taskId) as Array<{ id: number; sender: string; message: string; severity: string; read: number; created_at: string }>;
+}
+
+export function getUnreadCommentCounts(): Record<string, number> {
+  const rows = db.prepare(
+    'SELECT task_id, COUNT(*) as cnt FROM task_comments WHERE read = 0 GROUP BY task_id',
+  ).all() as Array<{ task_id: string; cnt: number }>;
+  const result: Record<string, number> = {};
+  for (const r of rows) result[r.task_id] = r.cnt;
+  return result;
+}
+
+export function markCommentsRead(taskId: string): void {
+  db.prepare('UPDATE task_comments SET read = 1 WHERE task_id = ? AND read = 0').run(taskId);
+}
+
+// --- Task thread helpers ---
+
+export function setTaskThreadId(taskId: string, threadId: string): void {
+  db.prepare('UPDATE scheduled_tasks SET thread_id = ? WHERE id = ?').run(threadId, taskId);
+}
+
+export function getTaskThreadId(taskId: string): string | null {
+  const row = db.prepare('SELECT thread_id FROM scheduled_tasks WHERE id = ?').get(taskId) as { thread_id: string | null } | undefined;
+  return row?.thread_id ?? null;
+}
+
+export function getTaskByThreadId(threadId: string): ScheduledTask | undefined {
+  return db.prepare('SELECT * FROM scheduled_tasks WHERE thread_id = ?').get(threadId) as ScheduledTask | undefined;
+}
+
+// --- Project thread helpers ---
+
+export function setProjectThreadId(projectFile: string, threadId: string): void {
+  db.prepare('INSERT OR REPLACE INTO project_threads (project_file, thread_id) VALUES (?, ?)').run(projectFile, threadId);
+}
+
+export function getProjectThreadId(projectFile: string): string | null {
+  const row = db.prepare('SELECT thread_id FROM project_threads WHERE project_file = ?').get(projectFile) as { thread_id: string } | undefined;
+  return row?.thread_id ?? null;
+}
+
+export function getAllProjectThreads(): Array<{ project_file: string; thread_id: string }> {
+  return db.prepare('SELECT project_file, thread_id FROM project_threads').all() as Array<{ project_file: string; thread_id: string }>;
+}
+
+export function getProjectByThreadId(threadId: string): string | null {
+  const row = db.prepare('SELECT project_file FROM project_threads WHERE thread_id = ?').get(threadId) as { project_file: string } | undefined;
+  return row?.project_file ?? null;
+}
+
+export function logCrossGroupSend(sourceGroup: string, targetJid: string, targetGroup: string): void {
+  db.prepare(
+    'INSERT INTO cross_group_sends (source_group, target_jid, target_group, timestamp) VALUES (?, ?, ?, ?)',
+  ).run(sourceGroup, targetJid, targetGroup, new Date().toISOString());
+}
+
+export function queueThreadMessage(threadId: string, sender: string, message: string): void {
+  db.prepare(
+    'INSERT INTO pending_thread_messages (thread_id, sender, message, created_at) VALUES (?, ?, ?, ?)',
+  ).run(threadId, sender, message, new Date().toISOString());
+}
+
+export function drainPendingThreadMessages(limit = 50): Array<{ id: number; thread_id: string; sender: string; message: string }> {
+  const rows = db.prepare(`SELECT id, thread_id, sender, message FROM pending_thread_messages ORDER BY id ASC LIMIT ${limit}`).all() as Array<{ id: number; thread_id: string; sender: string; message: string }>;
+  if (rows.length > 0) {
+    const ids = rows.map(r => r.id);
+    db.prepare(`DELETE FROM pending_thread_messages WHERE id IN (${ids.join(',')})`).run();
+  }
+  return rows;
 }
 
 // --- Router state accessors ---

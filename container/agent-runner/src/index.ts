@@ -35,6 +35,13 @@ interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    costUsd: number;
+  };
 }
 
 interface SessionEntry {
@@ -177,6 +184,26 @@ function createPreCompactHook(assistantName?: string): HookCallback {
       fs.writeFileSync(filePath, markdown);
 
       log(`Archived conversation to ${filePath}`);
+
+      // Write RESUME.md with last 10 messages so the next session has context
+      const tail = messages.slice(-10);
+      const now = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+      const resumeLines = [
+        `# RESUME — Context compacted ${now} ET`,
+        '',
+        'The previous context was compacted. Continue from where things left off.',
+        'For older context, check `conversations/` folder or search the Obsidian vault.',
+        '',
+        '## Last conversation excerpt',
+        '',
+      ];
+      for (const msg of tail) {
+        const prefix = msg.role === 'user' ? '**User:**' : '**Agent:**';
+        const truncated = msg.content.length > 500 ? msg.content.slice(0, 500) + '...' : msg.content;
+        resumeLines.push(`${prefix} ${truncated}`, '');
+      }
+      fs.writeFileSync('/workspace/group/RESUME.md', resumeLines.join('\n'));
+      log('Wrote RESUME.md for context compaction');
     } catch (err) {
       log(`Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -190,11 +217,61 @@ function createPreCompactHook(assistantName?: string): HookCallback {
 // be visible to commands Kit runs.
 const SECRET_ENV_VARS = ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
 
+// --- Code Safety Check (PreToolUse on Bash) ---
+// Blocks dangerous shell patterns before execution. Returns a blocked command
+// that prints an error and exits non-zero, so the agent sees the rejection.
+const BLOCKED_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
+  // Destructive filesystem operations
+  { pattern: /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f?\s+\/(?!\w)/, reason: 'Recursive delete on root path' },
+  { pattern: /\brm\s+-[a-zA-Z]*f[a-zA-Z]*r?\s+\/(?!\w)/, reason: 'Recursive delete on root path' },
+  { pattern: /\bmkfs\b/, reason: 'Filesystem format command' },
+  { pattern: /\bdd\b.*\bof=\/dev\//, reason: 'Raw disk write' },
+  // Credential exfiltration
+  { pattern: /\bcurl\b.*\b(ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|OPENROUTER_API_KEY|SECRETS_ENCRYPTION_KEY)\b/, reason: 'Sending credentials to external URL' },
+  { pattern: /\bwget\b.*\b(ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|OPENROUTER_API_KEY|SECRETS_ENCRYPTION_KEY)\b/, reason: 'Sending credentials to external URL' },
+  // Network exfil of env/secrets files
+  { pattern: /\bcurl\b.*-[a-zA-Z]*d\s+@?\/workspace\/project\/\.env/, reason: 'Uploading .env file' },
+  { pattern: /\bcurl\b.*--data.*\/workspace\/project\/\.env/, reason: 'Uploading .env file' },
+  // Destructive git on project (read-only mount, but defense in depth)
+  { pattern: /\bgit\b.*\bpush\b.*--force\b/, reason: 'Force push blocked' },
+  { pattern: /\bgit\b.*\breset\b.*--hard\b/, reason: 'Hard reset blocked' },
+  // Service disruption
+  { pattern: /\bsystemctl\b.*\b(stop|disable|mask)\b.*nanoclaw/, reason: 'Stopping nanoclaw service' },
+  { pattern: /\bkill\b.*-9?\s+1\b/, reason: 'Killing init process' },
+  { pattern: /\bshutdown\b/, reason: 'System shutdown' },
+  { pattern: /\breboot\b/, reason: 'System reboot' },
+  // Crypto/wallet private key extraction
+  { pattern: /\bcat\b.*private[_-]?key/, reason: 'Reading private key file' },
+  { pattern: /\bcat\b.*\.env\b.*\|\s*curl/, reason: 'Piping env to network' },
+];
+
+function checkCommandSafety(command: string): string | null {
+  const normalized = command.replace(/\\\n/g, ' ');
+  for (const { pattern, reason } of BLOCKED_PATTERNS) {
+    if (pattern.test(normalized)) return reason;
+  }
+  return null;
+}
+
 function createSanitizeBashHook(): HookCallback {
   return async (input, _toolUseId, _context) => {
     const preInput = input as PreToolUseHookInput;
     const command = (preInput.tool_input as { command?: string })?.command;
     if (!command) return {};
+
+    // Safety check — block dangerous commands
+    const blocked = checkCommandSafety(command);
+    if (blocked) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          updatedInput: {
+            ...(preInput.tool_input as Record<string, unknown>),
+            command: `echo "SAFETY BLOCKED: ${blocked}. Original command was rejected by the code safety hook." >&2; exit 1`,
+          },
+        },
+      };
+    }
 
     const unsetPrefix = `unset ${SECRET_ENV_VARS.join(' ')} 2>/dev/null; `;
     return {
@@ -354,6 +431,14 @@ function waitForIpcMessage(): Promise<string | null> {
  * allowing agent teams subagents to run to completion.
  * Also pipes IPC messages into the stream during the query.
  */
+/**
+ * Estimate API cost from token counts (Opus 4.6 pricing as of 2026-03).
+ * Opus: $15/MTok input, $75/MTok output, $1.875/MTok cache read, $18.75/MTok cache write
+ */
+function estimateCost(inputTokens: number, outputTokens: number, cacheRead: number, cacheWrite: number): number {
+  return (inputTokens * 15 + outputTokens * 75 + cacheRead * 1.875 + cacheWrite * 18.75) / 1_000_000;
+}
+
 async function runQuery(
   prompt: string,
   sessionId: string | undefined,
@@ -364,6 +449,13 @@ async function runQuery(
 ): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
   const stream = new MessageStream();
   stream.push(prompt);
+
+  // Token usage tracking
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
+  let totalCostUsd = 0;
 
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;
@@ -417,6 +509,7 @@ async function runQuery(
   for await (const message of query({
     prompt: stream,
     options: {
+      model: process.env.CLAUDE_MODEL || 'claude-opus-4-6',
       cwd: '/workspace/group',
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
@@ -463,6 +556,18 @@ async function runQuery(
       lastAssistantUuid = (message as { uuid: string }).uuid;
     }
 
+    // Track token usage from assistant messages
+    if (message.type === 'assistant') {
+      const msg = message as any;
+      if (msg.message?.usage) {
+        const u = msg.message.usage;
+        totalInputTokens += u.input_tokens || 0;
+        totalOutputTokens += u.output_tokens || 0;
+        cacheReadTokens += u.cache_read_input_tokens || 0;
+        cacheWriteTokens += u.cache_creation_input_tokens || 0;
+      }
+    }
+
     if (message.type === 'system' && message.subtype === 'init') {
       newSessionId = message.session_id;
       log(`Session initialized: ${newSessionId}`);
@@ -476,17 +581,41 @@ async function runQuery(
     if (message.type === 'result') {
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
-      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+      // Check for cost_usd in result message
+      const resultMsg = message as any;
+      const costUsd = resultMsg.cost_usd || resultMsg.total_cost_usd || 0;
+      if (costUsd) totalCostUsd = costUsd;
+
+      // Detect API-level errors returned as results — surface as errors
+      // so the orchestrator can retry instead of forwarding the error to the user
+      const isApiTimeout = textResult === 'Request timed out';
+      const isRateLimit = textResult?.includes('Rate limit') || textResult?.includes('rate limit') || textResult?.includes('rate_limit');
+      const isRetryableError = isApiTimeout || isRateLimit;
+      if (isRetryableError) {
+        log(`Result #${resultCount}: Retryable API error detected: ${textResult} (subtype=${message.subtype})`);
+      } else {
+        log(`Result #${resultCount}: subtype=${message.subtype} cost=$${totalCostUsd.toFixed(4)} tokens=${totalInputTokens}in/${totalOutputTokens}out${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+      }
       writeOutput({
-        status: 'success',
-        result: textResult || null,
-        newSessionId
+        status: isRetryableError ? 'error' : 'success',
+        result: isRetryableError ? null : (textResult || null),
+        newSessionId,
+        error: isApiTimeout ? 'API request timed out (session may be too large)'
+          : isRateLimit ? 'API rate limit reached, will retry'
+          : undefined,
+        usage: {
+          inputTokens: totalInputTokens,
+          outputTokens: totalOutputTokens,
+          cacheReadTokens,
+          cacheWriteTokens,
+          costUsd: totalCostUsd || estimateCost(totalInputTokens, totalOutputTokens, cacheReadTokens, cacheWriteTokens),
+        },
       });
     }
   }
 
   ipcPolling = false;
-  log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
+  log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}, cost=$${totalCostUsd.toFixed(4)}, tokens=${totalInputTokens}in/${totalOutputTokens}out`);
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
 
@@ -518,7 +647,7 @@ async function main(): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
-  let sessionId = containerInput.sessionId;
+  let sessionId = containerInput.sessionId || undefined; // treat empty string as no session
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
   // Clean up stale _close sentinel from previous container runs

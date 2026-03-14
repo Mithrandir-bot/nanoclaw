@@ -9,10 +9,14 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
+  addTaskComment,
   getAllTasks,
   getDueTasks,
   getTaskById,
+  getTaskComments,
+  getTaskThreadId,
   logTaskRun,
+  setTaskThreadId,
   updateTask,
   updateTaskAfterRun,
 } from './db.js';
@@ -20,6 +24,32 @@ import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
+
+/** Derive a human-readable task title from the prompt (mirrors dashboard taskTitle). */
+export function taskTitle(prompt: string): string {
+  if (!prompt) return 'Untitled Task';
+  let t = prompt;
+  const roleMatch = t.match(/^You are (?:a |the )([^.]+)\./i);
+  const roleName = roleMatch ? roleMatch[1].trim() : null;
+  t = t.replace(/^You are (?:a |the )[^.]+\.\s*/i, '');
+  t = t.replace(/^Your (?:job|task) is to\s*/i, '');
+  const firstLine = t.split('\n')[0].trim();
+  if (!firstLine && roleName) return roleName;
+  const firstSentence = firstLine.split(/\.\s/)[0];
+  let title = (firstSentence.length < 80 ? firstSentence : firstLine.substring(0, 60)).replace(/\.$/, '');
+  if (title.length > 0) title = title[0].toUpperCase() + title.slice(1);
+  return title || roleName || 'Untitled Task';
+}
+
+/** Check if a task is a daily cron (fires once every day, not weekly/monthly). */
+function isDailyCron(task: ScheduledTask): boolean {
+  if (task.schedule_type !== 'cron') return false;
+  const parts = task.schedule_value.trim().split(/\s+/);
+  if (parts.length < 5) return false;
+  // A daily cron has * (or */1) for day-of-month (idx 2), month (idx 3), and day-of-week (idx 4)
+  const isWild = (s: string) => s === '*' || s === '*/1';
+  return isWild(parts[2]) && isWild(parts[3]) && isWild(parts[4]);
+}
 
 /**
  * Compute the next run time for a recurring task, anchored to the
@@ -73,6 +103,10 @@ export interface SchedulerDependencies {
     groupFolder: string,
   ) => void;
   sendMessage: (jid: string, text: string) => Promise<void>;
+  /** Create a Discord thread for a task. Returns thread ID or null. */
+  createTaskThread?: (jid: string, threadName: string) => Promise<string | null>;
+  /** Send a message to a specific Discord thread. */
+  sendToThread?: (threadId: string, text: string) => Promise<void>;
 }
 
 async function runTask(
@@ -146,8 +180,35 @@ async function runTask(
     })),
   );
 
+  // Create Discord thread for this task if it doesn't have one yet
+  let threadId = getTaskThreadId(task.id);
+  if (!threadId && task.chat_jid.startsWith('dc:') && deps.createTaskThread) {
+    const title = taskTitle(task.prompt);
+    threadId = await deps.createTaskThread(task.chat_jid, title);
+    if (threadId) {
+      setTaskThreadId(task.id, threadId);
+      logger.info({ taskId: task.id, threadId, title }, 'Created Discord thread for task');
+    }
+  }
+
   let result: string | null = null;
   let error: string | null = null;
+
+  // Append unread user comments to the prompt so the agent sees follow-up instructions
+  let prompt = task.prompt;
+  const comments = getTaskComments(task.id);
+  const unreadUserComments = comments.filter(
+    (c) => c.sender !== 'agent' && !c.read,
+  );
+  if (unreadUserComments.length > 0) {
+    const thread = unreadUserComments
+      .map(
+        (c) =>
+          `[${c.sender} at ${c.created_at}]: ${c.message}`,
+      )
+      .join('\n');
+    prompt += `\n\n---\nUser follow-up comments on this task:\n${thread}`;
+  }
 
   // For group context mode, use the group's current session
   const sessions = deps.getSessions();
@@ -168,11 +229,15 @@ async function runTask(
     }, TASK_CLOSE_DELAY_MS);
   };
 
+  let costUsd = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
+
   try {
     const output = await runContainerAgent(
       group,
       {
-        prompt: task.prompt,
+        prompt,
         sessionId,
         groupFolder: task.group_folder,
         chatJid: task.chat_jid,
@@ -185,9 +250,18 @@ async function runTask(
       async (streamedOutput: ContainerOutput) => {
         if (streamedOutput.result) {
           result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
+          // Forward result to user channel
           await deps.sendMessage(task.chat_jid, streamedOutput.result);
+          // Also forward to task's Discord thread if it exists
+          if (threadId && deps.sendToThread) {
+            await deps.sendToThread(threadId, streamedOutput.result);
+          }
           scheduleClose();
+        }
+        if (streamedOutput.usage) {
+          costUsd = streamedOutput.usage.costUsd;
+          inputTokens = streamedOutput.usage.inputTokens;
+          outputTokens = streamedOutput.usage.outputTokens;
         }
         if (streamedOutput.status === 'success') {
           deps.queue.notifyIdle(task.chat_jid);
@@ -203,12 +277,18 @@ async function runTask(
     if (output.status === 'error') {
       error = output.error || 'Unknown error';
     } else if (output.result) {
-      // Messages are sent via MCP tool (IPC), result text is just logged
+      // Result was already forwarded to the user via the streaming callback above
       result = output.result;
+    }
+    // Capture usage from final output too
+    if (output.usage) {
+      costUsd = output.usage.costUsd;
+      inputTokens = output.usage.inputTokens;
+      outputTokens = output.usage.outputTokens;
     }
 
     logger.info(
-      { taskId: task.id, durationMs: Date.now() - startTime },
+      { taskId: task.id, durationMs: Date.now() - startTime, costUsd, inputTokens, outputTokens },
       'Task completed',
     );
   } catch (err) {
@@ -226,14 +306,59 @@ async function runTask(
     status: error ? 'error' : 'success',
     result,
     error,
+    cost_usd: costUsd,
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
   });
 
-  const nextRun = computeNextRun(task);
+  // Auto-detect questions/blockers in task output and flag for review
+  const finalResult = result;
+  if (finalResult && !error) {
+    const questionPatterns = [
+      /\?\s*$/m,                          // ends with ?
+      /(?:need|require|waiting for)\s+(?:your|user|human)\s+(?:input|feedback|decision|approval)/i,
+      /(?:please|could you|can you)\s+(?:confirm|clarify|provide|specify|let me know)/i,
+      /(?:blocked|cannot proceed|unable to continue)/i,
+      /(?:which|what|how|should I)\s+.{5,}\?/i,
+    ];
+    const hasQuestion = questionPatterns.some(p => p.test(finalResult));
+    if (hasQuestion) {
+      // Extract the question lines
+      const questionLines = finalResult.split('\n')
+        .filter(l => l.trim().endsWith('?') || /(?:need|blocked|please|confirm|clarify)/i.test(l))
+        .slice(0, 3)
+        .map(l => l.trim())
+        .join('\n');
+      const questionText = questionLines || finalResult.slice(0, 300);
+      addTaskComment(task.id, 'agent', questionText, 'question');
+      logger.info({ taskId: task.id }, 'Auto-detected question in task output, flagged for review');
+    }
+  }
+
+  let nextRun = computeNextRun(task);
   const resultSummary = error
     ? `Error: ${error}`
     : result
       ? result.slice(0, 200)
       : 'Completed';
+
+  // One-off tasks should NEVER auto-complete. They go to 'needs_review'
+  // so the user can explicitly mark them done via the dashboard.
+  // Only recurring tasks auto-advance via computeNextRun.
+  if (nextRun === null && task.schedule_type === 'once') {
+    logger.info({ taskId: task.id }, 'One-off task run finished, moving to review (not auto-completing)');
+    updateTaskAfterRun(task.id, null, resultSummary, 'needs_review');
+    return;
+  }
+
+  // Daily cron tasks auto-complete on success (they ran today, done).
+  // Non-daily recurring tasks (weekly, interval, etc.) stay active.
+  if (!error && isDailyCron(task)) {
+    logger.info({ taskId: task.id }, 'Daily task succeeded, auto-completing');
+    updateTaskAfterRun(task.id, null, resultSummary, 'completed');
+    return;
+  }
+
   updateTaskAfterRun(task.id, nextRun, resultSummary);
 }
 

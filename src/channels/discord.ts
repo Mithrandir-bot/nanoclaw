@@ -2,11 +2,13 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChannelType,
   Client,
   Events,
   GatewayIntentBits,
   Message,
   TextChannel,
+  ThreadAutoArchiveDuration,
   ThreadChannel,
 } from 'discord.js';
 
@@ -31,11 +33,18 @@ export type ApprovalCallback = (
   messageId: string,
 ) => void;
 
+export type TaskThreadMessageCallback = (
+  threadId: string,
+  sender: string,
+  message: string,
+) => void;
+
 export interface DiscordChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
   registeredGroups: () => Record<string, RegisteredGroup>;
   onApproval?: ApprovalCallback;
+  onTaskThreadMessage?: TaskThreadMessageCallback;
 }
 
 function downloadBuffer(url: string): Promise<Buffer> {
@@ -62,6 +71,8 @@ export class DiscordChannel implements Channel {
   private botToken: string;
   /** Maps parent channelId → threadId for routing replies into threads */
   private activeThreads = new Map<string, string>();
+  /** Set of thread IDs that are task threads (for routing messages to task_comments) */
+  private taskThreadIds = new Set<string>();
 
   constructor(botToken: string, opts: DiscordChannelOpts) {
     this.botToken = botToken;
@@ -81,6 +92,15 @@ export class DiscordChannel implements Channel {
     this.client.on(Events.MessageCreate, async (message: Message) => {
       // Ignore bot messages (including own)
       if (message.author.bot) return;
+
+      // Task thread sync: if message is in a known task thread, route to task_comments
+      if (message.channel.isThread() && this.taskThreadIds.has(message.channelId)) {
+        const senderName = message.member?.displayName || message.author.displayName || message.author.username;
+        if (this.opts.onTaskThreadMessage) {
+          this.opts.onTaskThreadMessage(message.channelId, senderName, message.content);
+        }
+        return; // Don't process as a normal message
+      }
 
       // Thread support: if message is in a thread, resolve to parent channel
       // so it matches the registered group, but track the thread for replies
@@ -283,10 +303,109 @@ export class DiscordChannel implements Channel {
           `  Use /chatid command or check channel IDs in Discord settings\n`,
         );
         resolve();
+
+        // Backfill missed messages: fetch recent messages from registered channels
+        // that arrived while the bot was offline (e.g. during restart)
+        this.backfillMissedMessages(readyClient).catch(err =>
+          logger.warn({ err }, 'Discord backfill failed'),
+        );
       });
 
       this.client!.login(this.botToken);
     });
+  }
+
+  /**
+   * Fetch recent messages from all registered Discord channels and store any
+   * that arrived while the bot was offline (e.g. during a restart).
+   */
+  private async backfillMissedMessages(readyClient: Client<true>): Promise<void> {
+    const groups = this.opts.registeredGroups();
+    let backfilled = 0;
+
+    for (const [jid, group] of Object.entries(groups)) {
+      const channelId = jid.replace(/^dc:/, '');
+      try {
+        const channel = await readyClient.channels.fetch(channelId);
+        if (!channel || !('messages' in channel)) continue;
+
+        const textChannel = channel as TextChannel;
+        // Fetch last 20 messages — enough to cover a short restart window
+        const messages = await textChannel.messages.fetch({ limit: 20 });
+
+        for (const msg of messages.values()) {
+          if (msg.author.bot) continue;
+
+          const senderName = msg.member?.displayName || msg.author.displayName || msg.author.username;
+          let content = msg.content;
+
+          // Translate @bot mentions same as live handler
+          if (readyClient.user) {
+            const botId = readyClient.user.id;
+            const isBotMentioned =
+              msg.mentions.users.has(botId) ||
+              content.includes(`<@${botId}>`) ||
+              content.includes(`<@!${botId}>`);
+            if (isBotMentioned) {
+              content = content.replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim();
+              if (!TRIGGER_PATTERN.test(content)) {
+                content = `@${ASSISTANT_NAME} ${content}`;
+              }
+            }
+          }
+
+          // Handle attachments during backfill (same logic as live handler)
+          if (msg.attachments.size > 0 && group.folder) {
+            const descriptions: string[] = [];
+            for (const att of msg.attachments.values()) {
+              if (!att.url || (att.size ?? 0) > 50_000_000) {
+                descriptions.push(`[File too large to download: ${att.name || 'file'}]`);
+                continue;
+              }
+              try {
+                const buf = await downloadBuffer(att.url);
+                const safeName = (att.name || `upload-${Date.now()}`)
+                  .replace(/[^a-zA-Z0-9._-]/g, '_');
+                const uploadsDir = path.join(GROUPS_DIR, group.folder, 'uploads');
+                fs.mkdirSync(uploadsDir, { recursive: true });
+                const filePath = path.join(uploadsDir, safeName);
+                if (!fs.existsSync(filePath)) {
+                  fs.writeFileSync(filePath, buf);
+                  logger.info({ group: group.folder, file: safeName, bytes: buf.length }, 'Backfill attachment saved');
+                }
+                descriptions.push(`[Uploaded file: /workspace/group/uploads/${safeName}]`);
+              } catch (err) {
+                logger.warn({ url: att.url, err }, 'Failed to download backfill attachment');
+                descriptions.push(`[File: ${att.name || 'file'} — download failed]`);
+              }
+            }
+            if (content) {
+              content = `${content}\n${descriptions.join('\n')}`;
+            } else {
+              content = descriptions.join('\n');
+            }
+          }
+
+          // onMessage uses INSERT OR REPLACE so duplicates are safe
+          this.opts.onMessage(jid, {
+            id: msg.id,
+            chat_jid: jid,
+            sender: msg.author.id,
+            sender_name: senderName,
+            content,
+            timestamp: msg.createdAt.toISOString(),
+            is_from_me: false,
+          });
+          backfilled++;
+        }
+      } catch (err) {
+        logger.debug({ channelId, err }, 'Could not backfill channel');
+      }
+    }
+
+    if (backfilled > 0) {
+      logger.info({ backfilled }, 'Discord backfill complete');
+    }
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
@@ -392,6 +511,71 @@ export class DiscordChannel implements Channel {
     } catch (err) {
       logger.debug({ jid, err }, 'Failed to send Discord typing indicator');
     }
+  }
+
+  /** Create a Discord thread for a task. Returns the thread ID. */
+  async createTaskThread(jid: string, threadName: string): Promise<string | null> {
+    if (!this.client) return null;
+    try {
+      const channelId = jid.replace(/^dc:/, '');
+      const channel = await this.client.channels.fetch(channelId);
+      if (!channel || channel.type !== ChannelType.GuildText) return null;
+
+      const textChannel = channel as TextChannel;
+      // Truncate thread name to Discord's 100-char limit
+      const name = threadName.length > 100 ? threadName.substring(0, 97) + '...' : threadName;
+      const thread = await textChannel.threads.create({
+        name,
+        autoArchiveDuration: ThreadAutoArchiveDuration.OneWeek,
+        reason: 'NanoClaw task thread',
+      });
+      this.taskThreadIds.add(thread.id);
+      logger.info({ jid, threadId: thread.id, name }, 'Task thread created');
+      return thread.id;
+    } catch (err) {
+      logger.error({ jid, err }, 'Failed to create task thread');
+      return null;
+    }
+  }
+
+  /** Send a message to a specific thread by ID */
+  async sendToThread(threadId: string, text: string): Promise<void> {
+    if (!this.client) return;
+    try {
+      const channel = await this.client.channels.fetch(threadId);
+      if (!channel || !('send' in channel)) return;
+
+      const MAX_LENGTH = 2000;
+      if (text.length <= MAX_LENGTH) {
+        await (channel as ThreadChannel).send(text);
+      } else {
+        for (let i = 0; i < text.length; i += MAX_LENGTH) {
+          await (channel as ThreadChannel).send(text.slice(i, i + MAX_LENGTH));
+        }
+      }
+    } catch (err) {
+      logger.error({ threadId, err }, 'Failed to send to task thread');
+    }
+  }
+
+  /** Archive (close) a task thread */
+  async archiveTaskThread(threadId: string): Promise<void> {
+    if (!this.client) return;
+    try {
+      const channel = await this.client.channels.fetch(threadId);
+      if (channel && channel.isThread()) {
+        await (channel as ThreadChannel).setArchived(true);
+        this.taskThreadIds.delete(threadId);
+        logger.info({ threadId }, 'Task thread archived');
+      }
+    } catch (err) {
+      logger.error({ threadId, err }, 'Failed to archive task thread');
+    }
+  }
+
+  /** Register an existing thread ID as a task thread (for reconnection) */
+  registerTaskThread(threadId: string): void {
+    this.taskThreadIds.add(threadId);
   }
 }
 

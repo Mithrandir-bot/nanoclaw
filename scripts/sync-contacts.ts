@@ -27,21 +27,18 @@ const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET!;
 const REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN!;
 
 // "Enriched Data" tab (gid=743094631) — the active user-facing tab
-// Columns A–X (24 total):
+// Columns A–W (23 total):
 //   Identity:     A First Name, B Last Name, C Full Name
 //   Contact:      D Email, E Mobile, F Business Phone, G Secondary Phone,
-//                 H Phone (Verified), I LinkedIn URL, J Twitter URL
+//                 H Secondary Email, I LinkedIn URL, J Twitter URL
 //   Professional: K Company, L Title, M Category, N Tags
-//   Relationship: O Relationship, P Source, Q Priority
-//   Context:      R Location, S Date Added, T Notes
-//   Enrichment:   U Enrichment Status, V Last Enriched, W Enrichment Source,
-//                 X Enrichment Notes
+//   Relationship: O Relationship, P Source
+//   Context:      Q Location, R Date Added, S Notes
+//   Enrichment:   T Enrichment Status, U Last Enriched, V Enrichment Source,
+//                 W Enrichment Notes
+//   Email Valid:  X Email Status, Y Email Status Detail
 const ENRICHED_TAB = 'Enriched Data';
-const SHEET_RANGE = `${ENRICHED_TAB}!A2:X`;
-
-// Minimum row count to consider the sheet "populated". If below this threshold,
-// skip Obsidian→Sheet appends to avoid flooding an empty/in-progress sheet.
-const MIN_SHEET_ROWS = 50;
+const SHEET_RANGE = `${ENRICHED_TAB}!A2:Y`;
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
@@ -88,20 +85,6 @@ async function sheetsGet(token: string, range: string): Promise<string[][]> {
   return res.values || [];
 }
 
-async function sheetsAppend(token: string, rows: string[][]): Promise<void> {
-  const body = JSON.stringify({ values: rows });
-  await httpsRequest({
-    hostname: 'sheets.googleapis.com',
-    path: `/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(ENRICHED_TAB + '!A:X')}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(body),
-    },
-  }, body);
-}
-
 // ── Note parsing ──────────────────────────────────────────────────────────────
 
 interface Contact {
@@ -114,7 +97,7 @@ interface Contact {
   mobile: string;           // E
   phone: string;            // F  Business Phone
   secondaryPhone: string;   // G
-  phoneVerified: string;    // H
+  secondaryEmail: string;   // H
   linkedin: string;         // I
   twitter: string;          // J
   // Professional: K–N
@@ -122,19 +105,21 @@ interface Contact {
   role: string;             // L  Title
   category: string;         // M
   tags: string;             // N
-  // Relationship: O–Q
+  // Relationship: O–P
   relationship: string;     // O
   source: string;           // P
-  priority: string;         // Q
-  // Context: R–T
-  location: string;         // R
-  dateAdded: string;        // S
-  notes: string;            // T
-  // Enrichment: U–X
-  enrichmentStatus: string; // U
-  lastEnrichedDate: string; // V
-  enrichmentSource: string; // W
-  enrichmentNotes: string;  // X
+  // Context: Q–S
+  location: string;         // Q
+  dateAdded: string;        // R
+  notes: string;            // S
+  // Enrichment: T–W
+  enrichmentStatus: string; // T
+  lastEnrichedDate: string; // U
+  enrichmentSource: string; // V
+  enrichmentNotes: string;  // W
+  // Email validation: X–Y
+  emailStatus: string;      // X
+  emailStatusDetail: string; // Y
 }
 
 function parseNote(filePath: string): Contact | null {
@@ -169,7 +154,7 @@ function parseNote(filePath: string): Contact | null {
     mobile: '',
     phone: contactInfo.match(/Phone:\s*(.+)/)?.[1] || '',
     secondaryPhone: '',
-    phoneVerified: '',
+    secondaryEmail: '',
     linkedin: links.match(/LinkedIn:\s*(.+)/)?.[1] || '',
     twitter: links.match(/Twitter\/X:\s*(.+)/)?.[1] || '',
     company: get('Role / Company').split('\n')[0] || '',
@@ -178,7 +163,6 @@ function parseNote(filePath: string): Contact | null {
     tags: frontmatter('tags') || '',
     relationship: frontmatter('relationship'),
     source: frontmatter('source') || 'obsidian',
-    priority: frontmatter('priority'),
     location: frontmatter('location') || (contactInfo.match(/Location:\s*(.+)/)?.[1] || ''),
     dateAdded: frontmatter('date-added') || new Date().toISOString().slice(0, 10),
     notes: get('Notes') || get('Notes from HubSpot') || '',
@@ -186,6 +170,8 @@ function parseNote(filePath: string): Contact | null {
     lastEnrichedDate: '',
     enrichmentSource: '',
     enrichmentNotes: get('Enrichment Notes') || '',
+    emailStatus: '',
+    emailStatusDetail: '',
   };
 }
 
@@ -193,27 +179,29 @@ function contactToRow(c: Contact): string[] {
   return [
     c.firstName, c.lastName, c.fullName,
     c.email, c.mobile, c.phone, c.secondaryPhone,
-    c.phoneVerified, c.linkedin, c.twitter,
+    c.secondaryEmail, c.linkedin, c.twitter,
     c.company, c.role, c.category, c.tags,
-    c.relationship, c.source, c.priority,
+    c.relationship, c.source,
     c.location, c.dateAdded, c.notes,
     c.enrichmentStatus, c.lastEnrichedDate, c.enrichmentSource,
     c.enrichmentNotes,
+    c.emailStatus, c.emailStatusDetail,
   ];
 }
 
 function rowToContact(row: string[]): Contact {
   const pad = (arr: string[], len: number) => [...arr, ...Array(len).fill('')].slice(0, len);
-  const r = pad(row, 24);
+  const r = pad(row, 25);
   return {
     firstName: r[0], lastName: r[1], fullName: r[2],
     email: r[3], mobile: r[4], phone: r[5], secondaryPhone: r[6],
-    phoneVerified: r[7], linkedin: r[8], twitter: r[9],
+    secondaryEmail: r[7], linkedin: r[8], twitter: r[9],
     company: r[10], role: r[11], category: r[12], tags: r[13],
-    relationship: r[14], source: r[15], priority: r[16],
-    location: r[17], dateAdded: r[18], notes: r[19],
-    enrichmentStatus: r[20], lastEnrichedDate: r[21], enrichmentSource: r[22],
-    enrichmentNotes: r[23],
+    relationship: r[14], source: r[15],
+    location: r[16], dateAdded: r[17], notes: r[18],
+    enrichmentStatus: r[19], lastEnrichedDate: r[20], enrichmentSource: r[21],
+    enrichmentNotes: r[22],
+    emailStatus: r[23], emailStatusDetail: r[24],
   };
 }
 
@@ -225,13 +213,30 @@ function tagsToObsidian(tags: string): string[] {
     .filter(Boolean);
 }
 
-/** Build a safe filename slug from a contact. Uses fullName, falls back to firstName + lastName. */
+/** Build a safe filename slug from a contact. Uses fullName, falls back to firstName + lastName,
+ *  then email username, then LinkedIn slug. */
 function nameToSlug(c: Contact): string {
   const name = c.fullName?.trim()
     || `${c.firstName || ''} ${c.lastName || ''}`.trim();
-  if (!name) return '';
-  // Remove characters that are invalid in filenames
-  return name.replace(/[/\\:*?"<>|]/g, '').replace(/\s+/g, '-');
+  if (name) {
+    return name.replace(/[/\\:*?"<>|]/g, '').replace(/\s+/g, '-');
+  }
+  // Fall back to email username
+  if (c.email) {
+    const user = c.email.split('@')[0];
+    if (user && user.length >= 2) return user.replace(/[/\\:*?"<>|]/g, '').replace(/[.+]/g, '-');
+  }
+  // Fall back to LinkedIn slug
+  if (c.linkedin) {
+    const match = c.linkedin.match(/linkedin\.com\/in\/([^/?]+)/);
+    if (match && match[1].length >= 2) return match[1].replace(/[/\\:*?"<>|]/g, '');
+  }
+  // Fall back to secondary email
+  if (c.secondaryEmail) {
+    const user = c.secondaryEmail.split('@')[0];
+    if (user && user.length >= 2) return user.replace(/[/\\:*?"<>|]/g, '').replace(/[.+]/g, '-');
+  }
+  return '';
 }
 
 function contactToNote(c: Contact): string {
@@ -241,6 +246,8 @@ function contactToNote(c: Contact): string {
     : 'tags: []';
   const company = c.company || '';
   const title = c.role || '';
+  const displayName = c.fullName || `${c.firstName || ''} ${c.lastName || ''}`.trim()
+    || c.email || c.linkedin || 'Unknown Contact';
   return `---
 type: contact
 category: ${c.category || 'professional'}
@@ -248,19 +255,18 @@ relationship: ${c.relationship || ''}
 source: ${c.source || 'google-sheets'}
 date-added: ${c.dateAdded || new Date().toISOString().slice(0, 10)}
 location: ${c.location || ''}
-priority: ${c.priority || ''}
 ${tagsYaml}
 ---
 
-# ${c.fullName}
+# ${displayName}
 
 ## Role / Company
 ${company}
 ${title}
 
 ## Contact Info
-- Email: ${c.email || ''}
-- Phone: ${c.phone || c.mobile || c.phoneVerified || ''}
+- Email: ${c.email || ''}${c.emailStatus ? ` *(${c.emailStatus})*` : ''}
+- Phone: ${c.phone || c.mobile || c.secondaryPhone || ''}
 - Location: ${c.location || ''}
 
 ## Links
@@ -286,7 +292,7 @@ async function sync() {
   // 1. Read sheet (skip header row)
   console.log('Reading sheet...');
   const rows = await sheetsGet(token, SHEET_RANGE);
-  const sheetContacts = rows.filter(r => r[0]?.trim()).map(rowToContact);
+  const sheetContacts = rows.map(rowToContact);
   console.log(`  ${sheetContacts.length} contacts in sheet`);
 
   // 2. Read obsidian notes
@@ -303,78 +309,72 @@ async function sync() {
     if (altName) sheetNames.add(altName);
   }
 
-  let created = 0, updated = 0, appended = 0;
+  let created = 0, updated = 0, deleted = 0;
 
-  // Sheet → Obsidian: create/update notes for sheet rows
+  // Track all slugs written from the sheet so we know what to keep
+  const sheetSlugs = new Set<string>();
+
+  // Sheet → Obsidian: create/update notes for ALL sheet rows (always overwrite)
   for (const contact of sheetContacts) {
-    const slug = nameToSlug(contact);
-    if (!slug || slug.length < 3) continue; // skip empty/too-short names
+    let slug = nameToSlug(contact);
+    if (!slug || slug.length < 2) continue;
 
-    const notePath = path.join(NETWORK_DIR, `${slug}.md`);
+    // Deduplicate slugs: append email domain or counter if slug already used
+    if (sheetSlugs.has(slug + '.md')) {
+      if (contact.email) {
+        const domain = contact.email.split('@')[1]?.split('.')[0];
+        if (domain) slug = `${slug}-${domain}`;
+      }
+      // If still duplicate, append incrementing counter
+      let base = slug;
+      let n = 2;
+      while (sheetSlugs.has(slug + '.md')) {
+        slug = `${base}-${n++}`;
+      }
+    }
 
-    // Skip filenames that would create subdirectories (e.g., names with /)
+    // Skip filenames that would create subdirectories
     if (slug.includes('/') || slug.includes('\\')) {
       console.warn(`  Skipping invalid slug: ${slug}`);
       continue;
     }
 
+    sheetSlugs.add(slug + '.md');
+    const notePath = path.join(NETWORK_DIR, `${slug}.md`);
     const noteContent = contactToNote(contact);
+    const exists = fs.existsSync(notePath);
 
-    if (!fs.existsSync(notePath)) {
-      try {
-        fs.writeFileSync(notePath, noteContent);
-        console.log(`  Created note: ${slug}.md`);
-        created++;
-      } catch (e: any) {
-        console.warn(`  Failed to create ${slug}.md: ${e.message}`);
-      }
+    fs.writeFileSync(notePath, noteContent);
+    if (!exists) {
+      created++;
     } else {
-      // Update if sheet has more data (notes or enrichment)
-      const existing = fs.readFileSync(notePath, 'utf-8');
-      const hasNewData = (contact.notes && !existing.includes(contact.notes))
-        || (contact.enrichmentNotes && !existing.includes(contact.enrichmentNotes))
-        || (contact.tags && !existing.includes(contact.tags));
-      if (hasNewData) {
-        fs.writeFileSync(notePath, noteContent);
-        console.log(`  Updated note: ${slug}.md`);
-        updated++;
-      }
+      updated++;
     }
   }
 
-  // Obsidian → Sheet: append notes not in sheet
-  // Guard: only append if sheet has a reasonable number of rows.
-  // If sheet appears empty/near-empty, skip to avoid flooding during agent operations.
-  if (sheetContacts.length < MIN_SHEET_ROWS) {
-    console.log(`  Sheet has only ${sheetContacts.length} rows (< ${MIN_SHEET_ROWS}). Skipping Obsidian→Sheet append.`);
-  } else {
-    const toAppend: string[][] = [];
-    for (const file of noteFiles) {
+  console.log(`  Created ${created} new notes, updated ${updated} existing notes`);
+
+  // Delete Obsidian notes that are NOT in the sheet (sheet is source of truth)
+  for (const file of noteFiles) {
+    if (!sheetSlugs.has(file)) {
       const notePath = path.join(NETWORK_DIR, file);
       try {
-        const contact = parseNote(notePath);
-        if (!contact) continue; // skip notes that don't parse to valid contacts
-        if (!sheetNames.has(contact.fullName.toLowerCase().trim())) {
-          toAppend.push(contactToRow(contact));
-          console.log(`  Appending to sheet: ${contact.fullName}`);
-          appended++;
-        }
-      } catch (e) {
-        console.warn(`  Skipping ${file}: ${e}`);
+        fs.unlinkSync(notePath);
+        console.log(`  Deleted orphan: ${file}`);
+        deleted++;
+      } catch (e: any) {
+        console.warn(`  Failed to delete ${file}: ${e.message}`);
       }
-    }
-
-    if (toAppend.length > 0) {
-      await sheetsAppend(token, toAppend);
     }
   }
 
-  console.log(`\nDone. Created ${created} notes, updated ${updated}, appended ${appended} to sheet.`);
+  console.log(`\nDone. Created ${created}, updated ${updated}, deleted ${deleted} orphans.`);
 }
 
 // Load .env if running standalone
 if (!process.env.GOOGLE_CLIENT_ID) {
-  const envPath = path.join(__dirname, '..', '.env');
+  const scriptDir = path.dirname(new URL(import.meta.url).pathname);
+  const envPath = path.join(scriptDir, '..', '.env');
   if (fs.existsSync(envPath)) {
     fs.readFileSync(envPath, 'utf-8').split('\n').forEach(line => {
       const [k, ...v] = line.split('=');

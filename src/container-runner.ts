@@ -47,6 +47,13 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    costUsd: number;
+  };
 }
 
 interface VolumeMount {
@@ -219,6 +226,7 @@ function readSecrets(groupFolder: string): Record<string, string> {
   const secrets = readEnvFile([
     'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY',
     'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REFRESH_TOKEN', 'GOOGLE_MAPS_API_KEY', 'GOOGLE_CONTACTS_SHEET_ID',
+    'GITHUB_TOKEN',
   ]);
 
   // Inject all stored encrypted secrets as env vars (NANOCLAW_SECRET_{NAME})
@@ -396,8 +404,12 @@ export async function runContainerAgent(
       for (const line of lines) {
         if (line) logger.debug({ container: group.folder }, line);
       }
-      // Don't reset timeout on stderr — SDK writes debug logs continuously.
-      // Timeout only resets on actual output (OUTPUT_MARKER in stdout).
+      // Before first output, reset timeout on stderr activity so agents
+      // actively working (API calls, tool use) aren't killed prematurely.
+      // After first output, only reset on output markers (idle detection).
+      if (!hadStreamingOutput) {
+        resetTimeout();
+      }
       if (stderrTruncated) return;
       const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
       if (chunk.length > remaining) {
@@ -421,7 +433,7 @@ export async function runContainerAgent(
 
     const killOnTimeout = () => {
       timedOut = true;
-      logger.error(
+      logger.warn(
         { group: group.name, containerName },
         'Container timeout, stopping gracefully',
       );
@@ -461,6 +473,9 @@ export async function runContainerAgent(
             `Duration: ${duration}ms`,
             `Exit Code: ${code}`,
             `Had Streaming Output: ${hadStreamingOutput}`,
+            ``,
+            `=== STDERR ===`,
+            stderr || '(empty)',
           ].join('\n'),
         );
 

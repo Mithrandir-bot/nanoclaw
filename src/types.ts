@@ -64,8 +64,9 @@ export interface ScheduledTask {
   next_run: string | null;
   last_run: string | null;
   last_result: string | null;
-  status: 'active' | 'paused' | 'completed';
+  status: 'active' | 'paused' | 'completed' | 'needs_review';
   created_at: string;
+  thread_id?: string | null;
 }
 
 export interface TaskRunLog {
@@ -75,6 +76,9 @@ export interface TaskRunLog {
   status: 'success' | 'error';
   result: string | null;
   error: string | null;
+  cost_usd?: number;
+  input_tokens?: number;
+  output_tokens?: number;
 }
 
 // --- Channel abstraction ---

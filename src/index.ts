@@ -3,6 +3,7 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  DATA_DIR,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
   TRIGGER_PATTERN,
@@ -36,6 +37,16 @@ import {
   setSession,
   storeChatMetadata,
   storeMessage,
+  addTaskComment,
+  drainPendingThreadMessages,
+  getAllProjectThreads,
+  getProjectByThreadId,
+  getTaskById,
+  getTaskByThreadId,
+  getTaskThreadId,
+  setProjectThreadId,
+  setTaskThreadId,
+  updateTask,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
@@ -47,7 +58,7 @@ import {
   loadSenderAllowlist,
   shouldDropMessage,
 } from './sender-allowlist.js';
-import { startSchedulerLoop } from './task-scheduler.js';
+import { startSchedulerLoop, taskTitle } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
@@ -65,6 +76,25 @@ const queue = new GroupQueue();
 
 // Cancellers registered by handleMessage so IPC send_message can suppress the ack timer
 const ackCancellers = new Map<string, () => void>();
+
+/** Send a message via the channel AND store it in the DB so the dashboard chat can show it. */
+async function sendAndStore(channel: Channel, jid: string, text: string): Promise<void> {
+  await channel.sendMessage(jid, text);
+  try {
+    storeMessage({
+      id: `bot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      chat_jid: jid,
+      sender: ASSISTANT_NAME,
+      sender_name: ASSISTANT_NAME,
+      content: text.substring(0, 4000),
+      timestamp: new Date().toISOString(),
+      is_from_me: true,
+      is_bot_message: true,
+    } as NewMessage);
+  } catch {
+    // Non-critical — don't break message delivery if DB write fails
+  }
+}
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -230,7 +260,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
       if (text) {
         clearTimeout(ackTimer);
-        await channel.sendMessage(chatJid, text);
+        await sendAndStore(channel, chatJid, text);
         outputSentToUser = true;
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
@@ -255,11 +285,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
     // the user got their response and re-processing would send duplicates.
+    // But DO notify the user that the agent crashed mid-response.
     if (outputSentToUser) {
       logger.warn(
         { group: group.name },
-        'Agent error after output was sent, skipping cursor rollback to prevent duplicates',
+        'Agent error after output was sent, notifying user',
       );
+      try {
+        await sendAndStore(
+          channel,
+          chatJid,
+          '⚠️ Agent crashed mid-response. Reply to retry or the next message will resume from here.',
+        );
+      } catch {
+        // Best-effort notification
+      }
       return true;
     }
     // Roll back cursor so retries can re-process these messages
@@ -275,6 +315,65 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   return true;
 }
 
+// Rotate session if JSONL exceeds this threshold (prevents API timeouts on resume)
+const MAX_SESSION_BYTES = parseInt(process.env.MAX_SESSION_BYTES || '524288', 10); // 512KB
+const RESUME_TAIL_MESSAGES = 10; // number of recent messages to include in RESUME.md
+
+/**
+ * Extract the last N user/assistant text exchanges from a JSONL session file
+ * and write a RESUME.md so the fresh session has context.
+ */
+function writeResumeMd(jsonlPath: string, groupFolder: string): void {
+  try {
+    const content = fs.readFileSync(jsonlPath, 'utf-8');
+    const messages: { role: string; text: string }[] = [];
+
+    for (const line of content.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type === 'user' && entry.message?.content) {
+          const text = typeof entry.message.content === 'string'
+            ? entry.message.content
+            : entry.message.content.map((c: { text?: string }) => c.text || '').join('');
+          if (text) messages.push({ role: 'user', text });
+        } else if (entry.type === 'assistant' && entry.message?.content) {
+          const parts = entry.message.content
+            .filter((c: { type: string }) => c.type === 'text')
+            .map((c: { text: string }) => c.text);
+          if (parts.length > 0) messages.push({ role: 'assistant', text: parts.join('\n') });
+        }
+      } catch { /* skip malformed lines */ }
+    }
+
+    if (messages.length === 0) return;
+
+    const tail = messages.slice(-RESUME_TAIL_MESSAGES);
+    const now = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+    const lines = [
+      `# RESUME — Session rotated ${now} ET`,
+      '',
+      'The previous session was rotated because it grew too large. Continue from where things left off.',
+      'For older context, check `conversations/` folder or search the Obsidian vault.',
+      '',
+      '## Last conversation excerpt',
+      '',
+    ];
+    for (const msg of tail) {
+      const prefix = msg.role === 'user' ? '**User:**' : '**Agent:**';
+      // Truncate long messages to keep RESUME.md concise
+      const truncated = msg.text.length > 500 ? msg.text.slice(0, 500) + '...' : msg.text;
+      lines.push(`${prefix} ${truncated}`, '');
+    }
+
+    const groupDir = resolveGroupFolderPath(groupFolder);
+    fs.writeFileSync(path.join(groupDir, 'RESUME.md'), lines.join('\n'));
+    logger.info({ group: groupFolder }, 'Wrote RESUME.md for session rotation');
+  } catch (err) {
+    logger.warn({ group: groupFolder, err }, 'Failed to write RESUME.md during rotation');
+  }
+}
+
 async function runAgent(
   group: RegisteredGroup,
   prompt: string,
@@ -282,7 +381,38 @@ async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
-  const sessionId = sessions[group.folder];
+  let sessionId = sessions[group.folder];
+
+  // Auto-rotate bloated sessions to avoid API timeouts on resume
+  if (sessionId) {
+    const jsonlPath = path.join(
+      DATA_DIR, 'sessions', group.folder,
+      '.claude', 'projects', '-workspace-group',
+      `${sessionId}.jsonl`,
+    );
+    try {
+      const stat = fs.statSync(jsonlPath);
+      if (stat.size > MAX_SESSION_BYTES) {
+        logger.info(
+          { group: group.name, sessionId, size: stat.size, threshold: MAX_SESSION_BYTES },
+          'Session JSONL exceeds threshold, rotating to fresh session',
+        );
+        writeResumeMd(jsonlPath, group.folder);
+        sessionId = '';
+        sessions[group.folder] = '';
+        setSession(group.folder, '');
+      }
+    } catch {
+      // JSONL doesn't exist (stale session ID) — clear it
+      logger.info(
+        { group: group.name, sessionId },
+        'Session JSONL missing, clearing stale session ID',
+      );
+      sessionId = '';
+      sessions[group.folder] = '';
+      setSession(group.folder, '');
+    }
+  }
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -342,10 +472,19 @@ async function runAgent(
     }
 
     if (output.status === 'error') {
-      logger.error(
-        { group: group.name, error: output.error },
-        'Container agent error',
-      );
+      const isRateLimit = output.error?.includes('rate limit') || output.error?.includes('Rate limit');
+      if (isRateLimit) {
+        logger.warn(
+          { group: group.name, error: output.error },
+          'API rate limit hit, backing off 60s before retry',
+        );
+        await new Promise(r => setTimeout(r, 60_000));
+      } else {
+        logger.error(
+          { group: group.name, error: output.error },
+          'Container agent error',
+        );
+      }
       return 'error';
     }
 
@@ -500,11 +639,7 @@ async function main(): Promise<void> {
   const channelOpts = {
     onMessage: (chatJid: string, msg: NewMessage) => {
       // Sender allowlist drop mode: discard messages from denied senders before storing
-      if (
-        !msg.is_from_me &&
-        !msg.is_bot_message &&
-        registeredGroups[chatJid]
-      ) {
+      if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
         const cfg = loadSenderAllowlist();
         if (
           shouldDropMessage(chatJid, cfg) &&
@@ -529,6 +664,30 @@ async function main(): Promise<void> {
       isGroup?: boolean,
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
+    // Discord thread ↔ task discussion sync: route thread messages to task_comments
+    onTaskThreadMessage: (threadId: string, sender: string, message: string) => {
+      // Check if this thread belongs to a project
+      const projectFile = getProjectByThreadId(threadId);
+      if (projectFile) {
+        addTaskComment(`proj:${projectFile}`, 'user', message, 'info');
+        logger.info({ projectFile, sender, threadId }, 'Discord thread message stored as project comment');
+        return;
+      }
+
+      const task = getTaskByThreadId(threadId);
+      if (!task) {
+        logger.warn({ threadId }, 'Message in unknown task/project thread');
+        return;
+      }
+      addTaskComment(task.id, 'user', message, 'info');
+      // Trigger task re-run when user replies in thread
+      const now = new Date().toISOString();
+      const currentTask = getTaskById(task.id);
+      if (currentTask && (currentTask.status === 'active' || currentTask.status === 'needs_review')) {
+        updateTask(task.id, { next_run: now, status: 'active' });
+      }
+      logger.info({ taskId: task.id, sender, threadId }, 'Discord thread message stored as task comment');
+    },
   };
 
   // Create and connect all registered channels.
@@ -552,6 +711,57 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Find the Discord channel for thread operations
+  const discordChannel = channels.find(ch => ch.name === 'discord') as (Channel & {
+    createTaskThread?: (jid: string, name: string) => Promise<string | null>;
+    sendToThread?: (threadId: string, text: string) => Promise<void>;
+    archiveTaskThread?: (threadId: string) => Promise<void>;
+    registerTaskThread?: (threadId: string) => void;
+  }) | undefined;
+
+  // Register existing task threads so Discord channel routes messages to task_comments
+  if (discordChannel?.registerTaskThread) {
+    const tasks = getAllTasks();
+    for (const t of tasks) {
+      if (t.thread_id) {
+        discordChannel.registerTaskThread(t.thread_id);
+      }
+    }
+    logger.info({ count: tasks.filter(t => t.thread_id).length }, 'Registered existing task threads');
+
+    // Register existing project threads too
+    const projectThreads = getAllProjectThreads();
+    for (const pt of projectThreads) {
+      discordChannel.registerTaskThread(pt.thread_id);
+    }
+    if (projectThreads.length > 0) {
+      logger.info({ count: projectThreads.length }, 'Registered existing project threads');
+    }
+
+    // Create Discord threads for active tasks that don't have one yet
+    if (discordChannel.createTaskThread) {
+      const tasksNeedingThreads = tasks.filter(
+        t => !t.thread_id && (t.status === 'active' || t.status === 'needs_review') && t.chat_jid.startsWith('dc:'),
+      );
+      for (const t of tasksNeedingThreads) {
+        try {
+          const title = taskTitle(t.prompt);
+          const threadId = await discordChannel.createTaskThread(t.chat_jid, title);
+          if (threadId) {
+            setTaskThreadId(t.id, threadId);
+            discordChannel.registerTaskThread!(threadId);
+            logger.info({ taskId: t.id, threadId, title }, 'Created Discord thread for existing task');
+          }
+        } catch (err) {
+          logger.error({ taskId: t.id, err }, 'Failed to create thread for existing task');
+        }
+      }
+      if (tasksNeedingThreads.length > 0) {
+        logger.info({ count: tasksNeedingThreads.length }, 'Created threads for existing tasks');
+      }
+    }
+  }
+
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
     registeredGroups: () => registeredGroups,
@@ -566,16 +776,61 @@ async function main(): Promise<void> {
         return;
       }
       const text = formatOutbound(rawText);
-      if (text) await channel.sendMessage(jid, text);
+      if (text) await sendAndStore(channel, jid, text);
     },
+    createTaskThread: discordChannel?.createTaskThread?.bind(discordChannel),
+    sendToThread: discordChannel?.sendToThread?.bind(discordChannel),
   });
+
+  // Poll for pending thread messages from dashboard → Discord
+  if (discordChannel?.sendToThread) {
+    const pollThreadMessages = async () => {
+      try {
+        const pending = drainPendingThreadMessages(10); // batch limit per poll cycle
+        for (const msg of pending) {
+          // Throttle to avoid Discord rate limits (especially during backfill)
+          if (pending.length > 1) await new Promise(r => setTimeout(r, 1500));
+          if (msg.message === '__ARCHIVE_THREAD__' && discordChannel.archiveTaskThread) {
+            await discordChannel.archiveTaskThread(msg.thread_id);
+          } else if (msg.thread_id.startsWith('__CREATE_PROJECT_THREAD__:')) {
+            // Create a Discord thread for a project, then send the comment
+            const projectFile = msg.thread_id.slice('__CREATE_PROJECT_THREAD__:'.length);
+            const projectName = projectFile.replace('.md', '').replace(/-/g, ' ');
+            if (discordChannel.createTaskThread) {
+              const mainJid = Object.keys(registeredGroups).find(jid => registeredGroups[jid].isMain);
+              if (mainJid) {
+                const threadId = await discordChannel.createTaskThread(mainJid, `📁 ${projectName}`);
+                if (threadId) {
+                  setProjectThreadId(projectFile, threadId);
+                  discordChannel.registerTaskThread!(threadId);
+                  const label = msg.sender === 'user' ? '💬 **You**' : `💬 **${msg.sender}**`;
+                  await discordChannel.sendToThread!(threadId, `${label}: ${msg.message}`);
+                  logger.info({ projectFile, threadId }, 'Created Discord thread for project');
+                }
+              }
+            }
+          } else if (msg.sender === '__raw__' || msg.sender === 'system') {
+            await discordChannel.sendToThread!(msg.thread_id, msg.message);
+          } else {
+            const label = msg.sender === 'user' ? '💬 **You**' : `💬 **${msg.sender}**`;
+            await discordChannel.sendToThread!(msg.thread_id, `${label}: ${msg.message}`);
+          }
+        }
+      } catch (err) {
+        logger.error({ err }, 'Error polling pending thread messages');
+      }
+      setTimeout(pollThreadMessages, 3000);
+    };
+    pollThreadMessages();
+  }
+
   startIpcWatcher({
     sendMessage: (jid, text) => {
       // Cancel the ack timer for this JID — agent already responded via send_message
       ackCancellers.get(jid)?.();
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
+      return sendAndStore(channel, jid, text);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,
@@ -589,6 +844,7 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
+    addTaskComment,
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
