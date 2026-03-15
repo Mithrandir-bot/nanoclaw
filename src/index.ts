@@ -78,7 +78,11 @@ const queue = new GroupQueue();
 const ackCancellers = new Map<string, () => void>();
 
 /** Send a message via the channel AND store it in the DB so the dashboard chat can show it. */
-async function sendAndStore(channel: Channel, jid: string, text: string): Promise<void> {
+async function sendAndStore(
+  channel: Channel,
+  jid: string,
+  text: string,
+): Promise<void> {
   await channel.sendMessage(jid, text);
   try {
     storeMessage({
@@ -246,7 +250,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   }, 8000);
   // Allow IPC send_message to cancel the ack timer (avoids duplicate "On it")
-  ackCancellers.set(chatJid, () => { clearTimeout(ackTimer); outputSentToUser = true; });
+  ackCancellers.set(chatJid, () => {
+    clearTimeout(ackTimer);
+    outputSentToUser = true;
+  });
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
@@ -316,7 +323,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 }
 
 // Rotate session if JSONL exceeds this threshold (prevents API timeouts on resume)
-const MAX_SESSION_BYTES = parseInt(process.env.MAX_SESSION_BYTES || '524288', 10); // 512KB
+const MAX_SESSION_BYTES = parseInt(
+  process.env.MAX_SESSION_BYTES || '524288',
+  10,
+); // 512KB
 const RESUME_TAIL_MESSAGES = 10; // number of recent messages to include in RESUME.md
 
 /**
@@ -333,23 +343,31 @@ function writeResumeMd(jsonlPath: string, groupFolder: string): void {
       try {
         const entry = JSON.parse(line);
         if (entry.type === 'user' && entry.message?.content) {
-          const text = typeof entry.message.content === 'string'
-            ? entry.message.content
-            : entry.message.content.map((c: { text?: string }) => c.text || '').join('');
+          const text =
+            typeof entry.message.content === 'string'
+              ? entry.message.content
+              : entry.message.content
+                  .map((c: { text?: string }) => c.text || '')
+                  .join('');
           if (text) messages.push({ role: 'user', text });
         } else if (entry.type === 'assistant' && entry.message?.content) {
           const parts = entry.message.content
             .filter((c: { type: string }) => c.type === 'text')
             .map((c: { text: string }) => c.text);
-          if (parts.length > 0) messages.push({ role: 'assistant', text: parts.join('\n') });
+          if (parts.length > 0)
+            messages.push({ role: 'assistant', text: parts.join('\n') });
         }
-      } catch { /* skip malformed lines */ }
+      } catch {
+        /* skip malformed lines */
+      }
     }
 
     if (messages.length === 0) return;
 
     const tail = messages.slice(-RESUME_TAIL_MESSAGES);
-    const now = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+    const now = new Date().toLocaleString('en-US', {
+      timeZone: 'America/New_York',
+    });
     const lines = [
       `# RESUME — Session rotated ${now} ET`,
       '',
@@ -362,7 +380,8 @@ function writeResumeMd(jsonlPath: string, groupFolder: string): void {
     for (const msg of tail) {
       const prefix = msg.role === 'user' ? '**User:**' : '**Agent:**';
       // Truncate long messages to keep RESUME.md concise
-      const truncated = msg.text.length > 500 ? msg.text.slice(0, 500) + '...' : msg.text;
+      const truncated =
+        msg.text.length > 500 ? msg.text.slice(0, 500) + '...' : msg.text;
       lines.push(`${prefix} ${truncated}`, '');
     }
 
@@ -370,7 +389,10 @@ function writeResumeMd(jsonlPath: string, groupFolder: string): void {
     fs.writeFileSync(path.join(groupDir, 'RESUME.md'), lines.join('\n'));
     logger.info({ group: groupFolder }, 'Wrote RESUME.md for session rotation');
   } catch (err) {
-    logger.warn({ group: groupFolder, err }, 'Failed to write RESUME.md during rotation');
+    logger.warn(
+      { group: groupFolder, err },
+      'Failed to write RESUME.md during rotation',
+    );
   }
 }
 
@@ -386,15 +408,24 @@ async function runAgent(
   // Auto-rotate bloated sessions to avoid API timeouts on resume
   if (sessionId) {
     const jsonlPath = path.join(
-      DATA_DIR, 'sessions', group.folder,
-      '.claude', 'projects', '-workspace-group',
+      DATA_DIR,
+      'sessions',
+      group.folder,
+      '.claude',
+      'projects',
+      '-workspace-group',
       `${sessionId}.jsonl`,
     );
     try {
       const stat = fs.statSync(jsonlPath);
       if (stat.size > MAX_SESSION_BYTES) {
         logger.info(
-          { group: group.name, sessionId, size: stat.size, threshold: MAX_SESSION_BYTES },
+          {
+            group: group.name,
+            sessionId,
+            size: stat.size,
+            threshold: MAX_SESSION_BYTES,
+          },
           'Session JSONL exceeds threshold, rotating to fresh session',
         );
         writeResumeMd(jsonlPath, group.folder);
@@ -472,13 +503,15 @@ async function runAgent(
     }
 
     if (output.status === 'error') {
-      const isRateLimit = output.error?.includes('rate limit') || output.error?.includes('Rate limit');
+      const isRateLimit =
+        output.error?.includes('rate limit') ||
+        output.error?.includes('Rate limit');
       if (isRateLimit) {
         logger.warn(
           { group: group.name, error: output.error },
           'API rate limit hit, backing off 60s before retry',
         );
-        await new Promise(r => setTimeout(r, 60_000));
+        await new Promise((r) => setTimeout(r, 60_000));
       } else {
         logger.error(
           { group: group.name, error: output.error },
@@ -665,12 +698,19 @@ async function main(): Promise<void> {
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
     // Discord thread ↔ task discussion sync: route thread messages to task_comments
-    onTaskThreadMessage: (threadId: string, sender: string, message: string) => {
+    onTaskThreadMessage: (
+      threadId: string,
+      sender: string,
+      message: string,
+    ) => {
       // Check if this thread belongs to a project
       const projectFile = getProjectByThreadId(threadId);
       if (projectFile) {
         addTaskComment(`proj:${projectFile}`, 'user', message, 'info');
-        logger.info({ projectFile, sender, threadId }, 'Discord thread message stored as project comment');
+        logger.info(
+          { projectFile, sender, threadId },
+          'Discord thread message stored as project comment',
+        );
         return;
       }
 
@@ -683,10 +723,17 @@ async function main(): Promise<void> {
       // Trigger task re-run when user replies in thread
       const now = new Date().toISOString();
       const currentTask = getTaskById(task.id);
-      if (currentTask && (currentTask.status === 'active' || currentTask.status === 'needs_review')) {
+      if (
+        currentTask &&
+        (currentTask.status === 'active' ||
+          currentTask.status === 'needs_review')
+      ) {
         updateTask(task.id, { next_run: now, status: 'active' });
       }
-      logger.info({ taskId: task.id, sender, threadId }, 'Discord thread message stored as task comment');
+      logger.info(
+        { taskId: task.id, sender, threadId },
+        'Discord thread message stored as task comment',
+      );
     },
   };
 
@@ -712,12 +759,17 @@ async function main(): Promise<void> {
   }
 
   // Find the Discord channel for thread operations
-  const discordChannel = channels.find(ch => ch.name === 'discord') as (Channel & {
-    createTaskThread?: (jid: string, name: string) => Promise<string | null>;
-    sendToThread?: (threadId: string, text: string) => Promise<void>;
-    archiveTaskThread?: (threadId: string) => Promise<void>;
-    registerTaskThread?: (threadId: string) => void;
-  }) | undefined;
+  const discordChannel = channels.find((ch) => ch.name === 'discord') as
+    | (Channel & {
+        createTaskThread?: (
+          jid: string,
+          name: string,
+        ) => Promise<string | null>;
+        sendToThread?: (threadId: string, text: string) => Promise<void>;
+        archiveTaskThread?: (threadId: string) => Promise<void>;
+        registerTaskThread?: (threadId: string) => void;
+      })
+    | undefined;
 
   // Register existing task threads so Discord channel routes messages to task_comments
   if (discordChannel?.registerTaskThread) {
@@ -727,7 +779,10 @@ async function main(): Promise<void> {
         discordChannel.registerTaskThread(t.thread_id);
       }
     }
-    logger.info({ count: tasks.filter(t => t.thread_id).length }, 'Registered existing task threads');
+    logger.info(
+      { count: tasks.filter((t) => t.thread_id).length },
+      'Registered existing task threads',
+    );
 
     // Register existing project threads too
     const projectThreads = getAllProjectThreads();
@@ -735,29 +790,47 @@ async function main(): Promise<void> {
       discordChannel.registerTaskThread(pt.thread_id);
     }
     if (projectThreads.length > 0) {
-      logger.info({ count: projectThreads.length }, 'Registered existing project threads');
+      logger.info(
+        { count: projectThreads.length },
+        'Registered existing project threads',
+      );
     }
 
     // Create Discord threads for active tasks that don't have one yet
     if (discordChannel.createTaskThread) {
       const tasksNeedingThreads = tasks.filter(
-        t => !t.thread_id && (t.status === 'active' || t.status === 'needs_review') && t.chat_jid.startsWith('dc:'),
+        (t) =>
+          !t.thread_id &&
+          (t.status === 'active' || t.status === 'needs_review') &&
+          t.chat_jid.startsWith('dc:'),
       );
       for (const t of tasksNeedingThreads) {
         try {
           const title = taskTitle(t.prompt);
-          const threadId = await discordChannel.createTaskThread(t.chat_jid, title);
+          const threadId = await discordChannel.createTaskThread(
+            t.chat_jid,
+            title,
+          );
           if (threadId) {
             setTaskThreadId(t.id, threadId);
             discordChannel.registerTaskThread!(threadId);
-            logger.info({ taskId: t.id, threadId, title }, 'Created Discord thread for existing task');
+            logger.info(
+              { taskId: t.id, threadId, title },
+              'Created Discord thread for existing task',
+            );
           }
         } catch (err) {
-          logger.error({ taskId: t.id, err }, 'Failed to create thread for existing task');
+          logger.error(
+            { taskId: t.id, err },
+            'Failed to create thread for existing task',
+          );
         }
       }
       if (tasksNeedingThreads.length > 0) {
-        logger.info({ count: tasksNeedingThreads.length }, 'Created threads for existing tasks');
+        logger.info(
+          { count: tasksNeedingThreads.length },
+          'Created threads for existing tasks',
+        );
       }
     }
   }
@@ -789,31 +862,56 @@ async function main(): Promise<void> {
         const pending = drainPendingThreadMessages(10); // batch limit per poll cycle
         for (const msg of pending) {
           // Throttle to avoid Discord rate limits (especially during backfill)
-          if (pending.length > 1) await new Promise(r => setTimeout(r, 1500));
-          if (msg.message === '__ARCHIVE_THREAD__' && discordChannel.archiveTaskThread) {
+          if (pending.length > 1) await new Promise((r) => setTimeout(r, 1500));
+          if (
+            msg.message === '__ARCHIVE_THREAD__' &&
+            discordChannel.archiveTaskThread
+          ) {
             await discordChannel.archiveTaskThread(msg.thread_id);
           } else if (msg.thread_id.startsWith('__CREATE_PROJECT_THREAD__:')) {
             // Create a Discord thread for a project, then send the comment
-            const projectFile = msg.thread_id.slice('__CREATE_PROJECT_THREAD__:'.length);
-            const projectName = projectFile.replace('.md', '').replace(/-/g, ' ');
+            const projectFile = msg.thread_id.slice(
+              '__CREATE_PROJECT_THREAD__:'.length,
+            );
+            const projectName = projectFile
+              .replace('.md', '')
+              .replace(/-/g, ' ');
             if (discordChannel.createTaskThread) {
-              const mainJid = Object.keys(registeredGroups).find(jid => registeredGroups[jid].isMain);
+              const mainJid = Object.keys(registeredGroups).find(
+                (jid) => registeredGroups[jid].isMain,
+              );
               if (mainJid) {
-                const threadId = await discordChannel.createTaskThread(mainJid, `📁 ${projectName}`);
+                const threadId = await discordChannel.createTaskThread(
+                  mainJid,
+                  `📁 ${projectName}`,
+                );
                 if (threadId) {
                   setProjectThreadId(projectFile, threadId);
                   discordChannel.registerTaskThread!(threadId);
-                  const label = msg.sender === 'user' ? '💬 **You**' : `💬 **${msg.sender}**`;
-                  await discordChannel.sendToThread!(threadId, `${label}: ${msg.message}`);
-                  logger.info({ projectFile, threadId }, 'Created Discord thread for project');
+                  const label =
+                    msg.sender === 'user'
+                      ? '💬 **You**'
+                      : `💬 **${msg.sender}**`;
+                  await discordChannel.sendToThread!(
+                    threadId,
+                    `${label}: ${msg.message}`,
+                  );
+                  logger.info(
+                    { projectFile, threadId },
+                    'Created Discord thread for project',
+                  );
                 }
               }
             }
           } else if (msg.sender === '__raw__' || msg.sender === 'system') {
             await discordChannel.sendToThread!(msg.thread_id, msg.message);
           } else {
-            const label = msg.sender === 'user' ? '💬 **You**' : `💬 **${msg.sender}**`;
-            await discordChannel.sendToThread!(msg.thread_id, `${label}: ${msg.message}`);
+            const label =
+              msg.sender === 'user' ? '💬 **You**' : `💬 **${msg.sender}**`;
+            await discordChannel.sendToThread!(
+              msg.thread_id,
+              `${label}: ${msg.message}`,
+            );
           }
         }
       } catch (err) {

@@ -224,8 +224,14 @@ function buildVolumeMounts(
  */
 function readSecrets(groupFolder: string): Record<string, string> {
   const secrets = readEnvFile([
-    'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY',
-    'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REFRESH_TOKEN', 'GOOGLE_MAPS_API_KEY', 'GOOGLE_CONTACTS_SHEET_ID',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'ANTHROPIC_API_KEY',
+    'OPENROUTER_API_KEY',
+    'GOOGLE_CLIENT_ID',
+    'GOOGLE_CLIENT_SECRET',
+    'GOOGLE_REFRESH_TOKEN',
+    'GOOGLE_MAPS_API_KEY',
+    'GOOGLE_CONTACTS_SHEET_ID',
     'GITHUB_TOKEN',
   ]);
 
@@ -233,14 +239,23 @@ function readSecrets(groupFolder: string): Record<string, string> {
   try {
     const stored = getAllSecretsDecrypted();
     for (const [name, value] of Object.entries(stored)) {
-      secrets[`NANOCLAW_SECRET_${name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`] = value;
+      secrets[
+        `NANOCLAW_SECRET_${name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`
+      ] = value;
     }
 
     // Write secrets manifest (names only, no values) to the group's IPC dir so agents can list them
     const ipcDir = resolveGroupIpcPath(groupFolder);
     fs.mkdirSync(ipcDir, { recursive: true });
-    const manifest = listSecrets().map(s => ({ name: s.name, description: s.description, updated_at: s.updated_at }));
-    fs.writeFileSync(path.join(ipcDir, 'secrets-manifest.json'), JSON.stringify(manifest, null, 2));
+    const manifest = listSecrets().map((s) => ({
+      name: s.name,
+      description: s.description,
+      updated_at: s.updated_at,
+    }));
+    fs.writeFileSync(
+      path.join(ipcDir, 'secrets-manifest.json'),
+      JSON.stringify(manifest, null, 2),
+    );
   } catch (err) {
     logger.warn({ err }, 'Failed to load stored secrets');
   }

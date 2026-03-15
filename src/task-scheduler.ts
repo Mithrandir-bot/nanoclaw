@@ -36,7 +36,9 @@ export function taskTitle(prompt: string): string {
   const firstLine = t.split('\n')[0].trim();
   if (!firstLine && roleName) return roleName;
   const firstSentence = firstLine.split(/\.\s/)[0];
-  let title = (firstSentence.length < 80 ? firstSentence : firstLine.substring(0, 60)).replace(/\.$/, '');
+  let title = (
+    firstSentence.length < 80 ? firstSentence : firstLine.substring(0, 60)
+  ).replace(/\.$/, '');
   if (title.length > 0) title = title[0].toUpperCase() + title.slice(1);
   return title || roleName || 'Untitled Task';
 }
@@ -104,7 +106,10 @@ export interface SchedulerDependencies {
   ) => void;
   sendMessage: (jid: string, text: string) => Promise<void>;
   /** Create a Discord thread for a task. Returns thread ID or null. */
-  createTaskThread?: (jid: string, threadName: string) => Promise<string | null>;
+  createTaskThread?: (
+    jid: string,
+    threadName: string,
+  ) => Promise<string | null>;
   /** Send a message to a specific Discord thread. */
   sendToThread?: (threadId: string, text: string) => Promise<void>;
 }
@@ -187,7 +192,10 @@ async function runTask(
     threadId = await deps.createTaskThread(task.chat_jid, title);
     if (threadId) {
       setTaskThreadId(task.id, threadId);
-      logger.info({ taskId: task.id, threadId, title }, 'Created Discord thread for task');
+      logger.info(
+        { taskId: task.id, threadId, title },
+        'Created Discord thread for task',
+      );
     }
   }
 
@@ -202,10 +210,7 @@ async function runTask(
   );
   if (unreadUserComments.length > 0) {
     const thread = unreadUserComments
-      .map(
-        (c) =>
-          `[${c.sender} at ${c.created_at}]: ${c.message}`,
-      )
+      .map((c) => `[${c.sender} at ${c.created_at}]: ${c.message}`)
       .join('\n');
     prompt += `\n\n---\nUser follow-up comments on this task:\n${thread}`;
   }
@@ -288,7 +293,13 @@ async function runTask(
     }
 
     logger.info(
-      { taskId: task.id, durationMs: Date.now() - startTime, costUsd, inputTokens, outputTokens },
+      {
+        taskId: task.id,
+        durationMs: Date.now() - startTime,
+        costUsd,
+        inputTokens,
+        outputTokens,
+      },
       'Task completed',
     );
   } catch (err) {
@@ -315,23 +326,31 @@ async function runTask(
   const finalResult = result;
   if (finalResult && !error) {
     const questionPatterns = [
-      /\?\s*$/m,                          // ends with ?
+      /\?\s*$/m, // ends with ?
       /(?:need|require|waiting for)\s+(?:your|user|human)\s+(?:input|feedback|decision|approval)/i,
       /(?:please|could you|can you)\s+(?:confirm|clarify|provide|specify|let me know)/i,
       /(?:blocked|cannot proceed|unable to continue)/i,
       /(?:which|what|how|should I)\s+.{5,}\?/i,
     ];
-    const hasQuestion = questionPatterns.some(p => p.test(finalResult));
+    const hasQuestion = questionPatterns.some((p) => p.test(finalResult));
     if (hasQuestion) {
       // Extract the question lines
-      const questionLines = finalResult.split('\n')
-        .filter(l => l.trim().endsWith('?') || /(?:need|blocked|please|confirm|clarify)/i.test(l))
+      const questionLines = finalResult
+        .split('\n')
+        .filter(
+          (l) =>
+            l.trim().endsWith('?') ||
+            /(?:need|blocked|please|confirm|clarify)/i.test(l),
+        )
         .slice(0, 3)
-        .map(l => l.trim())
+        .map((l) => l.trim())
         .join('\n');
       const questionText = questionLines || finalResult.slice(0, 300);
       addTaskComment(task.id, 'agent', questionText, 'question');
-      logger.info({ taskId: task.id }, 'Auto-detected question in task output, flagged for review');
+      logger.info(
+        { taskId: task.id },
+        'Auto-detected question in task output, flagged for review',
+      );
     }
   }
 
@@ -346,7 +365,10 @@ async function runTask(
   // so the user can explicitly mark them done via the dashboard.
   // Only recurring tasks auto-advance via computeNextRun.
   if (nextRun === null && task.schedule_type === 'once') {
-    logger.info({ taskId: task.id }, 'One-off task run finished, moving to review (not auto-completing)');
+    logger.info(
+      { taskId: task.id },
+      'One-off task run finished, moving to review (not auto-completing)',
+    );
     updateTaskAfterRun(task.id, null, resultSummary, 'needs_review');
     return;
   }

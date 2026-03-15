@@ -50,16 +50,23 @@ export interface DiscordChannelOpts {
 function downloadBuffer(url: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const lib = url.startsWith('https') ? https : http;
-    lib.get(url, (res) => {
-      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        resolve(downloadBuffer(res.headers.location));
-        return;
-      }
-      const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
-      res.on('end', () => resolve(Buffer.concat(chunks)));
-      res.on('error', reject);
-    }).on('error', reject);
+    lib
+      .get(url, (res) => {
+        if (
+          res.statusCode &&
+          res.statusCode >= 300 &&
+          res.statusCode < 400 &&
+          res.headers.location
+        ) {
+          resolve(downloadBuffer(res.headers.location));
+          return;
+        }
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => resolve(Buffer.concat(chunks)));
+        res.on('error', reject);
+      })
+      .on('error', reject);
   });
 }
 
@@ -94,10 +101,20 @@ export class DiscordChannel implements Channel {
       if (message.author.bot) return;
 
       // Task thread sync: if message is in a known task thread, route to task_comments
-      if (message.channel.isThread() && this.taskThreadIds.has(message.channelId)) {
-        const senderName = message.member?.displayName || message.author.displayName || message.author.username;
+      if (
+        message.channel.isThread() &&
+        this.taskThreadIds.has(message.channelId)
+      ) {
+        const senderName =
+          message.member?.displayName ||
+          message.author.displayName ||
+          message.author.username;
         if (this.opts.onTaskThreadMessage) {
-          this.opts.onTaskThreadMessage(message.channelId, senderName, message.content);
+          this.opts.onTaskThreadMessage(
+            message.channelId,
+            senderName,
+            message.content,
+          );
         }
         return; // Don't process as a normal message
       }
@@ -165,14 +182,18 @@ export class DiscordChannel implements Channel {
         for (const att of message.attachments.values()) {
           if (!att.url || (att.size ?? 0) > 50_000_000) {
             // Skip files over 50 MB
-            descriptions.push(`[File too large to download: ${att.name || 'file'}]`);
+            descriptions.push(
+              `[File too large to download: ${att.name || 'file'}]`,
+            );
             continue;
           }
 
           try {
             const buf = await downloadBuffer(att.url);
-            const safeName = (att.name || `upload-${Date.now()}`)
-              .replace(/[^a-zA-Z0-9._-]/g, '_');
+            const safeName = (att.name || `upload-${Date.now()}`).replace(
+              /[^a-zA-Z0-9._-]/g,
+              '_',
+            );
 
             if (groupKey) {
               const uploadsDir = path.join(GROUPS_DIR, groupKey, 'uploads');
@@ -188,18 +209,24 @@ export class DiscordChannel implements Channel {
               // Unregistered channel — inline text content only
               const isText =
                 (att.contentType || '').startsWith('text/') ||
-                /\.(csv|tsv|txt|json|md|yaml|yml|xml|log)$/i.test(att.name || '');
+                /\.(csv|tsv|txt|json|md|yaml|yml|xml|log)$/i.test(
+                  att.name || '',
+                );
               if (isText) {
                 descriptions.push(
                   `[File: ${att.name}]\n${buf.toString('utf8').slice(0, 50_000)}`,
                 );
               } else {
-                descriptions.push(`[File: ${att.name || 'file'} — not saved, channel unregistered]`);
+                descriptions.push(
+                  `[File: ${att.name || 'file'} — not saved, channel unregistered]`,
+                );
               }
             }
           } catch (err) {
             logger.warn({ url: att.url, err }, 'Failed to download attachment');
-            descriptions.push(`[File: ${att.name || 'file'} — download failed]`);
+            descriptions.push(
+              `[File: ${att.name || 'file'} — download failed]`,
+            );
           }
         }
 
@@ -289,9 +316,15 @@ export class DiscordChannel implements Channel {
         if (readyClient.user.username !== ASSISTANT_NAME) {
           try {
             await readyClient.user.setUsername(ASSISTANT_NAME);
-            logger.info({ username: ASSISTANT_NAME }, 'Discord bot username updated');
+            logger.info(
+              { username: ASSISTANT_NAME },
+              'Discord bot username updated',
+            );
           } catch (err) {
-            logger.warn({ err }, 'Could not update Discord bot username (rate limited?)');
+            logger.warn(
+              { err },
+              'Could not update Discord bot username (rate limited?)',
+            );
           }
         }
         logger.info(
@@ -306,7 +339,7 @@ export class DiscordChannel implements Channel {
 
         // Backfill missed messages: fetch recent messages from registered channels
         // that arrived while the bot was offline (e.g. during restart)
-        this.backfillMissedMessages(readyClient).catch(err =>
+        this.backfillMissedMessages(readyClient).catch((err) =>
           logger.warn({ err }, 'Discord backfill failed'),
         );
       });
@@ -319,7 +352,9 @@ export class DiscordChannel implements Channel {
    * Fetch recent messages from all registered Discord channels and store any
    * that arrived while the bot was offline (e.g. during a restart).
    */
-  private async backfillMissedMessages(readyClient: Client<true>): Promise<void> {
+  private async backfillMissedMessages(
+    readyClient: Client<true>,
+  ): Promise<void> {
     const groups = this.opts.registeredGroups();
     let backfilled = 0;
 
@@ -336,7 +371,10 @@ export class DiscordChannel implements Channel {
         for (const msg of messages.values()) {
           if (msg.author.bot) continue;
 
-          const senderName = msg.member?.displayName || msg.author.displayName || msg.author.username;
+          const senderName =
+            msg.member?.displayName ||
+            msg.author.displayName ||
+            msg.author.username;
           let content = msg.content;
 
           // Translate @bot mentions same as live handler
@@ -347,7 +385,9 @@ export class DiscordChannel implements Channel {
               content.includes(`<@${botId}>`) ||
               content.includes(`<@!${botId}>`);
             if (isBotMentioned) {
-              content = content.replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim();
+              content = content
+                .replace(new RegExp(`<@!?${botId}>`, 'g'), '')
+                .trim();
               if (!TRIGGER_PATTERN.test(content)) {
                 content = `@${ASSISTANT_NAME} ${content}`;
               }
@@ -359,24 +399,42 @@ export class DiscordChannel implements Channel {
             const descriptions: string[] = [];
             for (const att of msg.attachments.values()) {
               if (!att.url || (att.size ?? 0) > 50_000_000) {
-                descriptions.push(`[File too large to download: ${att.name || 'file'}]`);
+                descriptions.push(
+                  `[File too large to download: ${att.name || 'file'}]`,
+                );
                 continue;
               }
               try {
                 const buf = await downloadBuffer(att.url);
-                const safeName = (att.name || `upload-${Date.now()}`)
-                  .replace(/[^a-zA-Z0-9._-]/g, '_');
-                const uploadsDir = path.join(GROUPS_DIR, group.folder, 'uploads');
+                const safeName = (att.name || `upload-${Date.now()}`).replace(
+                  /[^a-zA-Z0-9._-]/g,
+                  '_',
+                );
+                const uploadsDir = path.join(
+                  GROUPS_DIR,
+                  group.folder,
+                  'uploads',
+                );
                 fs.mkdirSync(uploadsDir, { recursive: true });
                 const filePath = path.join(uploadsDir, safeName);
                 if (!fs.existsSync(filePath)) {
                   fs.writeFileSync(filePath, buf);
-                  logger.info({ group: group.folder, file: safeName, bytes: buf.length }, 'Backfill attachment saved');
+                  logger.info(
+                    { group: group.folder, file: safeName, bytes: buf.length },
+                    'Backfill attachment saved',
+                  );
                 }
-                descriptions.push(`[Uploaded file: /workspace/group/uploads/${safeName}]`);
+                descriptions.push(
+                  `[Uploaded file: /workspace/group/uploads/${safeName}]`,
+                );
               } catch (err) {
-                logger.warn({ url: att.url, err }, 'Failed to download backfill attachment');
-                descriptions.push(`[File: ${att.name || 'file'} — download failed]`);
+                logger.warn(
+                  { url: att.url, err },
+                  'Failed to download backfill attachment',
+                );
+                descriptions.push(
+                  `[File: ${att.name || 'file'} — download failed]`,
+                );
               }
             }
             if (content) {
@@ -514,7 +572,10 @@ export class DiscordChannel implements Channel {
   }
 
   /** Create a Discord thread for a task. Returns the thread ID. */
-  async createTaskThread(jid: string, threadName: string): Promise<string | null> {
+  async createTaskThread(
+    jid: string,
+    threadName: string,
+  ): Promise<string | null> {
     if (!this.client) return null;
     try {
       const channelId = jid.replace(/^dc:/, '');
@@ -523,7 +584,10 @@ export class DiscordChannel implements Channel {
 
       const textChannel = channel as TextChannel;
       // Truncate thread name to Discord's 100-char limit
-      const name = threadName.length > 100 ? threadName.substring(0, 97) + '...' : threadName;
+      const name =
+        threadName.length > 100
+          ? threadName.substring(0, 97) + '...'
+          : threadName;
       const thread = await textChannel.threads.create({
         name,
         autoArchiveDuration: ThreadAutoArchiveDuration.OneWeek,

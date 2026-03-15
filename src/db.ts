@@ -162,9 +162,15 @@ function createSchema(database: Database.Database): void {
 
   // Add cost tracking columns to task_run_logs
   try {
-    database.exec(`ALTER TABLE task_run_logs ADD COLUMN cost_usd REAL DEFAULT 0`);
-    database.exec(`ALTER TABLE task_run_logs ADD COLUMN input_tokens INTEGER DEFAULT 0`);
-    database.exec(`ALTER TABLE task_run_logs ADD COLUMN output_tokens INTEGER DEFAULT 0`);
+    database.exec(
+      `ALTER TABLE task_run_logs ADD COLUMN cost_usd REAL DEFAULT 0`,
+    );
+    database.exec(
+      `ALTER TABLE task_run_logs ADD COLUMN input_tokens INTEGER DEFAULT 0`,
+    );
+    database.exec(
+      `ALTER TABLE task_run_logs ADD COLUMN output_tokens INTEGER DEFAULT 0`,
+    );
   } catch {
     /* columns already exist */
   }
@@ -205,7 +211,9 @@ function createSchema(database: Database.Database): void {
       timestamp TEXT NOT NULL
     )
   `);
-  database.exec(`CREATE INDEX IF NOT EXISTS idx_cgs_timestamp ON cross_group_sends(timestamp)`);
+  database.exec(
+    `CREATE INDEX IF NOT EXISTS idx_cgs_timestamp ON cross_group_sends(timestamp)`,
+  );
 }
 
 export function initDatabase(): void {
@@ -575,77 +583,139 @@ export function addTaskComment(
 
 export function getTaskComments(
   taskId: string,
-): Array<{ id: number; sender: string; message: string; severity: string; read: number; created_at: string }> {
-  return db.prepare(
-    'SELECT id, sender, message, severity, read, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at ASC',
-  ).all(taskId) as Array<{ id: number; sender: string; message: string; severity: string; read: number; created_at: string }>;
+): Array<{
+  id: number;
+  sender: string;
+  message: string;
+  severity: string;
+  read: number;
+  created_at: string;
+}> {
+  return db
+    .prepare(
+      'SELECT id, sender, message, severity, read, created_at FROM task_comments WHERE task_id = ? ORDER BY created_at ASC',
+    )
+    .all(taskId) as Array<{
+    id: number;
+    sender: string;
+    message: string;
+    severity: string;
+    read: number;
+    created_at: string;
+  }>;
 }
 
 export function getUnreadCommentCounts(): Record<string, number> {
-  const rows = db.prepare(
-    'SELECT task_id, COUNT(*) as cnt FROM task_comments WHERE read = 0 GROUP BY task_id',
-  ).all() as Array<{ task_id: string; cnt: number }>;
+  const rows = db
+    .prepare(
+      'SELECT task_id, COUNT(*) as cnt FROM task_comments WHERE read = 0 GROUP BY task_id',
+    )
+    .all() as Array<{ task_id: string; cnt: number }>;
   const result: Record<string, number> = {};
   for (const r of rows) result[r.task_id] = r.cnt;
   return result;
 }
 
 export function markCommentsRead(taskId: string): void {
-  db.prepare('UPDATE task_comments SET read = 1 WHERE task_id = ? AND read = 0').run(taskId);
+  db.prepare(
+    'UPDATE task_comments SET read = 1 WHERE task_id = ? AND read = 0',
+  ).run(taskId);
 }
 
 // --- Task thread helpers ---
 
 export function setTaskThreadId(taskId: string, threadId: string): void {
-  db.prepare('UPDATE scheduled_tasks SET thread_id = ? WHERE id = ?').run(threadId, taskId);
+  db.prepare('UPDATE scheduled_tasks SET thread_id = ? WHERE id = ?').run(
+    threadId,
+    taskId,
+  );
 }
 
 export function getTaskThreadId(taskId: string): string | null {
-  const row = db.prepare('SELECT thread_id FROM scheduled_tasks WHERE id = ?').get(taskId) as { thread_id: string | null } | undefined;
+  const row = db
+    .prepare('SELECT thread_id FROM scheduled_tasks WHERE id = ?')
+    .get(taskId) as { thread_id: string | null } | undefined;
   return row?.thread_id ?? null;
 }
 
 export function getTaskByThreadId(threadId: string): ScheduledTask | undefined {
-  return db.prepare('SELECT * FROM scheduled_tasks WHERE thread_id = ?').get(threadId) as ScheduledTask | undefined;
+  return db
+    .prepare('SELECT * FROM scheduled_tasks WHERE thread_id = ?')
+    .get(threadId) as ScheduledTask | undefined;
 }
 
 // --- Project thread helpers ---
 
-export function setProjectThreadId(projectFile: string, threadId: string): void {
-  db.prepare('INSERT OR REPLACE INTO project_threads (project_file, thread_id) VALUES (?, ?)').run(projectFile, threadId);
+export function setProjectThreadId(
+  projectFile: string,
+  threadId: string,
+): void {
+  db.prepare(
+    'INSERT OR REPLACE INTO project_threads (project_file, thread_id) VALUES (?, ?)',
+  ).run(projectFile, threadId);
 }
 
 export function getProjectThreadId(projectFile: string): string | null {
-  const row = db.prepare('SELECT thread_id FROM project_threads WHERE project_file = ?').get(projectFile) as { thread_id: string } | undefined;
+  const row = db
+    .prepare('SELECT thread_id FROM project_threads WHERE project_file = ?')
+    .get(projectFile) as { thread_id: string } | undefined;
   return row?.thread_id ?? null;
 }
 
-export function getAllProjectThreads(): Array<{ project_file: string; thread_id: string }> {
-  return db.prepare('SELECT project_file, thread_id FROM project_threads').all() as Array<{ project_file: string; thread_id: string }>;
+export function getAllProjectThreads(): Array<{
+  project_file: string;
+  thread_id: string;
+}> {
+  return db
+    .prepare('SELECT project_file, thread_id FROM project_threads')
+    .all() as Array<{ project_file: string; thread_id: string }>;
 }
 
 export function getProjectByThreadId(threadId: string): string | null {
-  const row = db.prepare('SELECT project_file FROM project_threads WHERE thread_id = ?').get(threadId) as { project_file: string } | undefined;
+  const row = db
+    .prepare('SELECT project_file FROM project_threads WHERE thread_id = ?')
+    .get(threadId) as { project_file: string } | undefined;
   return row?.project_file ?? null;
 }
 
-export function logCrossGroupSend(sourceGroup: string, targetJid: string, targetGroup: string): void {
+export function logCrossGroupSend(
+  sourceGroup: string,
+  targetJid: string,
+  targetGroup: string,
+): void {
   db.prepare(
     'INSERT INTO cross_group_sends (source_group, target_jid, target_group, timestamp) VALUES (?, ?, ?, ?)',
   ).run(sourceGroup, targetJid, targetGroup, new Date().toISOString());
 }
 
-export function queueThreadMessage(threadId: string, sender: string, message: string): void {
+export function queueThreadMessage(
+  threadId: string,
+  sender: string,
+  message: string,
+): void {
   db.prepare(
     'INSERT INTO pending_thread_messages (thread_id, sender, message, created_at) VALUES (?, ?, ?, ?)',
   ).run(threadId, sender, message, new Date().toISOString());
 }
 
-export function drainPendingThreadMessages(limit = 50): Array<{ id: number; thread_id: string; sender: string; message: string }> {
-  const rows = db.prepare(`SELECT id, thread_id, sender, message FROM pending_thread_messages ORDER BY id ASC LIMIT ${limit}`).all() as Array<{ id: number; thread_id: string; sender: string; message: string }>;
+export function drainPendingThreadMessages(
+  limit = 50,
+): Array<{ id: number; thread_id: string; sender: string; message: string }> {
+  const rows = db
+    .prepare(
+      `SELECT id, thread_id, sender, message FROM pending_thread_messages ORDER BY id ASC LIMIT ${limit}`,
+    )
+    .all() as Array<{
+    id: number;
+    thread_id: string;
+    sender: string;
+    message: string;
+  }>;
   if (rows.length > 0) {
-    const ids = rows.map(r => r.id);
-    db.prepare(`DELETE FROM pending_thread_messages WHERE id IN (${ids.join(',')})`).run();
+    const ids = rows.map((r) => r.id);
+    db.prepare(
+      `DELETE FROM pending_thread_messages WHERE id IN (${ids.join(',')})`,
+    ).run();
   }
   return rows;
 }
@@ -856,7 +926,8 @@ const ALGORITHM = 'aes-256-gcm';
 
 function getEncryptionKey(): Buffer {
   const hex = process.env.SECRETS_ENCRYPTION_KEY;
-  if (!hex || hex.length !== 64) throw new Error('SECRETS_ENCRYPTION_KEY missing or invalid in .env');
+  if (!hex || hex.length !== 64)
+    throw new Error('SECRETS_ENCRYPTION_KEY missing or invalid in .env');
   return Buffer.from(hex, 'hex');
 }
 
@@ -864,7 +935,10 @@ function encryptValue(plaintext: string): string {
   const key = getEncryptionKey();
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
-  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf-8'), cipher.final()]);
+  const encrypted = Buffer.concat([
+    cipher.update(plaintext, 'utf-8'),
+    cipher.final(),
+  ]);
   const tag = cipher.getAuthTag();
   return `${iv.toString('hex')}:${tag.toString('hex')}:${encrypted.toString('hex')}`;
 }
@@ -886,18 +960,26 @@ export interface SecretEntry {
   updated_at: string;
 }
 
-export function storeSecret(name: string, value: string, description?: string): void {
+export function storeSecret(
+  name: string,
+  value: string,
+  description?: string,
+): void {
   const now = new Date().toISOString();
   const encrypted = encryptValue(value);
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO secrets (name, encrypted_value, description, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(name) DO UPDATE SET encrypted_value=excluded.encrypted_value, description=excluded.description, updated_at=excluded.updated_at
-  `).run(name, encrypted, description ?? '', now, now);
+  `,
+  ).run(name, encrypted, description ?? '', now, now);
 }
 
 export function getSecret(name: string): string | undefined {
-  const row = db.prepare('SELECT encrypted_value FROM secrets WHERE name = ?').get(name) as { encrypted_value: string } | undefined;
+  const row = db
+    .prepare('SELECT encrypted_value FROM secrets WHERE name = ?')
+    .get(name) as { encrypted_value: string } | undefined;
   if (!row) return undefined;
   try {
     return decryptValue(row.encrypted_value);
@@ -908,11 +990,15 @@ export function getSecret(name: string): string | undefined {
 }
 
 export function listSecrets(): SecretEntry[] {
-  return db.prepare('SELECT name, description, updated_at FROM secrets ORDER BY name').all() as SecretEntry[];
+  return db
+    .prepare('SELECT name, description, updated_at FROM secrets ORDER BY name')
+    .all() as SecretEntry[];
 }
 
 export function getAllSecretsDecrypted(): Record<string, string> {
-  const rows = db.prepare('SELECT name, encrypted_value FROM secrets').all() as { name: string; encrypted_value: string }[];
+  const rows = db
+    .prepare('SELECT name, encrypted_value FROM secrets')
+    .all() as { name: string; encrypted_value: string }[];
   const result: Record<string, string> = {};
   for (const row of rows) {
     try {

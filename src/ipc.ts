@@ -5,7 +5,13 @@ import { CronExpressionParser } from 'cron-parser';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
-import { createTask, deleteTask, getTaskById, logCrossGroupSend, updateTask } from './db.js';
+import {
+  createTask,
+  deleteTask,
+  getTaskById,
+  logCrossGroupSend,
+  updateTask,
+} from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
@@ -22,7 +28,12 @@ export interface IpcDeps {
     availableGroups: AvailableGroup[],
     registeredJids: Set<string>,
   ) => void;
-  addTaskComment: (taskId: string, sender: string, message: string, severity?: string) => void;
+  addTaskComment: (
+    taskId: string,
+    sender: string,
+    message: string,
+    severity?: string,
+  ) => void;
 }
 
 let ipcWatcherRunning = false;
@@ -88,7 +99,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   );
                   // Track cross-group sends for collaboration detection
                   if (targetGroup && targetGroup.folder !== sourceGroup) {
-                    logCrossGroupSend(sourceGroup, data.chatJid, targetGroup.folder);
+                    logCrossGroupSend(
+                      sourceGroup,
+                      data.chatJid,
+                      targetGroup.folder,
+                    );
                   }
                 } else {
                   logger.warn(
@@ -459,15 +474,26 @@ export async function processTaskIpc(
         const task = getTaskById(data.taskId);
         if (task) {
           // Store the review request as a task comment
-          const question = (data as unknown as Record<string, string>).question || 'Review requested';
-          const severity = (data as unknown as Record<string, string>).severity || 'question';
+          const question =
+            (data as unknown as Record<string, string>).question ||
+            'Review requested';
+          const severity =
+            (data as unknown as Record<string, string>).severity || 'question';
           deps.addTaskComment(data.taskId, 'agent', question, severity);
 
           // Send Discord notification so the user sees it immediately
-          const severityIcon = severity === 'blocker' ? '🚨' : severity === 'question' ? '❓' : 'ℹ️';
+          const severityIcon =
+            severity === 'blocker'
+              ? '🚨'
+              : severity === 'question'
+                ? '❓'
+                : 'ℹ️';
           const notifText = `${severityIcon} *Review requested* for task \`${data.taskId}\`:\n${question}`;
           deps.sendMessage(task.chat_jid, notifText).catch((err) => {
-            logger.error({ taskId: data.taskId, err }, 'Failed to send review notification');
+            logger.error(
+              { taskId: data.taskId, err },
+              'Failed to send review notification',
+            );
           });
 
           logger.info(

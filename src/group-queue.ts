@@ -39,15 +39,18 @@ export class GroupQueue {
   /** Write a snapshot of queue state so the dashboard can read real-time activity. */
   private writeStateSnapshot(): void {
     try {
-      const snapshot: Record<string, {
-        active: boolean;
-        isTaskContainer: boolean;
-        runningTaskId: string | null;
-        containerName: string | null;
-        groupFolder: string | null;
-        pendingTaskCount: number;
-        pendingMessages: boolean;
-      }> = {};
+      const snapshot: Record<
+        string,
+        {
+          active: boolean;
+          isTaskContainer: boolean;
+          runningTaskId: string | null;
+          containerName: string | null;
+          groupFolder: string | null;
+          pendingTaskCount: number;
+          pendingMessages: boolean;
+        }
+      > = {};
       for (const [jid, state] of this.groups) {
         snapshot[jid] = {
           active: state.active,
@@ -59,7 +62,10 @@ export class GroupQueue {
           pendingMessages: state.pendingMessages,
         };
       }
-      fs.writeFileSync(this.stateFilePath, JSON.stringify({ ts: Date.now(), groups: snapshot }));
+      fs.writeFileSync(
+        this.stateFilePath,
+        JSON.stringify({ ts: Date.now(), groups: snapshot }),
+      );
     } catch {
       // Non-critical — dashboard will fall back to docker ps heuristic
     }

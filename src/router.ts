@@ -17,8 +17,12 @@ function toLocalTime(iso: string): string {
     if (isNaN(d.getTime())) return iso;
     return d.toLocaleString('en-US', {
       timeZone: TIMEZONE,
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: 'numeric', minute: '2-digit', hour12: true,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
     });
   } catch {
     return iso;
