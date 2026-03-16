@@ -5842,8 +5842,19 @@ async function renderNutritionTrends() {
       const vals = {};
       for (const c of charts) {
         if (c.key === '_organic_pct') {
-          const m = (h.foodQuality?.organic || '').match(/(\d+)\/(\d+)/);
-          vals[c.key] = m ? Math.round(parseInt(m[1]) / parseInt(m[2]) * 100) : null;
+          const fq = h.foodQuality || {};
+          const m = (fq.organic || '').match(/(\d+)\/(\d+)/);
+          if (m) {
+            vals[c.key] = Math.round(parseInt(m[1]) / parseInt(m[2]) * 100);
+          } else if (fq.organic && /^\d+$/.test(fq.organic)) {
+            // Count format: derive total from organic + conventional + unknownGMO
+            const orgN = parseInt(fq.organic) || 0;
+            const convN = parseInt(fq.conventional || '0') || 0;
+            const total = orgN + convN + (parseInt(fq.unknownGMO || '0') || 0);
+            vals[c.key] = total > 0 ? Math.round(orgN / total * 100) : null;
+          } else {
+            vals[c.key] = null;
+          }
         } else {
           const raw = a[c.key];
           vals[c.key] = raw ? parseFloat(String(raw).replace(/[^0-9.]/g, '')) : null;
@@ -5962,7 +5973,12 @@ function showTrendTip(evt, dayIdx, chartLabel) {
   ].filter(r => a[r.k] && a[r.k] !== '—');
 
   const orgMatch = (fq.organic || '').match(/(\d+)\/(\d+)/);
-  const orgPct = orgMatch ? Math.round(parseInt(orgMatch[1]) / parseInt(orgMatch[2]) * 100) + '%' : null;
+  let orgPct = orgMatch ? Math.round(parseInt(orgMatch[1]) / parseInt(orgMatch[2]) * 100) + '%' : null;
+  if (!orgPct && fq.organic && /^\d+$/.test(fq.organic)) {
+    const oN = parseInt(fq.organic) || 0;
+    const cN = (parseInt(fq.conventional || '0') || 0) + (parseInt(fq.unknownGMO || '0') || 0);
+    if (oN + cN > 0) orgPct = Math.round(oN / (oN + cN) * 100) + '%';
+  }
 
   _trendTipEl.innerHTML = `
     <div style="font-weight:700;color:var(--accent);margin-bottom:6px;font-size:12px">${day.date}</div>

@@ -581,9 +581,7 @@ export function addTaskComment(
   ).run(taskId, sender, message, severity, new Date().toISOString());
 }
 
-export function getTaskComments(
-  taskId: string,
-): Array<{
+export function getTaskComments(taskId: string): Array<{
   id: number;
   sender: string;
   message: string;

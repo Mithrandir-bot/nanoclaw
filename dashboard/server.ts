@@ -3431,8 +3431,8 @@ function getNutrition() {
         for (const line of lines) {
           if (!line.startsWith('|')) continue;
           // Match EPA Xmg and/or DHA Xmg anywhere in a table row
-          const epaMatch = line.match(/EPA\s+([\d,.]+)\s*mg/i);
-          const dhaMatch = line.match(/DHA\s+([\d,.]+)\s*mg/i);
+          const epaMatch = line.match(/EPA\s+([\d,.]+)\s*mg/i) || line.match(/([\d,.]+)\s*mg\s*EPA/i);
+          const dhaMatch = line.match(/DHA\s+([\d,.]+)\s*mg/i) || line.match(/([\d,.]+)\s*mg\s*DHA/i);
           if (epaMatch) totalEpaDhaMg += parseFloat(epaMatch[1].replace(/,/g, ''));
           if (dhaMatch) totalEpaDhaMg += parseFloat(dhaMatch[1].replace(/,/g, ''));
         }
@@ -3447,10 +3447,14 @@ function getNutrition() {
     const qualityLine = lines.find(l => l.startsWith('**Food Quality**'));
     const foodQuality: Record<string, string> = {};
     if (qualityLine) {
-      const orgMatch = qualityLine.match(/([\d]+\/[\d]+)\s*organic/i);
-      if (orgMatch) foodQuality.organic = orgMatch[1];
-      const gmoMatch = qualityLine.match(/([\d]+\/[\d]+)\s*non[- ]?GMO/i);
-      if (gmoMatch) foodQuality.nonGMO = gmoMatch[1];
+      const orgRatioMatch = qualityLine.match(/([\d]+\/[\d]+)\s*organic/i);
+      const orgCountMatch = !orgRatioMatch ? qualityLine.match(/([\d]+)\s*organic/i) : null;
+      if (orgRatioMatch) foodQuality.organic = orgRatioMatch[1];
+      else if (orgCountMatch) foodQuality.organic = orgCountMatch[1];
+      const gmoRatioMatch = qualityLine.match(/([\d]+\/[\d]+)\s*non[- ]?GMO/i);
+      const gmoCountMatch = !gmoRatioMatch ? qualityLine.match(/([\d]+)\s*non[- ]?GMO/i) : null;
+      if (gmoRatioMatch) foodQuality.nonGMO = gmoRatioMatch[1];
+      else if (gmoCountMatch) foodQuality.nonGMO = gmoCountMatch[1];
       const wildMatch = qualityLine.match(/([\d]+)\s*wild[- ]caught/i);
       if (wildMatch) foodQuality.wildCaught = wildMatch[1];
       const convMatch = qualityLine.match(/([\d]+)\s*conventional/i);
@@ -3759,6 +3763,120 @@ function resetNutritionDaily() {
   }
 }
 
+// Recover a day's nutrition data from the Historical Logs section of Nutrition-Tracker.md.
+// The health agent archives summaries there before resetting the live section.
+function recoverFromHistoricalLogs(trackerContent: string, dateStr: string): Record<string, any> | null {
+  try {
+    // Match the section for this date: ### YYYY-MM-DD followed by lines until next ### or ## or ---
+    const regex = new RegExp(`### ${dateStr.replace(/-/g, '-')}\\n([\\s\\S]*?)(?=\\n###? |\\n---|$)`);
+    const match = trackerContent.match(regex);
+    if (!match) return null;
+
+    const block = match[1];
+    const get = (label: string) => {
+      const m = block.match(new RegExp(`\\*\\*${label}\\*\\*:\\s*(.+)`));
+      return m ? m[1].trim() : '';
+    };
+
+    const totalsLine = get('Totals');
+    if (!totalsLine) return null;
+
+    // Parse actuals from "3,007 cals | 126g protein | 152g fat | 250g carbs (15g fiber) | 235g net carbs"
+    const num = (pat: RegExp) => { const m = totalsLine.match(pat); return m ? m[1].replace(',', '') : ''; };
+    const actuals: Record<string, string> = {
+      Calories: num(/([\d,]+)\s*cals/),
+      Protein: num(/([\d.]+)g\s*protein/) ? num(/([\d.]+)g\s*protein/) + 'g' : '',
+      Fat: num(/([\d.]+)g\s*fat/) ? num(/([\d.]+)g\s*fat/) + 'g' : '',
+      'Net Carbs': num(/([\d.]+)g\s*net\s*carbs/) ? num(/([\d.]+)g\s*net\s*carbs/) + 'g' : '',
+      Fiber: num(/([\d.]+)g\s*fiber/) ? num(/([\d.]+)g\s*fiber/) + 'g' : '',
+    };
+    // Remove empty keys
+    for (const k of Object.keys(actuals)) { if (!actuals[k]) delete actuals[k]; }
+
+    // Parse micros
+    const microsLine = get('Micros');
+    if (microsLine) {
+      const mnum = (pat: RegExp) => { const m = microsLine.match(pat); return m ? m[1].replace(',', '') : ''; };
+      if (mnum(/~?([\d,]+)mg\s*Na/)) actuals.Sodium = mnum(/~?([\d,]+)mg\s*Na/) + 'mg';
+      if (mnum(/~?([\d,]+)mg\s*K/)) actuals.Potassium = mnum(/~?([\d,]+)mg\s*K/) + 'mg';
+      if (mnum(/~?([\d,]+)mg\s*Mg/)) actuals.Magnesium = mnum(/~?([\d,]+)mg\s*Mg/) + 'mg';
+      if (mnum(/~?([\d,]+)mg\s*Ca/)) actuals.Calcium = mnum(/~?([\d,]+)mg\s*Ca/) + 'mg';
+      if (mnum(/~?([\d,.]+)mg\s*Fe/)) actuals.Iron = mnum(/~?([\d,.]+)mg\s*Fe/) + 'mg';
+    }
+
+    const scoreLine = get('Score');
+    const scores = scoreLine ? [{ domain: 'Overall', score: scoreLine.split('—')[0].trim(), note: scoreLine.split('—').slice(1).join('—').trim() }] : [];
+
+    // Extract hydration into actuals
+    const hydrationMatch = block.match(/Hydration.*?:\s*([\d,.]+\s*oz)/i);
+    if (hydrationMatch) actuals.Water = hydrationMatch[1];
+
+    // Parse superfoods from the current tracker's static list, mark checked ones from Wins line
+    const winsLine = get('Wins') || '';
+    const sfNamesInWins = new Set<string>();
+    // Extract superfood names mentioned in wins (e.g., "3 superfoods (coffee, peanuts, olive oil)")
+    const sfListMatch = winsLine.match(/superfoods?\s*\(([^)]+)\)/i);
+    if (sfListMatch) {
+      for (const name of sfListMatch[1].split(',')) sfNamesInWins.add(name.trim().toLowerCase());
+    }
+    // Also check meals line for common superfoods
+    const mealsText = (get('Meals') || '').toLowerCase();
+    const knownSuperfoods = [
+      'Garlic', 'Olive Oil', 'Blueberries', 'Coffee', 'Pistachios', 'Peanuts',
+      'Salmon (wild)', 'Mackerel', 'Sardines', 'Walnuts', 'Flax Seeds',
+      'Broccoli Sprouts', 'Turmeric', 'Green Tea/Matcha', 'ACV (raw)',
+    ];
+    const superfoodAliases: Record<string, string[]> = {
+      'Coffee': ['coffee', 'espresso', 'cold brew', 'stok'],
+      'Olive Oil': ['olive oil', 'evoo'],
+      'Peanuts': ['peanut'],
+      'Pistachios': ['pistachio'],
+      'Blueberries': ['blueberr'],
+      'Garlic': ['garlic'],
+      'Salmon (wild)': ['salmon'],
+      'Mackerel': ['mackerel'],
+      'Sardines': ['sardine'],
+      'Walnuts': ['walnut'],
+      'Flax Seeds': ['flax'],
+      'Broccoli Sprouts': ['broccoli sprout'],
+      'Turmeric': ['turmeric', 'curcumin'],
+      'Green Tea/Matcha': ['matcha', 'green tea'],
+      'ACV (raw)': ['acv', 'apple cider vinegar'],
+    };
+    const superfoods = knownSuperfoods.map(food => {
+      const aliases = superfoodAliases[food] || [food.toLowerCase()];
+      const inWins = aliases.some(a => sfNamesInWins.has(a));
+      const inMeals = aliases.some(a => mealsText.includes(a));
+      return { food, checked: inWins || inMeals };
+    });
+
+    // Parse meals from the summary line
+    const mealsLine = get('Meals');
+    const mealEntries = mealsLine ? mealsLine.split('|').map((m, i) => ({
+      meal: ['Breakfast', 'Lunch', 'Dinner', 'Snacks', 'Beverage'][i] || `Meal ${i + 1}`,
+      time: '', foods: m.trim(), cals: '', protein: '', fat: '', carbs: '',
+    })).filter(m => m.foods) : [];
+
+    return {
+      date: dateStr,
+      meals: mealEntries,
+      scores,
+      actuals,
+      foodQuality: {},
+      totals: {
+        macroSplit: (get('Macro Split') || '').split('|')[0].trim(),
+        hydration: hydrationMatch ? hydrationMatch[1] : '',
+      },
+      superfoods,
+      checklist: [],
+      ingredients: [],
+      recoveredFrom: 'historical-logs',
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Check if we need to reset (date changed since last log)
 let lastNutritionResetDate = '';
 function maybeResetNutrition() {
@@ -3776,13 +3894,22 @@ function maybeResetNutrition() {
       lastNutritionResetDate = today;
     } else if (fileDate === today) {
       // File already shows today — an agent may have reset it externally.
-      // Check if yesterday is missing from history and log a warning.
+      // Check if yesterday is missing from history; if so, try to recover from Historical Logs.
       const yesterday = new Date();
       yesterday.setDate(yesterday.getDate() - 1);
       const yesterdayStr = yesterday.toLocaleDateString('en-CA', { timeZone: TZ });
       const history = loadNutritionHistory();
       if (!history.some((h: { date: string }) => h.date === yesterdayStr)) {
-        console.warn(`[nutrition] Warning: ${yesterdayStr} missing from history — file was already reset to ${today} before dashboard could snapshot.`);
+        // Try to recover from the Historical Logs section in the tracker file
+        const recovered = recoverFromHistoricalLogs(content, yesterdayStr);
+        if (recovered) {
+          history.push(recovered);
+          while (history.length > 90) history.shift();
+          fs.writeFileSync(NUTRITION_HISTORY_PATH, JSON.stringify(history, null, 2));
+          console.log(`[nutrition] Recovered ${yesterdayStr} from Historical Logs section`);
+        } else {
+          console.warn(`[nutrition] Warning: ${yesterdayStr} missing from history — file was already reset to ${today} before dashboard could snapshot.`);
+        }
       }
       lastNutritionResetDate = today;
     } else {
@@ -4884,7 +5011,7 @@ const getRoutes: Record<string, Handler> = {
     try {
       const today = getNutrition();
       if (today && today.date) {
-        const todayEntry = { date: today.date, actuals: today.actuals || {}, foodQuality: today.foodQuality || {}, totals: today.totals || {} };
+        const todayEntry = { date: today.date, actuals: today.actuals || {}, foodQuality: today.foodQuality || {}, totals: today.totals || {}, superfoods: (today.superfoods || []).map((s: any) => ({ food: s.food, checked: s.checked })) };
         const idx = history.findIndex(h => h.date === today.date);
         if (idx >= 0) history[idx] = todayEntry;
         else history.push(todayEntry);
@@ -5106,4 +5233,30 @@ server.listen(PORT, HOST, () => {
   // Initial scan 45s after startup, then every 5min
   setTimeout(runDriveInboxScan, 45_000);
   setInterval(runDriveInboxScan, DRIVE_SCAN_INTERVAL);
+
+  // --- Nightly nutrition snapshot (11:50 PM ET) ---
+  // Prevents data loss when agents reset Nutrition-Tracker.md before the dashboard snapshots.
+  const scheduleNightlyNutritionSnapshot = () => {
+    const now = new Date();
+    const target = new Date(now.toLocaleString('en-US', { timeZone: TZ }));
+    target.setHours(23, 50, 0, 0);
+    // If 11:50 PM already passed today, schedule for tomorrow
+    const nowET = new Date(now.toLocaleString('en-US', { timeZone: TZ }));
+    let delayMs = target.getTime() - nowET.getTime();
+    if (delayMs <= 0) delayMs += 24 * 60 * 60 * 1000;
+    setTimeout(() => {
+      try {
+        snapshotNutritionDay();
+        console.log('[nutrition] Nightly snapshot completed');
+      } catch (err) {
+        console.error('[nutrition] Nightly snapshot failed:', err);
+      }
+      // Reschedule for next night
+      scheduleNightlyNutritionSnapshot();
+    }, delayMs);
+    const hours = Math.floor(delayMs / 3600000);
+    const mins = Math.floor((delayMs % 3600000) / 60000);
+    console.log(`[nutrition] Nightly snapshot scheduled in ${hours}h ${mins}m`);
+  };
+  scheduleNightlyNutritionSnapshot();
 });
