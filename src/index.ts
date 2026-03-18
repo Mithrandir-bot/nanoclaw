@@ -3,11 +3,13 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  CREDENTIAL_PROXY_PORT,
   DATA_DIR,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
   TRIGGER_PATTERN,
 } from './config.js';
+import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -22,6 +24,7 @@ import {
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
+  PROXY_BIND_HOST,
 } from './container-runtime.js';
 import {
   getAllChats,
@@ -262,6 +265,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         typeof result.result === 'string'
           ? result.result
           : JSON.stringify(result.result);
+
+      // Detect API errors returned as "successful" results — don't forward to user
+      const isApiError =
+        /^API Error: \d{3}\b/.test(raw) ||
+        /overloaded_error|"type":"error"/.test(raw);
+      if (isApiError) {
+        logger.warn(
+          { group: group.name },
+          `Suppressing API error from user output: ${raw.slice(0, 200)}`,
+        );
+        hadError = true;
+        return;
+      }
+
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
       logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
@@ -657,6 +674,9 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
+
+  // Start credential proxy (containers route API calls through this)
+  await startCredentialProxy(CREDENTIAL_PROXY_PORT, PROXY_BIND_HOST);
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {

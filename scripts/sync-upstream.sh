@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sync NanoClaw fork from upstream and notify via Discord.
 # Designed to run standalone (cron/systemd timer) or be called directly.
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -34,6 +34,12 @@ write_ipc_task() {
 
 cd "$PROJECT_DIR"
 
+# Abort any leftover merge state from a previous failed run
+if [ -f .git/MERGE_HEAD ]; then
+  log "Aborting leftover merge state from previous run..."
+  git merge --abort 2>/dev/null || true
+fi
+
 # Fetch upstream changes
 log "Fetching upstream..."
 git fetch upstream 2>&1
@@ -50,8 +56,42 @@ fi
 COMMIT_COUNT=$(echo "$NEW_COMMITS" | grep -c '' || true)
 log "Found $COMMIT_COUNT new upstream commit(s). Merging..."
 
-# Merge upstream into main
-git merge upstream/main -m "chore: sync upstream changes"
+# Merge upstream into main — handle conflicts gracefully
+if ! git merge upstream/main -m "chore: sync upstream changes" 2>&1; then
+  # Merge failed — collect conflict info, abort, and notify
+  CONFLICTED_FILES=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+  log "Merge conflicts detected in: $CONFLICTED_FILES"
+  git merge --abort 2>/dev/null || true
+
+  write_ipc_task "URGENT: The daily upstream sync FAILED due to merge conflicts. The merge has been aborted so the current build remains intact. Conflicting files:
+
+${CONFLICTED_FILES}
+
+Run /update-nanoclaw to resolve these conflicts manually. The service continues running on the previous build."
+
+  log "Merge aborted. Service continues on previous build."
+  exit 1
+fi
+
+# Merge succeeded — rebuild TypeScript
+log "Merge succeeded. Rebuilding..."
+if ! npm run build 2>&1; then
+  BUILD_ERRORS=$(npm run build 2>&1 | tail -20)
+  log "Build failed after merge!"
+
+  write_ipc_task "WARNING: Upstream sync merged successfully but the TypeScript build FAILED. The service continues running on the previous build. Build errors:
+
+${BUILD_ERRORS}
+
+Investigate and fix the build manually. The merge commit is already on main."
+
+  log "Build failed. Service continues on previous build."
+  exit 1
+fi
+
+# Rebuild succeeded — restart service
+log "Build succeeded. Restarting nanoclaw..."
+systemctl restart nanoclaw 2>/dev/null || true
 
 # Push to fork
 log "Pushing to origin..."
@@ -68,7 +108,7 @@ fi
 
 log "Sync complete ($COMMIT_COUNT commits). Writing Discord notification..."
 
-write_ipc_task "The daily upstream sync just completed. ${COMMIT_COUNT} new commit(s) were merged from upstream (qwibitai/nanoclaw) into our fork and pushed to origin. Commits:
+write_ipc_task "The daily upstream sync just completed. ${COMMIT_COUNT} new commit(s) were merged from upstream (qwibitai/nanoclaw) into our fork, rebuilt, and service restarted. Commits:
 
 ${COMMIT_SUMMARY}
 
