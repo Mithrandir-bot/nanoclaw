@@ -35,6 +35,7 @@ const STATUS_BOARD_PATH = '/root/obsidian-vault/Memory/Status-Board.md';
 const RESEARCH_DIGEST_PATH = '/root/obsidian-vault/AI-Research/Research-Digest.md';
 const OBSIDIAN_VAULT = '/root/obsidian-vault';
 const PROJECTS_DIR = path.join(OBSIDIAN_VAULT, 'Projects');
+const VENTURES_DIR = path.join(OBSIDIAN_VAULT, 'Ventures');
 const DAILY_DIR = path.join(OBSIDIAN_VAULT, 'Daily');
 const CONVERSATIONS_DIR = path.join(OBSIDIAN_VAULT, 'Conversations');
 const GROUP_CONVERSATIONS_DIR = path.join(PROJECT_ROOT, 'groups');
@@ -297,6 +298,10 @@ function resolveAssociationDisplay(type: string, id: string): { name: string; ic
     const name = id.replace('.md', '').replace(/-/g, ' ');
     return { name, icon: '📁', link: `projects:${id}` };
   }
+  if (type === 'venture') {
+    const name = id.replace('.md', '').replace(/-/g, ' ');
+    return { name, icon: '💼', link: `ventures:${id}` };
+  }
   if (type === 'interaction') {
     return { name: id, icon: '📞', link: '' };
   }
@@ -358,13 +363,15 @@ function resolveAssociationDisplayBatch(pairs: Array<{ type: string; id: string 
   }
 
   // Contacts, projects, documents, interactions — no DB query needed, just string transforms
-  for (const type of ['contact', 'project', 'document', 'interaction']) {
+  for (const type of ['contact', 'project', 'venture', 'document', 'interaction']) {
     if (!byType[type]?.length) continue;
     for (const id of byType[type]) {
       if (type === 'contact') {
         result.set(key(type, id), { name: id.replace('.md', '').replace(/-/g, ' '), icon: '👤', link: `crm:${id}` });
       } else if (type === 'project') {
         result.set(key(type, id), { name: id.replace('.md', '').replace(/-/g, ' '), icon: '📁', link: `projects:${id}` });
+      } else if (type === 'venture') {
+        result.set(key(type, id), { name: id.replace('.md', '').replace(/-/g, ' '), icon: '💼', link: `ventures:${id}` });
       } else if (type === 'document') {
         result.set(key(type, id), { name: id.replace('.md', '').replace(/-/g, ' '), icon: '📄', link: `docs:${id}` });
       } else if (type === 'interaction') {
@@ -939,6 +946,7 @@ function pollSystemdServices(): ServiceStatus[] {
   checkTimer('nanoclaw-security-check', 'Security Check (nightly 3:30am)', 'System');
   checkTimer('nanoclaw-index-obsidian', 'Obsidian Indexer (daily 2am)', 'System');
   checkTimer('nanoclaw-drive-watcher', 'Google Drive Watcher (5min poll)', 'Google');
+  checkTimer('nanoclaw-drive-sync', 'Google Drive Sync (daily 4am)', 'Google');
   checkTimer('nanoclaw-sync-contacts', 'Contacts Sync (daily 1am)', 'CRM');
   checkTimer('nanoclaw-nutrition-prices', 'Nutrition Price Scanner (Sun 5am)', 'System');
 
@@ -1233,6 +1241,7 @@ function getProjects() {
         file: f,
         name: f.replace('.md', '').replace(/-/g, ' '),
         status: frontmatter.status || 'unknown',
+        completed_reason: (frontmatter as Record<string, unknown>).completed_reason || '',
         priority: frontmatter.priority || 'normal',
         agent: frontmatter.agent || 'unassigned',
         progress: frontmatter.progress ?? (taskCount > 0 ? Math.round(doneCount / taskCount * 100) : 0),
@@ -1315,6 +1324,259 @@ async function postProjectUpdate(req: http.IncomingMessage) {
   const newContent = `---\n${YAML.stringify(frontmatter).trim()}\n---\n${mdBody}`;
   fs.writeFileSync(filePath, newContent);
   return { ok: true };
+}
+
+// --- Ventures ---
+
+const VENTURE_EDITABLE_FIELDS = new Set([
+  'stage', 'status', 'risk_level', 'opportunity_score', 'estimated_upside',
+  'investment_needed', 'next_action', 'agent', 'tags', 'linked_project',
+  'linked_tasks', 'linked_docs',
+]);
+
+function getVentures() {
+  try {
+    if (!fs.existsSync(VENTURES_DIR)) return [];
+    const files = fs.readdirSync(VENTURES_DIR).filter(f => f.endsWith('.md') && !f.startsWith('_'));
+    const unreadStmt = db.prepare('SELECT COUNT(*) as cnt FROM task_comments WHERE task_id = ? AND read = 0');
+    return files.map(f => {
+      const content = readFileSafe(path.join(VENTURES_DIR, f));
+      const { frontmatter, body } = parseFrontmatter(content);
+      const fm = frontmatter as Record<string, unknown>;
+      const taskCount = (body.match(/^- \[[ x]\]/gm) || []).length;
+      const doneCount = (body.match(/^- \[x\]/gm) || []).length;
+      const bodyDocs = [...body.matchAll(/\[\[([^\]]+)\]\]/g)].map(m => m[1]);
+      const fmDocs = (fm.linked_docs as string[]) || [];
+      const allDocs = [...new Set([...fmDocs, ...bodyDocs])];
+      const unread = (unreadStmt.get(`venture:${f}`) as { cnt: number }).cnt;
+      return {
+        file: f,
+        name: f.replace('.md', '').replace(/-/g, ' '),
+        stage: (fm.stage as string) || 'idea',
+        opportunity_score: (fm.opportunity_score as number) ?? null,
+        estimated_upside: (fm.estimated_upside as string) || '',
+        investment_needed: (fm.investment_needed as string) || '',
+        risk_level: (fm.risk_level as string) || 'medium',
+        next_action: (fm.next_action as string) || '',
+        status: (fm.status as string) || 'active',
+        agent: (fm.agent as string) || 'unassigned',
+        tags: (fm.tags as string[]) || [],
+        linked_project: (fm.linked_project as string) || '',
+        linked_tasks: (fm.linked_tasks as string[]) || [],
+        created: (fm.created as string) || null,
+        linkedDocs: allDocs,
+        taskCount, doneCount,
+        unread,
+        body: body.substring(0, 800),
+      };
+    });
+  } catch (err) {
+    console.error('[ventures] failed to load ventures:', err);
+    return [];
+  }
+}
+
+function getVentureDetail(file: string) {
+  const safeName = file.replace(/[^a-zA-Z0-9_.-]/g, '');
+  const filePath = path.join(VENTURES_DIR, safeName);
+  const content = readFileSafe(filePath);
+  if (!content) return null;
+  const { frontmatter, body } = parseFrontmatter(content);
+  const ventureKey = `venture:${safeName}`;
+  const comments = getTaskComments(ventureKey);
+  const unreadComments = comments.filter(c => c.read === 0).length;
+  const rawAssocs = getAssociations('venture', safeName);
+  const associations = rawAssocs.map(a => ({
+    ...a,
+    display: resolveAssociationDisplay(a.type, a.objectId),
+  }));
+  const fm = frontmatter as Record<string, unknown>;
+  const taskStmt = db.prepare('SELECT id, prompt, group_folder, status FROM scheduled_tasks WHERE id = ?');
+  const linkedTasks = ((fm.linked_tasks as string[]) || []).map(taskId => {
+    const task = taskStmt.get(taskId) as { id: string; prompt: string; group_folder: string; status: string } | undefined;
+    return task ? { id: task.id, prompt: task.prompt.substring(0, 80), group: task.group_folder, status: task.status } : { id: taskId, prompt: taskId, group: '', status: 'unknown' };
+  });
+  // Mark as read after collecting data so caller sees the unread count
+  if (unreadComments > 0) markCommentsRead(ventureKey);
+  return { file: safeName, frontmatter: fm, body, comments, unreadComments, associations, linkedTasks };
+}
+
+async function postVentureUpdate(req: http.IncomingMessage) {
+  const body = JSON.parse(await readBody(req));
+  const { file, field, value } = body as { file: string; field: string; value: unknown };
+  if (!VENTURE_EDITABLE_FIELDS.has(field)) throw new Error('Field not editable: ' + field);
+  const safeName = file.replace(/[^a-zA-Z0-9_.-]/g, '');
+  const filePath = path.join(VENTURES_DIR, safeName);
+  const content = readFileSafe(filePath);
+  if (!content) throw new Error('Venture not found');
+
+  const { frontmatter, body: mdBody } = parseFrontmatter(content);
+  (frontmatter as Record<string, unknown>)[field] = value;
+
+  const newContent = `---\n${YAML.stringify(frontmatter).trim()}\n---\n${mdBody}`;
+  fs.writeFileSync(filePath, newContent);
+  return { ok: true };
+}
+
+function getVentureKalshi() {
+  try {
+    const dataDir = path.join(GROUPS_DIR, 'trading', 'kalshi-weather-bot', 'data');
+    if (!fs.existsSync(dataDir)) return { error: 'No Kalshi data directory' };
+
+    const tradesRaw = readFileSafe(path.join(dataDir, 'paper-trades.json'));
+    const trades = tradesRaw ? JSON.parse(tradesRaw) : { trades: [], summary: {} };
+
+    const backtestSummaryRaw = readFileSafe(path.join(dataDir, 'backtest-1yr-summary.json'));
+    const backtestSummary = backtestSummaryRaw ? JSON.parse(backtestSummaryRaw) : null;
+
+    // Find most recent scan file
+    const scanFiles = fs.readdirSync(dataDir).filter(f => f.startsWith('scan-') && f.endsWith('.json')).sort().reverse();
+    let todayScan: unknown[] = [];
+    let scanOrders: unknown[] = [];
+    let scanDate = '';
+    if (scanFiles.length > 0) {
+      const raw = readFileSafe(path.join(dataDir, scanFiles[0]));
+      const parsed = raw ? JSON.parse(raw) : {};
+      // Scan files can be {date, signals, orders} or a flat array
+      if (Array.isArray(parsed)) {
+        todayScan = parsed;
+      } else {
+        todayScan = parsed.signals || [];
+        scanOrders = parsed.orders || [];
+      }
+      scanDate = scanFiles[0].replace('scan-', '').replace('.json', '');
+    }
+
+    const arbRaw = readFileSafe(path.join(dataDir, 'arb-scan.json'));
+    const arbScan = arbRaw ? JSON.parse(arbRaw) : null;
+
+    // Compute trade analysis
+    const allTrades = trades.trades || [];
+    const settledTrades = allTrades.filter((t: Record<string, unknown>) => t.status === 'settled');
+    const analysis: Record<string, unknown> = {};
+
+    if (settledTrades.length > 0) {
+      const byCity: Record<string, { w: number; l: number; pnl: number }> = {};
+      const bySide: Record<string, { w: number; l: number; pnl: number }> = {};
+      const byModelBucket: Record<string, { w: number; l: number; pnl: number }> = {};
+      const byEdgeBucket: Record<string, { w: number; l: number; pnl: number }> = {};
+      const byConsensus: Record<string, { w: number; l: number; pnl: number }> = {};
+
+      const inc = (map: Record<string, { w: number; l: number; pnl: number }>, key: string, won: boolean, pnl: number) => {
+        if (!map[key]) map[key] = { w: 0, l: 0, pnl: 0 };
+        if (won) map[key].w++; else map[key].l++;
+        map[key].pnl += pnl;
+      };
+
+      for (const t of settledTrades) {
+        const tr = t as Record<string, unknown>;
+        const won = tr.won === true;
+        const pnl = Number(tr.pnl || 0);
+        const model = Number(tr.modelProb || 0);
+        const edge = Number(tr.edge || 0);
+        const members = String(tr.members || '0/0').split('/');
+        const consensus = members.length === 2 && Number(members[1]) > 0
+          ? Math.round(Number(members[0]) / Number(members[1]) * 100) : 0;
+
+        inc(byCity, String(tr.city || '?'), won, pnl);
+        inc(bySide, String(tr.side || '?'), won, pnl);
+        inc(byModelBucket, model >= 90 ? '90-100%' : model >= 70 ? '70-89%' : model >= 50 ? '50-69%' : '<50%', won, pnl);
+        inc(byEdgeBucket, edge >= 30 ? '30%+' : edge >= 20 ? '20-29%' : edge >= 10 ? '10-19%' : '<10%', won, pnl);
+        inc(byConsensus, consensus >= 80 ? '80%+' : consensus >= 50 ? '50-79%' : '<50%', won, pnl);
+      }
+
+      // Generate insights
+      const insights: string[] = [];
+      for (const [side, s] of Object.entries(bySide)) {
+        const rate = Math.round(s.w / (s.w + s.l) * 100);
+        if (rate < 30 && (s.w + s.l) >= 3) insights.push(`Avoid "${side}" side trades (${rate}% win rate, $${s.pnl.toFixed(2)} P&L)`);
+        if (rate > 75 && (s.w + s.l) >= 5) insights.push(`"${side}" side trades are strong (${rate}% win rate, $${s.pnl.toFixed(2)} P&L)`);
+      }
+      for (const [city, c] of Object.entries(byCity)) {
+        const rate = Math.round(c.w / (c.w + c.l) * 100);
+        if (rate < 50 && (c.w + c.l) >= 3) insights.push(`${city} underperforms (${rate}% win, $${c.pnl.toFixed(2)} P&L) — reduce position size or skip`);
+        if (rate > 75 && (c.w + c.l) >= 5) insights.push(`${city} is reliable (${rate}% win, $${c.pnl.toFixed(2)} P&L)`);
+      }
+      for (const [bucket, b] of Object.entries(byModelBucket)) {
+        const rate = Math.round(b.w / (b.w + b.l) * 100);
+        if (rate === 0 && (b.w + b.l) >= 3) insights.push(`Never trade at ${bucket} model confidence (0% win rate, $${b.pnl.toFixed(2)} lost)`);
+      }
+      for (const [bucket, b] of Object.entries(byConsensus)) {
+        const rate = Math.round(b.w / (b.w + b.l) * 100);
+        if (rate === 0 && (b.w + b.l) >= 3) insights.push(`Never trade at ${bucket} consensus (0% win rate)`);
+      }
+
+      analysis.byCity = byCity;
+      analysis.bySide = bySide;
+      analysis.byModelBucket = byModelBucket;
+      analysis.byEdgeBucket = byEdgeBucket;
+      analysis.byConsensus = byConsensus;
+      analysis.insights = insights;
+
+      // Per-trade analysis: why each trade won or lost
+      const tradeReasons = settledTrades.map((t: Record<string, unknown>) => {
+        const tr = t as Record<string, unknown>;
+        const won = tr.won === true;
+        const model = Number(tr.modelProb || 0);
+        const edge = Number(tr.edge || 0);
+        const members = String(tr.members || '0/0').split('/');
+        const consensus = members.length === 2 && Number(members[1]) > 0
+          ? Math.round(Number(members[0]) / Number(members[1]) * 100) : 0;
+        const reasons: string[] = [];
+
+        if (won) {
+          if (model >= 90) reasons.push('High model confidence');
+          if (edge >= 30) reasons.push('Large edge');
+          if (consensus >= 80) reasons.push('Strong consensus');
+          if (tr.side === 'no') reasons.push('"No" side (historically strong)');
+          if (!reasons.length) reasons.push('Favorable outcome');
+        } else {
+          if (model < 50) reasons.push('Low model confidence (<50%)');
+          if (consensus < 50) reasons.push('Weak consensus (<50%)');
+          if (tr.side === 'yes') reasons.push('"Yes" side (historically weak)');
+          if (String(tr.city) === 'CHI') reasons.push('Chicago market (volatile)');
+          if (edge < 10) reasons.push('Thin edge (<10%)');
+          if (!reasons.length) reasons.push('Unfavorable weather outcome');
+        }
+
+        return { date: tr.date, city: tr.city, side: tr.side, won, pnl: Number(tr.pnl || 0), reasons };
+      });
+      analysis.tradeReasons = tradeReasons;
+    }
+
+    return { trades: allTrades, summary: trades.summary || {}, backtestSummary, todayScan, scanOrders, scanDate, arbScan, analysis };
+  } catch (err) {
+    console.error('[venture-kalshi]', err);
+    return { trades: [], summary: {}, backtestSummary: null, todayScan: [], scanDate: '', arbScan: null };
+  }
+}
+
+function getVentureGsa() {
+  try {
+    const scanPath = path.join(GROUPS_DIR, 'business-ideas', 'gsa-monitor', 'latest-scan.json');
+    const raw = readFileSafe(scanPath);
+    if (!raw) return { error: 'No GSA scan data' };
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error('[venture-gsa]', err);
+    return { totalListings: 0, analyzed: 0, opportunities: [] };
+  }
+}
+
+function getVentureSmb() {
+  try {
+    const seenPath = path.join(GROUPS_DIR, 'business-ideas', 'bizbuysell-seen-urls.json');
+    const seenRaw = readFileSafe(seenPath);
+    const seen = seenRaw ? JSON.parse(seenRaw) : [];
+
+    const ventureContent = readFileSafe(path.join(VENTURES_DIR, 'SMB-Acquisition-Pipeline.md'));
+    const { frontmatter, body } = parseFrontmatter(ventureContent);
+
+    return { dealsScreened: Array.isArray(seen) ? seen.length : 0, frontmatter, body };
+  } catch (err) {
+    console.error('[venture-smb]', err);
+    return { dealsScreened: 0, frontmatter: {}, body: '' };
+  }
 }
 
 // --- Path traversal guard ---
@@ -3678,6 +3940,9 @@ function snapshotNutritionDay() {
       })),
     };
 
+    // Enrich scores from historical log if the scoring table was never filled in
+    enrichScoresFromHistoricalLog(snapshot);
+
     const history = loadNutritionHistory();
     // Don't duplicate — replace if same date exists
     const idx = history.findIndex(h => h.date === snapshot.date);
@@ -3805,7 +4070,7 @@ function recoverFromHistoricalLogs(trackerContent: string, dateStr: string): Rec
     }
 
     const scoreLine = get('Score');
-    const scores = scoreLine ? [{ domain: 'Overall', score: scoreLine.split('—')[0].trim(), note: scoreLine.split('—').slice(1).join('—').trim() }] : [];
+    const scores = scoreLine ? [{ domain: 'Overall Grade', score: scoreLine.split('—')[0].trim(), status: scoreLine.split('—').slice(1).join('—').trim() }] : [];
 
     // Extract hydration into actuals
     const hydrationMatch = block.match(/Hydration.*?:\s*([\d,.]+\s*oz)/i);
@@ -3874,6 +4139,44 @@ function recoverFromHistoricalLogs(trackerContent: string, dateStr: string): Rec
     };
   } catch {
     return null;
+  }
+}
+
+// Enrich snapshot scores from the Historical Logs section when the Today's Scores table was never filled in.
+// The health agent writes "**Score**: 5/10 — ..." in the historical log but often doesn't update the scoring table.
+function enrichScoresFromHistoricalLog(snapshot: Record<string, any>): boolean {
+  const scores = snapshot.scores || [];
+  const allDashes = scores.length === 0 || scores.every((s: { score: string }) => !s.score || s.score.replace(/\*/g, '').startsWith('—'));
+  if (!allDashes) return false;
+
+  try {
+    const content = fs.readFileSync(NUTRITION_TRACKER_PATH, 'utf-8');
+    const dateStr = snapshot.date;
+    if (!dateStr) return false;
+
+    const regex = new RegExp(`### ${dateStr}\\n([\\s\\S]*?)(?=\\n### |$)`);
+    const match = content.match(regex);
+    if (!match) return false;
+
+    const block = match[1];
+    // Use last Score line in case of corrections
+    const scoreMatches = [...block.matchAll(/\*\*Score\*\*:\s*(.+)/g)];
+    if (!scoreMatches.length) return false;
+
+    const scoreLine = scoreMatches[scoreMatches.length - 1][1].trim();
+    const overallMatch = scoreLine.match(/([\d.]+)\s*\/\s*10/);
+    if (!overallMatch) return false;
+
+    const overallScore = overallMatch[1] + '/10';
+    const note = scoreLine.replace(overallMatch[0], '').replace(/^\s*—\s*/, '').trim();
+
+    snapshot.scores = [
+      { domain: 'Overall Grade', score: overallScore, status: note || 'End of day' },
+    ];
+    return true;
+  } catch (err) {
+    console.warn('[nutrition] failed to enrich scores from historical log:', err);
+    return false;
   }
 }
 
@@ -4948,6 +5251,11 @@ const getRoutes: Record<string, Handler> = {
   '/api/calendar': () => getCalendar(),
   '/api/projects': () => getProjects(),
   '/api/project': (p) => getProjectDetail(p.get('file') || ''),
+  '/api/ventures': () => getVentures(),
+  '/api/venture': (p) => getVentureDetail(p.get('file') || ''),
+  '/api/venture/kalshi': () => getVentureKalshi(),
+  '/api/venture/gsa': () => getVentureGsa(),
+  '/api/venture/smb': () => getVentureSmb(),
   '/api/docs': (p) => getDocs(p.get('folder') || undefined),
   '/api/doc': (p) => getDocContent(p.get('path') || ''),
   '/api/memory': (p) => getMemory(p.get('date') || undefined),
@@ -4969,6 +5277,10 @@ const getRoutes: Record<string, Handler> = {
       const history = loadNutritionHistory();
       const entry = history.find(h => h.date === date);
       if (!entry) return { error: 'No data for this date', date };
+      // Enrich scores from historical log if snapshot had all dashes, and persist
+      if (enrichScoresFromHistoricalLog(entry)) {
+        fs.writeFileSync(NUTRITION_HISTORY_PATH, JSON.stringify(history, null, 2));
+      }
       // Generate weekly trends centered on the requested date
       const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
       const wt: Array<Record<string, string>> = [];
@@ -5032,6 +5344,7 @@ const postRoutes: Record<string, (req: http.IncomingMessage) => Promise<unknown>
   '/api/task/comment': postTaskComment,
   '/api/task/comments/read': postTaskCommentsRead,
   '/api/project/update': postProjectUpdate,
+  '/api/venture/update': postVentureUpdate,
   '/api/chat/send': postChatSend,
   '/api/accounting/entry': postAccountingEntry,
   '/api/accounting/receipt': postAccountingReceipt,

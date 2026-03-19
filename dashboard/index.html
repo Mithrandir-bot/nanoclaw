@@ -290,26 +290,30 @@
   .kanban-toolbar .view-toggle .btn.active { background: var(--accent-muted); color: var(--accent); border-color: var(--accent); }
   .kanban-layout { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; align-items: start; }
   .kanban-col { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius);
-    display: flex; flex-direction: column; min-height: 200px; }
-  .kanban-col-header { padding: 10px 12px; border-bottom: 1px solid var(--border); display: flex;
-    align-items: center; gap: 6px; font-size: 12px; font-weight: 600; }
-  .kanban-col-header .kc-count { font-size: 10px; color: var(--text-tertiary); font-weight: 400;
-    background: var(--bg-tertiary); padding: 0 6px; border-radius: 10px; margin-left: auto; }
-  .kanban-col-body { padding: 6px; flex: 1; overflow-y: auto; max-height: 60vh; }
-  .kanban-card { background: var(--bg-tertiary); border: 1px solid var(--border-light); border-radius: var(--radius-sm);
-    padding: 10px; margin-bottom: 6px; cursor: default; transition: all var(--transition);
-    border-left: 3px solid var(--border); }
-  .kanban-card:hover { border-color: var(--border); transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+    display: flex; flex-direction: column; min-height: 200px; overflow: hidden; }
+  .kanban-col-header { padding: 10px 14px; border-bottom: 1px solid var(--border); display: flex;
+    align-items: center; gap: 6px; font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.8px; position: relative; }
+  .kanban-col-header .kc-count { font-family: var(--mono); font-size: 11px; font-weight: 600;
+    min-width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+    border-radius: 4px; background: var(--bg-primary); margin-left: auto; }
+  .kanban-col-body { padding: 6px; flex: 1; overflow-y: auto; max-height: 60vh;
+    transition: background 150ms, outline 150ms; }
+  .kanban-card { background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px 14px; margin-bottom: 6px; cursor: grab; transition: all 150ms ease; }
+  .kanban-card:hover { border-color: var(--accent); transform: translateY(-2px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25); }
+  .kanban-card.dragging { opacity: 0.4; transform: scale(0.95); cursor: grabbing; }
   .kanban-card .kk-title { font-size: 12px; font-weight: 600; color: var(--text-primary);
-    line-height: 1.4; margin-bottom: 4px; display: -webkit-box; -webkit-line-clamp: 2;
+    line-height: 1.4; margin-bottom: 6px; display: -webkit-box; -webkit-line-clamp: 2;
     -webkit-box-orient: vertical; overflow: hidden; }
   .kanban-card .kk-desc { font-size: 10px; color: var(--text-tertiary); line-height: 1.4;
     max-height: 28px; overflow: hidden; margin-bottom: 6px; }
   .kanban-card .kk-pills { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
   .kanban-card .kk-pills .badge { font-size: 8px; padding: 1px 5px; }
   .kanban-card .kk-footer { display: flex; justify-content: space-between; align-items: center;
-    font-size: 9px; color: var(--text-tertiary); font-family: var(--mono); margin-top: 4px; }
+    font-size: 9px; color: var(--text-tertiary); font-family: var(--mono); margin-top: 6px;
+    padding-top: 6px; border-top: 1px solid var(--border); }
   .kanban-card .kk-actions { display: flex; gap: 3px; margin-top: 6px; opacity: 0; transition: opacity 0.15s; }
   .kanban-card:hover .kk-actions { opacity: 1; }
   .kanban-card .kk-actions .btn { font-size: 9px; padding: 2px 5px; }
@@ -330,27 +334,187 @@
   /* Project tiles */
   .project-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
   .project-tile { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius);
-    padding: 16px; cursor: pointer; transition: all var(--transition); }
-  .project-tile:hover { border-color: var(--accent); background: var(--bg-hover); }
+    padding: 16px; cursor: pointer; transition: all 150ms ease; }
+  .project-tile:hover { border-color: var(--accent); transform: translateY(-2px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25); }
+  .project-tile.completed { border-style: dashed; }
+  .project-tile.completed .pt-name { text-decoration: line-through; color: var(--text-tertiary); }
   .project-tile .pt-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-  .project-tile .pt-name { font-size: 14px; font-weight: 600; flex: 1; }
+  .project-tile .pt-name { font-size: 14px; font-weight: 600; flex: 1;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .project-tile .pt-meta { display: flex; gap: 12px; font-size: 11px; color: var(--text-tertiary); margin-bottom: 10px; }
   .project-tile .pt-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; }
   .project-tile .pt-tags .badge { font-size: 10px; padding: 0 6px; }
-  .progress-bar { height: 4px; background: var(--bg-primary); border-radius: 2px; overflow: hidden; }
-  .progress-bar .fill { height: 100%; border-radius: 2px; transition: width 0.3s ease; }
+  .progress-bar { height: 3px; background: var(--bg-tertiary); border-radius: 2px; overflow: hidden; }
+  .progress-bar .fill { height: 100%; border-radius: 2px; transition: width 0.4s ease; }
   .progress-bar .fill.low { background: var(--red); }
   .progress-bar .fill.mid { background: var(--yellow); }
   .progress-bar .fill.high { background: var(--green); }
-  .project-detail { max-width: 720px; }
-  .project-detail .pd-back { font-size: 12px; color: var(--text-tertiary); cursor: pointer; margin-bottom: 12px; }
+  .project-detail { max-width: 780px; }
+  .project-detail .pd-back { font-size: 12px; color: var(--text-tertiary); cursor: pointer; margin-bottom: 16px;
+    display: inline-flex; align-items: center; gap: 6px; transition: color 120ms; }
   .project-detail .pd-back:hover { color: var(--accent); }
   .project-detail .pd-field { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; }
-  .project-detail .pd-field label { color: var(--text-tertiary); width: 80px; text-transform: uppercase; font-size: 10px; letter-spacing: 0.3px; }
-  .project-detail .pd-field select { padding: 3px 8px; font-size: 12px; }
+  .project-detail .pd-field label { color: var(--text-tertiary); width: 100px; text-transform: uppercase;
+    font-size: 10px; letter-spacing: 0.4px; flex-shrink: 0; font-weight: 500; }
+  .project-detail .pd-field select { padding: 4px 8px; font-size: 12px; font-family: var(--font); }
   .project-detail .pd-links { margin-top: 16px; }
-  .project-detail .pd-link { font-size: 12px; color: var(--accent); cursor: pointer; padding: 3px 0; }
-  .project-detail .pd-link:hover { text-decoration: underline; }
+  .project-detail .pd-link { font-size: 12px; color: var(--accent); cursor: pointer; padding: 4px 0;
+    display: flex; align-items: center; gap: 6px; transition: color 120ms; }
+  .project-detail .pd-link:hover { color: var(--accent-hover); }
+
+  /* Venture pipeline */
+  .venture-summary { display: flex; align-items: center; gap: 24px; margin-bottom: 20px;
+    padding: 14px 20px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); }
+  .venture-summary .vs-stat { display: flex; flex-direction: column; }
+  .venture-summary .vs-stat .vs-val { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; font-family: var(--mono); }
+  .venture-summary .vs-stat .vs-label { font-size: 10px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 1px; }
+  .venture-summary .vs-divider { width: 1px; height: 32px; background: var(--border); }
+  .venture-pipeline { display: flex; gap: 10px; min-height: 420px; overflow-x: auto; padding-bottom: 4px; }
+  .venture-stage { flex: 1; min-width: 230px; min-height: 360px; display: flex; flex-direction: column; gap: 8px;
+    background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 0 0 8px; overflow: hidden; }
+  .venture-stage-header { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px;
+    padding: 10px 14px; display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 1px solid var(--border); position: relative; }
+  .venture-stage-header::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; }
+  .venture-stage-header.stage-idea { color: var(--text-tertiary); }
+  .venture-stage-header.stage-idea::before { background: var(--text-tertiary); }
+  .venture-stage-header.stage-research { color: var(--accent); }
+  .venture-stage-header.stage-research::before { background: var(--accent); }
+  .venture-stage-header.stage-building { color: var(--yellow); }
+  .venture-stage-header.stage-building::before { background: var(--yellow); }
+  .venture-stage-header.stage-live { color: var(--green); }
+  .venture-stage-header.stage-live::before { background: var(--green); }
+  .venture-stage-header.stage-revenue { color: var(--purple); }
+  .venture-stage-header.stage-revenue::before { background: var(--purple); }
+  .venture-stage-header .vsh-count { font-family: var(--mono); font-size: 11px; font-weight: 600;
+    min-width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+    border-radius: 4px; background: var(--bg-primary); }
+  .venture-stage-body { padding: 0 8px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+  .venture-card { background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px 14px; cursor: grab; transition: all 150ms ease; position: relative; }
+  .venture-card:hover { border-color: var(--accent); transform: translateY(-2px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25); }
+  .venture-card.dragging { opacity: 0.4; transform: scale(0.95); cursor: grabbing; }
+  .venture-stage.drag-over > .venture-stage-body { background: var(--accent-muted);
+    border-radius: var(--radius); outline: 1px dashed var(--accent); outline-offset: 0;
+    transition: background 150ms, outline 150ms; }
+  .venture-stage.drag-over > .venture-stage-header { color: var(--accent) !important; }
+  .venture-card .vc-name { font-size: 13px; font-weight: 600; margin-bottom: 10px; line-height: 1.3;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .venture-card .vc-indicators { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .venture-card .vc-score { display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-weight: 700; font-family: var(--mono); padding: 3px 8px; border-radius: var(--radius-sm);
+    border: 1px solid; }
+  .venture-card .vc-score.hot { color: var(--red); border-color: rgba(217,83,79,0.3); background: rgba(217,83,79,0.08); }
+  .venture-card .vc-score.warm { color: var(--yellow); border-color: rgba(212,167,44,0.3); background: rgba(212,167,44,0.08); }
+  .venture-card .vc-score.cool { color: var(--text-tertiary); border-color: var(--border); background: transparent; }
+  .venture-card .vc-risk { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px;
+    padding: 2px 6px; border-radius: var(--radius-sm); }
+  .venture-card .vc-risk.low { color: var(--green); background: var(--green-muted); }
+  .venture-card .vc-risk.medium { color: var(--yellow); background: var(--yellow-muted); }
+  .venture-card .vc-risk.high { color: var(--red); background: var(--red-muted); }
+  .venture-card .vc-upside { font-size: 11px; color: var(--text-secondary); margin-bottom: 4px; }
+  .venture-card .vc-next { font-size: 11px; color: var(--accent); opacity: 0.85; padding: 6px 0 2px;
+    border-top: 1px solid var(--border); margin-top: 6px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .venture-card .vc-next::before { content: '> '; font-family: var(--mono); font-size: 10px; opacity: 0.5; }
+  .venture-card .vc-progress { margin-top: 8px; }
+  .venture-card .vc-progress-bar { height: 3px; background: var(--bg-tertiary); border-radius: 2px; overflow: hidden; }
+  .venture-card .vc-progress-bar .fill { height: 100%; border-radius: 2px; transition: width 0.4s ease; }
+  .venture-card .vc-progress-bar .fill.low { background: var(--red); }
+  .venture-card .vc-progress-bar .fill.mid { background: var(--yellow); }
+  .venture-card .vc-progress-bar .fill.high { background: var(--green); }
+  .venture-card .vc-progress-label { font-size: 10px; color: var(--text-tertiary); margin-top: 3px; font-family: var(--mono); }
+  .venture-card .vc-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 8px; }
+  .venture-card .vc-tags .badge { font-size: 9px; padding: 1px 6px; border-radius: 3px; }
+  .venture-empty { font-size: 11px; color: var(--text-tertiary); padding: 24px 12px; text-align: center;
+    border: 1px dashed var(--border); border-radius: var(--radius); margin: 0 8px;
+    background: repeating-linear-gradient(45deg, transparent, transparent 8px, rgba(255,255,255,0.01) 8px, rgba(255,255,255,0.01) 16px); }
+
+  /* Venture detail */
+  .venture-detail { max-width: 780px; }
+  .venture-detail .vd-back { font-size: 12px; color: var(--text-tertiary); cursor: pointer; margin-bottom: 16px;
+    display: inline-flex; align-items: center; gap: 6px; transition: color 120ms; }
+  .venture-detail .vd-back:hover { color: var(--accent); }
+  .venture-detail .vd-header { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 24px;
+    padding-bottom: 20px; border-bottom: 1px solid var(--border); }
+  .venture-detail .vd-title { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; flex: 1; line-height: 1.3; }
+  .venture-detail .vd-score-lg { font-family: var(--mono); font-size: 18px; font-weight: 700;
+    padding: 6px 14px; border-radius: var(--radius); border: 1px solid; white-space: nowrap; }
+  .venture-detail .vd-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px;
+    padding: 16px 20px; background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: var(--radius); margin-bottom: 20px; }
+  .venture-detail .vd-field { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  .venture-detail .vd-field label { color: var(--text-tertiary); width: 100px; text-transform: uppercase;
+    font-size: 10px; letter-spacing: 0.4px; flex-shrink: 0; font-weight: 500; }
+  .venture-detail .vd-field select, .venture-detail .vd-field input[type="text"] {
+    padding: 4px 8px; font-size: 12px; font-family: var(--font); }
+  .venture-detail .vd-field input[type="text"] { flex: 1; background: var(--bg-primary);
+    border: 1px solid var(--border); color: var(--text-primary); border-radius: var(--radius-sm);
+    transition: border-color 120ms; }
+  .venture-detail .vd-field input[type="text"]:focus { border-color: var(--accent); outline: none; }
+  .venture-detail .vd-field.full { grid-column: 1 / -1; }
+  .venture-detail .vd-section { margin-top: 20px; }
+  .venture-detail .vd-links { margin-top: 16px; }
+  .venture-detail .vd-link { font-size: 12px; color: var(--accent); cursor: pointer; padding: 4px 0;
+    display: flex; align-items: center; gap: 6px; transition: color 120ms; }
+  .venture-detail .vd-link:hover { color: var(--accent-hover); }
+
+  /* Venture sub-dashboards */
+  .vdash-header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
+  .vdash-header .vdash-title { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; }
+  .vdash-header .vdash-stage { font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.8px; padding: 3px 10px; border-radius: var(--radius-sm); border: 1px solid; }
+  .vdash-metrics { display: flex; align-items: center; gap: 0; margin-bottom: 24px;
+    background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .vdash-metrics .vm-stat { flex: 1; padding: 14px 20px; display: flex; flex-direction: column;
+    border-right: 1px solid var(--border); }
+  .vdash-metrics .vm-stat:last-child { border-right: none; }
+  .vdash-metrics .vm-val { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; font-family: var(--mono); line-height: 1; }
+  .vdash-metrics .vm-label { font-size: 10px; color: var(--text-tertiary); text-transform: uppercase;
+    letter-spacing: 0.5px; margin-top: 4px; font-weight: 500; }
+  .vdash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  .vdash-grid.full { grid-template-columns: 1fr; }
+  .vdash-panel { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px; overflow: hidden; }
+  .vdash-panel .vp-title { font-size: 11px; font-weight: 700; color: var(--text-tertiary);
+    text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .vdash-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .vdash-table th { text-align: left; font-size: 10px; font-weight: 600; color: var(--text-tertiary);
+    text-transform: uppercase; letter-spacing: 0.3px; padding: 6px 8px;
+    border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .vdash-table th.right { text-align: right; }
+  .vdash-table td { padding: 7px 8px; border-bottom: 1px solid var(--border-light); font-family: var(--mono);
+    font-size: 11px; white-space: nowrap; }
+  .vdash-table td.text { font-family: var(--font); }
+  .vdash-table td.right { text-align: right; }
+  .vdash-table td.pos { color: var(--green); }
+  .vdash-table td.neg { color: var(--red); }
+  .vdash-table tr:hover { background: var(--bg-hover); }
+  .vdash-chart { position: relative; }
+  .vdash-chart svg { width: 100%; display: block; }
+  .vdash-chart .chart-tooltip { position: absolute; background: var(--bg-primary); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 6px 10px; font-size: 10px; font-family: var(--mono);
+    pointer-events: none; opacity: 0; transition: opacity 100ms; z-index: 10; white-space: nowrap; }
+  .vdash-funnel { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; }
+  .vdash-funnel .funnel-stage { display: flex; align-items: center; gap: 12px; }
+  .vdash-funnel .funnel-bar { height: 32px; border-radius: var(--radius-sm); display: flex;
+    align-items: center; padding: 0 12px; font-size: 11px; font-weight: 600;
+    transition: width 0.4s ease; min-width: 60px; }
+  .vdash-funnel .funnel-label { font-size: 11px; color: var(--text-tertiary); min-width: 100px;
+    text-align: right; font-weight: 500; }
+  .vdash-funnel .funnel-count { font-family: var(--mono); font-size: 12px; font-weight: 700; margin-left: auto; }
+  .vdash-milestone { display: flex; align-items: center; gap: 8px; padding: 6px 0;
+    border-bottom: 1px solid var(--border-light); font-size: 12px; }
+  .vdash-milestone .vm-check { width: 16px; height: 16px; border-radius: 3px;
+    border: 1px solid var(--border); display: flex; align-items: center; justify-content: center;
+    font-size: 10px; flex-shrink: 0; }
+  .vdash-milestone .vm-check.done { background: var(--green-muted); border-color: var(--green); color: var(--green); }
+  .vdash-milestone .vm-text { flex: 1; }
+  .vdash-milestone .vm-text.done { color: var(--text-tertiary); text-decoration: line-through; }
 
   /* Docs browser */
   .docs-breadcrumb { display: flex; align-items: center; gap: 4px; font-size: 12px; margin-bottom: 16px; color: var(--text-tertiary); }
@@ -886,8 +1050,9 @@
   .sidebar-footer .logout-btn:hover { opacity: 1; }
 
   /* Kanban drag-drop visual feedback */
-  .kanban-col.drag-over { border-color: var(--accent); background: rgba(94,106,210,0.04); }
-  .kanban-card[draggable]:active { opacity: 0.5; transform: scale(0.98); }
+  .kanban-col.drag-over > .kanban-col-body { background: var(--accent-muted);
+    outline: 2px dashed var(--accent); outline-offset: -2px; border-radius: var(--radius); }
+  .kanban-col.drag-over > .kanban-col-header { color: var(--accent) !important; }
 
   /* Keyboard help modal */
   .kbd-help-grid { display: grid; grid-template-columns: 120px 1fr; gap: 8px 16px; font-size: 13px; }
@@ -920,6 +1085,15 @@
       <div class="nav-item" data-view="tasks"><span class="icon">&#10003;</span> Tasks <span class="count" id="navTaskCount">0</span></div>
       <div class="nav-item" data-view="messages"><span class="icon">&#9993;</span> Messages <span class="count" id="navMsgCount"></span></div>
       <div class="nav-item" data-view="services"><span class="icon">&#9889;</span> Services</div>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-label">Ventures</div>
+      <div class="nav-item" data-view="ventures"><span class="icon">&#9670;</span> Pipeline <span class="count" id="navVentureCount"></span></div>
+      <div class="nav-item" data-view="venture-kalshi"><span class="icon">&#9878;</span> Kalshi</div>
+      <div class="nav-item" data-view="venture-gsa"><span class="icon">&#9733;</span> GSA Auctions</div>
+      <div class="nav-item" data-view="venture-smb"><span class="icon">&#9670;</span> SMB Acquisition</div>
+      <div class="nav-item" data-view="venture-grants"><span class="icon">&#9830;</span> Gov Grants</div>
+      <div class="nav-item" data-view="venture-tradeschool"><span class="icon">&#9998;</span> Trade School</div>
     </div>
     <div class="nav-section">
       <div class="nav-section-label">Knowledge</div>
@@ -1164,9 +1338,10 @@ const GROUP_COLORS = {
   'health-wellness': 'var(--green)', trading: '#e07c39', crypto: '#3ecf8e', contacts: '#cf6679',
 };
 function switchView(v, pushState = true) {
+  const viewTitles = {'venture-kalshi':'Kalshi','venture-gsa':'GSA Auctions','venture-smb':'SMB Acquisition','venture-grants':'Government Grants','venture-tradeschool':'Trade School'};
   currentView = v;
   $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
-  $('#viewTitle').textContent = v.charAt(0).toUpperCase() + v.slice(1);
+  $('#viewTitle').textContent = viewTitles[v] || v.charAt(0).toUpperCase() + v.slice(1);
   if (pushState) history.pushState({ view: v }, '', '#/' + v);
   renderView();
 }
@@ -1204,6 +1379,7 @@ document.addEventListener('keydown', (e) => {
     if (sr?.classList.contains('visible')) { sr.classList.remove('visible'); document.getElementById('globalSearch').blur(); return; }
     if (_taskDetailId) { _taskDetailId = null; renderView(); return; }
     if (_projectDetail) { _projectDetail = null; renderView(); return; }
+    if (_ventureDetail) { _ventureDetail = null; renderView(); return; }
     if (_crmContact) { _crmContact = null; renderView(); return; }
     return;
   }
@@ -2462,10 +2638,10 @@ function renderKanban(d) {
   cols.done = cols.done.slice(0, 10);
 
   const colDefs = [
-    { key: 'do', label: 'To Do', color: 'var(--accent)', icon: '○' },
-    { key: 'doing', label: 'In Progress', color: 'var(--yellow)', icon: '◐' },
-    { key: 'review', label: 'Review', color: 'var(--purple)', icon: '◉' },
-    { key: 'done', label: 'Done', color: 'var(--green)', icon: '●' },
+    { key: 'do', label: 'To Do', color: 'var(--accent)' },
+    { key: 'doing', label: 'In Progress', color: 'var(--yellow)' },
+    { key: 'review', label: 'Review', color: 'var(--purple)' },
+    { key: 'done', label: 'Done', color: 'var(--green)' },
   ];
 
   const renderCard = (t, col) => {
@@ -2479,7 +2655,7 @@ function renderKanban(d) {
     const tokenStr = t.lastRunTokens > 0 ? (t.lastRunTokens > 1000 ? (t.lastRunTokens/1000).toFixed(0)+'k' : t.lastRunTokens) + ' tok' : '';
     const age = t.created_at ? taskAge(t.created_at) : '';
 
-    return `<div class="kanban-card ${grpClass}" id="kk-${t.id}" draggable="true" ondragstart="event.dataTransfer.setData('text/plain','${t.id}');event.dataTransfer.effectAllowed='move';this.style.opacity='0.4'" ondragend="this.style.opacity='1'">
+    return `<div class="kanban-card ${grpClass}" id="kk-${t.id}" draggable="true" ondragstart="this.classList.add('dragging');event.dataTransfer.setData('text/plain','${t.id}');event.dataTransfer.effectAllowed='move'" ondragend="this.classList.remove('dragging')">
       ${t.project ? `<div class="kk-project" style="cursor:pointer" onclick="event.stopPropagation();_projectDetail='${esc(t.project)}';switchView('projects')">${esc(t.project)}</div>` : ''}
       <div class="kk-title" style="cursor:pointer" onclick="event.stopPropagation();_taskDetailId='${t.id}';renderView()" title="${esc(t.prompt.substring(0,300))}">${esc(title)}</div>
       ${col !== 'done' ? `<div class="kk-desc">${esc(desc)}</div>` : ''}
@@ -2513,12 +2689,16 @@ function renderKanban(d) {
   let kanban = '<div class="kanban-layout">';
   for (const col of colDefs) {
     const tasks = cols[col.key];
-    kanban += `<div class="kanban-col">
-      <div class="kanban-col-header" style="border-left:3px solid ${col.color}">
-        <span>${col.icon}</span> ${col.label}
+    kanban += `<div class="kanban-col"
+      ondragover="event.preventDefault();event.dataTransfer.dropEffect='move';this.classList.add('drag-over')"
+      ondragleave="if(!event.relatedTarget||!this.contains(event.relatedTarget))this.classList.remove('drag-over')"
+      ondrop="event.preventDefault();this.classList.remove('drag-over');moveTask(event.dataTransfer.getData('text/plain'),'${col.key}')">
+      <div class="kanban-col-header" style="color:${col.color}" ondragover="event.stopPropagation()" ondrop="event.stopPropagation()">
+        <span style="position:absolute;left:0;top:0;bottom:0;width:3px;background:${col.color};border-radius:var(--radius) 0 0 var(--radius)"></span>
+        ${col.label}
         <span class="kc-count">${tasks.length}</span>
       </div>
-      <div class="kanban-col-body" data-col="${col.key}" ondragover="event.preventDefault();event.dataTransfer.dropEffect='move';this.closest('.kanban-col').classList.add('drag-over')" ondragleave="this.closest('.kanban-col').classList.remove('drag-over')" ondrop="event.preventDefault();this.closest('.kanban-col').classList.remove('drag-over');moveTask(event.dataTransfer.getData('text/plain'),'${col.key}')">
+      <div class="kanban-col-body" data-col="${col.key}">
         ${tasks.length ? tasks.map(t => renderCard(t, col.key)).join('') : '<div class="empty" style="padding:16px;font-size:11px">No tasks</div>'}
       </div>
     </div>`;
@@ -3370,6 +3550,19 @@ views.projects = async () => {
         ${(d.frontmatter.docs||[]).concat([...d.body.matchAll(/\[\[([^\]]+)\]\]/g)].map(m=>m[1]))
           .map(l=>`<div class="pd-link" onclick="openDocFromLink('${esc(l)}')">${esc(l)}</div>`).join('')}
       </div>` : ''}
+      ${d.associations?.length ? `<div style="margin-top:16px">
+        <div class="section-title">Associations <span class="count">${d.associations.length}</span></div>
+        ${d.associations.map(a => {
+          const link = a.display?.link || '';
+          const onclick = link.startsWith('projects:') ? `switchView('projects');_projectDetail='${esc(link.split(':')[1])}';renderView()`
+            : link.startsWith('ventures:') ? `switchView('ventures');_ventureDetail='${esc(link.split(':')[1])}';renderView()`
+            : link.startsWith('tasks:') ? `switchView('tasks');window._taskDetailId='${esc(link.split(':')[1])}';renderView()`
+            : link.startsWith('crm:') ? `switchView('crm');window._crmContact='${esc(link.split(':')[1])}';renderView()`
+            : link.startsWith('docs:') ? `openDocFromLink('${esc(link.split(':')[1])}')`
+            : '';
+          return `<div class="pd-link" ${onclick ? `onclick="${onclick}" style="cursor:pointer"` : ''}>${a.display?.icon || ''} ${esc(a.display?.name || a.objectId)} ${a.label ? `<span style="color:var(--text-tertiary);font-size:10px">(${esc(a.label)})</span>` : ''}</div>`;
+        }).join('')}
+      </div>` : ''}
       <div style="margin-top:20px">
         <div class="section-title">Discussion ${d.comments?.length ? `<span class="count">${d.comments.length}</span>` : ''}${d.unreadComments > 0 ? ` <span class="unread-badge small">${d.unreadComments}</span>` : ''}${d.threadId ? ` <a href="#" onclick="window.open('https://discord.com/channels/@me/${esc(d.threadId)}');return false" style="font-size:9px;color:var(--accent);margin-left:8px">Open Discord Thread ↗</a>` : ''}</div>
         <div class="card" style="padding:12px">
@@ -3395,15 +3588,19 @@ views.projects = async () => {
   }
 
   const projects = await api('/api/projects');
-  const statusColors = {active:'green',planned:'yellow',completed:'green',paused:'yellow',unknown:'muted'};
+  const statusColors = {active:'green',planned:'yellow',completed:'muted',paused:'yellow',unknown:'muted'};
   const priorityColors = {urgent:'red',high:'orange',normal:'accent',low:'muted'};
-  return `<div class="project-grid">${projects.length ? projects.map(p => {
+  const active = projects.filter(p => p.status !== 'completed');
+  const completed = projects.filter(p => p.status === 'completed');
+
+  const renderProjectCard = (p, isCompleted) => {
     const pct = p.progress;
     const fillClass = pct < 33 ? 'low' : pct < 66 ? 'mid' : 'high';
-    return `<div class="project-tile" onclick="_projectDetail='${p.file}';renderView()">
+    const isVenture = (p.completed_reason || '').toLowerCase().includes('venture') || p.linkedDocs.some(d => d.toLowerCase().includes('ventures/'));
+    return `<div class="project-tile${isCompleted ? ' completed' : ''}" onclick="_projectDetail='${p.file}';renderView()">
       <div class="pt-header">
         <div class="pt-name">${esc(p.name)}${p.unread > 0 ? ` <span class="unread-badge small">${p.unread}</span>` : ''}</div>
-        ${badge(p.status, statusColors[p.status]||'muted')}
+        ${isVenture ? badge('venture', 'purple') : badge(p.status, statusColors[p.status]||'muted')}
       </div>
       <div class="pt-meta">
         <span>${badge(p.priority, priorityColors[p.priority]||'muted')}</span>
@@ -3411,10 +3608,18 @@ views.projects = async () => {
         ${p.taskCount ? `<span>${p.doneCount}/${p.taskCount} tasks</span>` : ''}
       </div>
       ${p.tags.length ? `<div class="pt-tags">${p.tags.map(t=>badge(t,'muted')).join('')}</div>` : ''}
-      <div class="progress-bar"><div class="fill ${fillClass}" style="width:${pct}%"></div></div>
-      <div style="font-size:11px;color:var(--text-tertiary);margin-top:6px">${pct}% complete${p.linkedDocs.length ? ` · ${p.linkedDocs.length} linked docs` : ''}</div>
+      ${!isCompleted && p.taskCount ? `<div class="vc-progress" style="margin-bottom:6px"><div class="vc-progress-bar"><div class="fill ${fillClass}" style="width:${pct}%"></div></div><div class="vc-progress-label">${p.doneCount}/${p.taskCount} tasks</div></div>` : !isCompleted ? `<div class="progress-bar"><div class="fill ${fillClass}" style="width:${pct}%"></div></div>` : ''}
+      <div style="font-size:11px;color:var(--text-tertiary);margin-top:4px;font-family:var(--mono)">${isCompleted && isVenture ? 'Graduated to Venture' : `${pct}% complete`}${p.linkedTasks.length ? ` · ${p.linkedTasks.length} linked tasks` : ''}${p.linkedDocs.length ? ` · ${p.linkedDocs.length} docs` : ''}</div>
     </div>`;
-  }).join('') : '<div class="empty">No projects. Create project .md files in the Obsidian Projects folder.</div>'}</div>`;
+  };
+
+  return `
+    ${active.length ? `<div class="project-grid">${active.map(p => renderProjectCard(p, false)).join('')}</div>` : '<div class="empty">No active projects.</div>'}
+    ${completed.length ? `
+      <div style="margin-top:28px">
+        <div class="section-title" style="display:flex;align-items:center;gap:8px">Completed <span class="count">${completed.length}</span></div>
+        <div class="project-grid" style="margin-top:10px;opacity:0.75">${completed.map(p => renderProjectCard(p, true)).join('')}</div>
+      </div>` : ''}`;
 };
 
 window.submitProjectComment = async (file) => {
@@ -3426,6 +3631,766 @@ window.submitProjectComment = async (file) => {
 };
 window.updateProject = async (file, field, value) => {
   await post('/api/project/update', { file, field, value });
+};
+
+// --- Ventures view ---
+let _ventureDetail = null;
+views.ventures = async () => {
+  if (_ventureDetail) {
+    const d = await api(`/api/venture?file=${encodeURIComponent(_ventureDetail)}`);
+    if (!d) { _ventureDetail = null; return views.ventures(); }
+    const fm = d.frontmatter || {};
+    const scoreColor = (s) => s >= 50 ? 'var(--red)' : s >= 30 ? 'var(--yellow)' : 'var(--text-tertiary)';
+    const scoreClass = (s) => s >= 50 ? 'hot' : s >= 30 ? 'warm' : 'cool';
+    const score = fm.opportunity_score ?? 0;
+    const scCls = scoreClass(score);
+    const linkedDocs = [...(d.body || '').matchAll(/\[\[([^\]]+)\]\]/g)].map(m => m[1]);
+    const allDocs = [...(fm.linked_docs || []), ...linkedDocs];
+    return `<div class="venture-detail">
+      <div class="vd-back" onclick="_ventureDetail=null;renderView()">&#8592; All Ventures</div>
+      <div class="vd-header">
+        <div class="vd-title">${esc(d.file.replace('.md','').replace(/-/g,' '))}</div>
+        <div class="vd-score-lg vc-score ${scCls}">${score}/70</div>
+      </div>
+      <div class="vd-fields">
+        <div class="vd-field"><label>Stage</label>
+          <select onchange="updateVenture('${d.file}','stage',this.value)">
+            ${['idea','research','building','live','revenue'].map(s=>`<option${fm.stage===s?' selected':''}>${s}</option>`).join('')}
+          </select></div>
+        <div class="vd-field"><label>Status</label>
+          <select onchange="updateVenture('${d.file}','status',this.value)">
+            ${['active','paused','archived'].map(s=>`<option${fm.status===s?' selected':''}>${s}</option>`).join('')}
+          </select></div>
+        <div class="vd-field"><label>Risk Level</label>
+          <select onchange="updateVenture('${d.file}','risk_level',this.value)">
+            ${['low','medium','high'].map(r=>`<option${fm.risk_level===r?' selected':''}>${r}</option>`).join('')}
+          </select></div>
+        <div class="vd-field"><label>Agent</label>
+          <select onchange="updateVenture('${d.file}','agent',this.value)">
+            ${['Mithrandir','unassigned'].map(a=>`<option${fm.agent===a?' selected':''}>${a}</option>`).join('')}
+          </select></div>
+        <div class="vd-field"><label>Score</label>
+          <input type="range" min="0" max="70" value="${score}" style="width:140px;accent-color:${scoreColor(score)}"
+            onchange="updateVenture('${d.file}','opportunity_score',parseInt(this.value));this.nextElementSibling.textContent=this.value+'/70'"
+          ><span style="font-size:12px;margin-left:8px;color:${scoreColor(score)};font-weight:600;font-family:var(--mono)">${score}/70</span></div>
+        <div class="vd-field"><label>Est. Upside</label>
+          <input type="text" value="${esc(fm.estimated_upside||'')}" onchange="updateVenture('${d.file}','estimated_upside',this.value)"></div>
+        <div class="vd-field"><label>Investment</label>
+          <input type="text" value="${esc(fm.investment_needed||'')}" onchange="updateVenture('${d.file}','investment_needed',this.value)"></div>
+        <div class="vd-field full"><label>Next Action</label>
+          <input type="text" value="${esc(fm.next_action||'')}" onchange="updateVenture('${d.file}','next_action',this.value)"></div>
+      </div>
+      ${fm.linked_project ? `<div class="vd-section">
+        <div class="section-title">Linked Project</div>
+        <div class="vd-link" onclick="_projectDetail='${esc(fm.linked_project)}';currentView='projects';$$('.nav-item').forEach(i=>{i.classList.remove('active');if(i.dataset.view==='projects')i.classList.add('active')});$('#viewTitle').textContent='Projects';renderView()">
+          &#9670; ${esc(String(fm.linked_project).replace('.md','').replace(/-/g,' '))}
+        </div>
+      </div>` : ''}
+      ${d.linkedTasks?.length ? `<div class="vd-section">
+        <div class="section-title">Linked Tasks <span class="count">${d.linkedTasks.length}</span></div>
+        <div class="card" style="padding:0;overflow:hidden">
+          ${d.linkedTasks.map((t,i) => `<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:12px;cursor:pointer;transition:background 120ms;${i<d.linkedTasks.length-1?'border-bottom:1px solid var(--border);':''}" onclick="switchView('tasks');window._taskDetailId='${esc(t.id)}';renderView()" onmouseenter="this.style.background='var(--bg-hover)'" onmouseleave="this.style.background=''">
+            ${badge(t.status, t.status==='active'?'green':t.status==='completed'?'muted':'yellow')}
+            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.prompt)}</span>
+            ${t.group ? `<span style="color:var(--text-tertiary);font-size:10px;font-family:var(--mono)">${esc(t.group)}</span>` : ''}
+          </div>`).join('')}
+        </div>
+      </div>` : ''}
+      ${allDocs.length ? `<div class="vd-links vd-section">
+        <div class="section-title">Linked Docs</div>
+        ${allDocs.map(l=>`<div class="vd-link" onclick="openDocFromLink('${esc(l)}')">&#9670; ${esc(l)}</div>`).join('')}
+      </div>` : ''}
+      ${d.associations?.length ? (() => {
+        const seen = new Set();
+        const unique = d.associations.filter(a => {
+          const key = a.type + ':' + a.objectId;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        // Exclude associations already shown as linked project or linked tasks
+        const taskIds = new Set((d.linkedTasks || []).map(t => t.id));
+        const projFile = fm.linked_project || '';
+        const filtered = unique.filter(a => {
+          if (a.type === 'task' && taskIds.has(a.objectId)) return false;
+          if (a.type === 'project' && a.objectId === projFile) return false;
+          return true;
+        });
+        if (!filtered.length) return '';
+        return `<div class="vd-section">
+        <div class="section-title">Associations <span class="count">${filtered.length}</span></div>
+        ${filtered.map(a => {
+          const link = a.display?.link || '';
+          const onclick = link.startsWith('projects:') ? `switchView('projects');_projectDetail='${esc(link.split(':')[1])}';renderView()`
+            : link.startsWith('ventures:') ? `switchView('ventures');_ventureDetail='${esc(link.split(':')[1])}';renderView()`
+            : link.startsWith('tasks:') ? `switchView('tasks');window._taskDetailId='${esc(link.split(':')[1])}';renderView()`
+            : link.startsWith('crm:') ? `switchView('crm');window._crmContact='${esc(link.split(':')[1])}';renderView()`
+            : link.startsWith('docs:') ? `openDocFromLink('${esc(link.split(':')[1])}')`
+            : '';
+          return `<div class="vd-link" ${onclick ? `onclick="${onclick}" style="cursor:pointer"` : ''}><span>${a.display?.icon || ''}</span> ${esc(a.display?.name || a.objectId)} ${a.label ? `<span style="color:var(--text-tertiary);font-size:10px">(${esc(a.label)})</span>` : ''}</div>`;
+        }).join('')}
+      </div>`;
+      })() : ''}
+      <div class="vd-section">
+        <div class="section-title">Discussion ${d.comments?.length ? `<span class="count">${d.comments.length}</span>` : ''}</div>
+        <div class="card" style="padding:12px">
+          ${d.comments?.length ? `<div style="max-height:300px;overflow-y:auto;margin-bottom:8px">
+            ${d.comments.map(c => `<div class="ct-msg${c.read===0?' unread':''}" style="padding:6px 0;border-bottom:1px solid var(--border-light)">
+              <span class="ct-sender ${c.sender==='agent'?'agent':'user'}">${c.sender==='agent'?'Mithrandir':'You'}</span>
+              <span class="ct-text">${esc(c.message)}</span>
+              <span class="ct-time">${timeAgo(c.created_at)}</span>
+            </div>`).join('')}
+          </div>` : '<div style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px">No discussion yet</div>'}
+          <div class="ct-input">
+            <textarea id="venture-comment-input" placeholder="Add a comment..."></textarea>
+            <button class="btn btn-green" onclick="submitVentureComment('${d.file}')">Send</button>
+          </div>
+        </div>
+      </div>
+      <div class="vd-section">
+        <div class="section-title">Details</div>
+        <div class="card"><div class="md" style="padding:16px">${renderMd(d.body)}</div></div>
+      </div>
+    </div>`;
+  }
+
+  const ventures = await api('/api/ventures');
+  if (!ventures || !Array.isArray(ventures)) return '<div class="empty">Could not load ventures.</div>';
+  const stages = ['idea','research','building','live','revenue'];
+  const stageLabels = {idea:'Idea',research:'Research',building:'Building',live:'Live',revenue:'Revenue'};
+
+  const grouped = {};
+  stages.forEach(s => grouped[s] = []);
+  ventures.filter(v => v.status !== 'archived').forEach(v => {
+    const s = v.stage || 'idea';
+    if (grouped[s]) grouped[s].push(v);
+    else grouped['idea'].push(v);
+  });
+
+  const scoreClass = (s) => s >= 50 ? 'hot' : s >= 30 ? 'warm' : 'cool';
+  const totalActive = ventures.filter(v => v.status !== 'archived').length;
+  const totalScore = ventures.reduce((sum, v) => sum + (v.opportunity_score || 0), 0);
+  const highestScore = ventures.reduce((max, v) => Math.max(max, v.opportunity_score || 0), 0);
+  const liveCount = (grouped['live']?.length || 0) + (grouped['revenue']?.length || 0);
+
+  return `
+    <div class="venture-summary">
+      <div class="vs-stat"><div class="vs-val">${totalActive}</div><div class="vs-label">Active</div></div>
+      <div class="vs-divider"></div>
+      <div class="vs-stat"><div class="vs-val" style="color:${highestScore>=50?'var(--red)':highestScore>=30?'var(--yellow)':'var(--text-tertiary)'}">${totalActive ? Math.round(totalScore/totalActive) : 0}<span style="font-size:12px;opacity:0.5">/70</span></div><div class="vs-label">Avg Score</div></div>
+      <div class="vs-divider"></div>
+      <div class="vs-stat"><div class="vs-val" style="color:var(--green)">${liveCount}</div><div class="vs-label">Live</div></div>
+      <div class="vs-divider"></div>
+      <div class="vs-stat"><div class="vs-val">${highestScore}<span style="font-size:12px;opacity:0.5">/70</span></div><div class="vs-label">Top Score</div></div>
+    </div>
+    <div class="venture-pipeline">
+      ${stages.map(s => `
+        <div class="venture-stage" data-stage="${s}"
+          ondragover="event.preventDefault();this.classList.add('drag-over')"
+          ondragleave="if(!event.relatedTarget||!this.contains(event.relatedTarget))this.classList.remove('drag-over')"
+          ondrop="this.classList.remove('drag-over');ventureDropStage(event,'${s}')">
+          <div class="venture-stage-header stage-${s}">
+            <span>${stageLabels[s]}</span>
+            <span class="vsh-count">${grouped[s].length}</span>
+          </div>
+          <div class="venture-stage-body">
+          ${grouped[s].length ? grouped[s].map(v => {
+            const sc = v.opportunity_score ?? 0;
+            const pct = v.taskCount > 0 ? Math.round(v.doneCount / v.taskCount * 100) : 0;
+            return `<div class="venture-card" draggable="true" data-file="${v.file}"
+              ondragstart="this.classList.add('dragging');event.dataTransfer.setData('text/plain','${v.file}');event.dataTransfer.effectAllowed='move'"
+              ondragend="this.classList.remove('dragging')"
+              onclick="if(!this.classList.contains('dragging')){ventureCardClick('${v.file}')}">
+              <div class="vc-name">${esc(v.name)}${v.unread > 0 ? ` <span class="unread-badge small">${v.unread}</span>` : ''}</div>
+              <div class="vc-indicators">
+                <span class="vc-score ${scoreClass(sc)}">${sc}/70</span>
+                <span class="vc-risk ${v.risk_level}">${v.risk_level}</span>
+              </div>
+              ${v.estimated_upside ? `<div class="vc-upside">${esc(v.estimated_upside)}</div>` : ''}
+              ${v.taskCount ? `<div class="vc-progress"><div class="vc-progress-bar"><div class="fill ${pct<33?'low':pct<66?'mid':'high'}" style="width:${pct}%"></div></div><div class="vc-progress-label">${v.doneCount}/${v.taskCount} tasks</div></div>` : ''}
+              ${v.next_action ? `<div class="vc-next">${esc(v.next_action.length > 55 ? v.next_action.substring(0,52)+'...' : v.next_action)}</div>` : ''}
+              ${v.tags.length ? `<div class="vc-tags">${v.tags.map(t=>badge(t,'muted')).join('')}</div>` : ''}
+            </div>`;
+          }).join('') : `<div class="venture-empty">No ventures</div>`}
+          </div>
+        </div>
+      `).join('')}
+    </div>`;
+};
+
+window.submitVentureComment = async (file) => {
+  const ta = document.getElementById('venture-comment-input');
+  if (!ta || !ta.value.trim()) return;
+  await post('/api/task/comment', { taskId: 'venture:' + file, message: ta.value.trim() });
+  ta.value = '';
+  renderView();
+};
+window.updateVenture = async (file, field, value) => {
+  await post('/api/venture/update', { file, field, value });
+};
+const VENTURE_DASHBOARDS = {
+  'Kalshi-Prediction-Markets.md': 'venture-kalshi',
+  'GSA-Auction-Arbitrage.md': 'venture-gsa',
+  'SMB-Acquisition-Pipeline.md': 'venture-smb',
+  'Government-Grants.md': 'venture-grants',
+  'AI-Trade-School.md': 'venture-tradeschool',
+};
+window.ventureCardClick = (file) => {
+  const dashView = VENTURE_DASHBOARDS[file];
+  if (dashView) {
+    switchView(dashView);
+  } else {
+    _ventureDetail = file;
+    renderView();
+  }
+};
+window.ventureDropStage = async (event, newStage) => {
+  event.preventDefault();
+  const file = event.dataTransfer.getData('text/plain');
+  if (!file) return;
+  await post('/api/venture/update', { file, field: 'stage', value: newStage });
+  renderView();
+};
+
+// --- Venture Sub-Dashboards ---
+
+// Helper: build SVG line chart
+function svgLineChart(data, {width=600, height=200, color='var(--accent)', yLabel='', showDots=true, baseline=true} = {}) {
+  if (!data.length) return '<div style="padding:40px;text-align:center;color:var(--text-tertiary);font-size:11px">No data</div>';
+  const pad = {top: 10, right: 10, bottom: 24, left: 50};
+  const w = width - pad.left - pad.right;
+  const h = height - pad.top - pad.bottom;
+  const vals = data.map(d => d.y);
+  const minY = Math.min(0, ...vals);
+  const maxY = Math.max(...vals) * 1.1 || 1;
+  const rangeY = maxY - minY || 1;
+
+  const scaleX = (i) => pad.left + (i / (data.length - 1 || 1)) * w;
+  const scaleY = (v) => pad.top + h - ((v - minY) / rangeY) * h;
+
+  const points = data.map((d, i) => `${scaleX(i).toFixed(1)},${scaleY(d.y).toFixed(1)}`).join(' ');
+  const areaPoints = points + ` ${scaleX(data.length-1).toFixed(1)},${scaleY(minY).toFixed(1)} ${scaleX(0).toFixed(1)},${scaleY(minY).toFixed(1)}`;
+
+  // Y-axis labels
+  const yTicks = 4;
+  let yLabels = '';
+  for (let i = 0; i <= yTicks; i++) {
+    const v = minY + (rangeY * i / yTicks);
+    const y = scaleY(v);
+    yLabels += `<text x="${pad.left-6}" y="${y+3}" text-anchor="end" fill="var(--text-tertiary)" font-size="9" font-family="var(--mono)">${v >= 1000 ? (v/1000).toFixed(0)+'k' : v.toFixed(v % 1 ? 2 : 0)}</text>`;
+    yLabels += `<line x1="${pad.left}" y1="${y}" x2="${width-pad.right}" y2="${y}" stroke="var(--border)" stroke-width="0.5" stroke-dasharray="${i === 0 ? '' : '2,3'}"/>`;
+  }
+
+  // X-axis labels (show every Nth)
+  const xStep = Math.max(1, Math.floor(data.length / 6));
+  let xLabels = '';
+  data.forEach((d, i) => {
+    if (i % xStep === 0 || i === data.length - 1) {
+      xLabels += `<text x="${scaleX(i)}" y="${height-4}" text-anchor="middle" fill="var(--text-tertiary)" font-size="9" font-family="var(--mono)">${d.label || ''}</text>`;
+    }
+  });
+
+  // Baseline at y=0
+  const baselineEl = baseline && minY < 0 ? `<line x1="${pad.left}" y1="${scaleY(0)}" x2="${width-pad.right}" y2="${scaleY(0)}" stroke="var(--text-tertiary)" stroke-width="1" stroke-dasharray="4,3"/>` : '';
+
+  // Dots
+  let dots = '';
+  if (showDots) {
+    data.forEach((d, i) => {
+      const cx = scaleX(i).toFixed(1), cy = scaleY(d.y).toFixed(1);
+      const c = d.color || color;
+      dots += `<circle cx="${cx}" cy="${cy}" r="3" fill="${c}" stroke="var(--bg-secondary)" stroke-width="1.5"/>`;
+    });
+  }
+
+  return `<div class="vdash-chart"><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">
+    ${yLabels}${xLabels}${baselineEl}
+    <defs><linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="${color}" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
+    </linearGradient></defs>
+    <polygon points="${areaPoints}" fill="url(#areaGrad)"/>
+    <polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>
+    ${dots}
+  </svg></div>`;
+}
+
+// Helper: build bar chart
+function svgBarChart(data, {width=600, height=180, barColor='var(--accent)'} = {}) {
+  if (!data.length) return '<div style="padding:40px;text-align:center;color:var(--text-tertiary);font-size:11px">No data</div>';
+  const pad = {top: 10, right: 10, bottom: 24, left: 50};
+  const w = width - pad.left - pad.right;
+  const h = height - pad.top - pad.bottom;
+  const maxVal = Math.max(...data.map(d => d.y)) * 1.1 || 1;
+  const barW = Math.min(40, (w / data.length) * 0.7);
+  const gap = (w / data.length);
+
+  let bars = '';
+  data.forEach((d, i) => {
+    const x = pad.left + gap * i + (gap - barW) / 2;
+    const barH = (d.y / maxVal) * h;
+    const y = pad.top + h - barH;
+    const c = d.color || barColor;
+    bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW}" height="${barH.toFixed(1)}" fill="${c}" rx="2"/>`;
+    bars += `<text x="${(x + barW/2).toFixed(1)}" y="${y - 4}" text-anchor="middle" fill="${c}" font-size="9" font-family="var(--mono)">${d.y.toFixed(0)}%</text>`;
+    bars += `<text x="${(x + barW/2).toFixed(1)}" y="${height - 4}" text-anchor="middle" fill="var(--text-tertiary)" font-size="8" font-family="var(--mono)">${(d.label || '').substring(0,8)}</text>`;
+  });
+
+  return `<div class="vdash-chart"><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">${bars}</svg></div>`;
+}
+
+// ── KALSHI DASHBOARD ──
+views['venture-kalshi'] = async () => {
+  const d = await api('/api/venture/kalshi');
+  const trades = d.trades || [];
+  const s = d.summary || {};
+  const bt = d.backtestSummary || {};
+  const signals = d.todayScan || [];
+  const settled = trades.filter(t => t.status === 'settled');
+  const open = trades.filter(t => t.status === 'open');
+
+  // Cumulative P&L data for chart
+  let cumPnl = 0;
+  const pnlData = settled.map(t => {
+    cumPnl += (t.pnl || 0);
+    return { y: cumPnl, label: (t.date || '').slice(5), color: t.won ? 'var(--green)' : 'var(--red)' };
+  });
+
+  return `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <div class="vd-back" onclick="switchView('ventures')" style="margin:0">&#8592; Pipeline</div>
+      <div style="margin-left:auto;font-size:11px"><span class="vd-link" onclick="_ventureDetail='Kalshi-Prediction-Markets.md';switchView('ventures')" style="cursor:pointer">Edit Details</span></div>
+    </div>
+    <div class="vdash-header">
+      <div class="vdash-title">Kalshi Prediction Markets</div>
+      <div class="vdash-stage" style="color:var(--yellow);border-color:var(--yellow)">Building</div>
+    </div>
+    <div class="vdash-metrics">
+      <div class="vm-stat"><div class="vm-val" style="color:${s.winRate >= 60 ? 'var(--green)' : 'var(--yellow)'}">${s.winRate || 0}%</div><div class="vm-label">Win Rate</div></div>
+      <div class="vm-stat"><div class="vm-val" style="color:${(s.totalPnL||0) >= 0 ? 'var(--green)' : 'var(--red)'}">$${(s.totalPnL || 0).toFixed(2)}</div><div class="vm-label">Paper P&L</div></div>
+      <div class="vm-stat"><div class="vm-val">${settled.length}</div><div class="vm-label">Settled</div></div>
+      <div class="vm-stat"><div class="vm-val">${open.length}</div><div class="vm-label">Open</div></div>
+      <div class="vm-stat"><div class="vm-val">${(s.roi || 0).toFixed(1)}%</div><div class="vm-label">ROI</div></div>
+      <div class="vm-stat"><div class="vm-val" style="color:var(--accent)">${bt.winRate || 0}%</div><div class="vm-label">Backtest Win</div></div>
+    </div>
+    <div class="vdash-grid">
+      <div class="vdash-panel" style="grid-column:1/-1">
+        <div class="vp-title">Cumulative P&L (Paper Trading)</div>
+        ${svgLineChart(pnlData, {width: 900, height: 220, color: 'var(--green)', showDots: true, baseline: true})}
+      </div>
+    </div>
+    <div class="vdash-grid">
+      <div class="vdash-panel">
+        <div class="vp-title">Today's Signals${d.scanDate ? ` (${d.scanDate})` : ''} <span class="count">${signals.length}</span></div>
+        ${signals.length ? `<div style="max-height:320px;overflow-y:auto"><table class="vdash-table">
+          <tr><th>City</th><th>Bracket</th><th>Side</th><th class="right">Model%</th><th class="right">Market</th><th class="right">Edge</th><th>Consensus</th></tr>
+          ${signals.sort((a,b) => (b.edge||0) - (a.edge||0)).map(s => `<tr>
+            <td class="text">${esc(s.city || '')}</td>
+            <td class="text" style="font-size:10px;color:var(--text-tertiary)">${esc(s.subtitle || '')}</td>
+            <td>${s.side || ''}</td>
+            <td class="right">${s.modelProb || 0}%</td>
+            <td class="right">${s.marketPrice || 0}c</td>
+            <td class="right ${(s.edge||0) >= 20 ? 'pos' : (s.edge||0) >= 10 ? '' : 'neg'}">${s.edge || 0}%</td>
+            <td style="font-size:10px;color:var(--text-tertiary)">${s.members || ''}</td>
+          </tr>`).join('')}
+        </table></div>` : '<div style="padding:20px;text-align:center;color:var(--text-tertiary);font-size:11px">No signals today</div>'}
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Backtest (${bt.period || 'N/A'})</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+          <div><span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase">Trades</span><div style="font-family:var(--mono);font-size:18px;font-weight:700">${bt.totalTrades || 0}</div></div>
+          <div><span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase">Win Rate</span><div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--green)">${bt.winRate || 0}%</div></div>
+          <div><span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase">Total P&L</span><div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--green)">$${(bt.totalPnL || 0).toFixed(2)}</div></div>
+          <div><span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase">ROI</span><div style="font-family:var(--mono);font-size:18px;font-weight:700">${(bt.roi || 0).toFixed(1)}%</div></div>
+          <div><span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase">Profit Factor</span><div style="font-family:var(--mono);font-size:18px;font-weight:700">${(bt.profitFactor || 0).toFixed(2)}</div></div>
+          <div><span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase">Max Drawdown</span><div style="font-family:var(--mono);font-size:18px;font-weight:700">$${(bt.maxDrawdown || 0).toFixed(2)}</div></div>
+        </div>
+      </div>
+    </div>
+    ${open.length ? `<div class="vdash-panel" style="margin-bottom:16px">
+      <div class="vp-title">Open Positions <span class="count">${open.length}</span></div>
+      <table class="vdash-table">
+        <tr><th>Date</th><th>City</th><th>Ticker</th><th>Side</th><th class="right">Cost</th><th class="right">Max Profit</th><th class="right">Edge</th></tr>
+        ${open.map(t => `<tr>
+          <td>${(t.date || '').slice(5)}</td>
+          <td class="text">${esc(t.city || '')}</td>
+          <td style="font-size:10px">${esc(t.ticker || '')}</td>
+          <td>${t.side || ''}</td>
+          <td class="right">$${(t.cost || 0).toFixed(2)}</td>
+          <td class="right pos">$${(t.maxProfit || 0).toFixed(2)}</td>
+          <td class="right">${t.edge || 0}%</td>
+        </tr>`).join('')}
+      </table>
+    </div>` : ''}
+    <div class="vdash-panel" style="margin-bottom:20px">
+      <div class="vp-title">Trade Log <span class="count">${settled.length} settled</span></div>
+      <div style="max-height:300px;overflow-y:auto">
+        <table class="vdash-table">
+          <tr><th>Date</th><th>City</th><th>Ticker</th><th>Side</th><th class="right">Cost</th><th class="right">P&L</th><th>Result</th></tr>
+          ${settled.map(t => `<tr>
+            <td>${(t.date || '').slice(5)}</td>
+            <td class="text">${esc(t.city || '')}</td>
+            <td style="font-size:10px">${esc(t.ticker || '')}</td>
+            <td>${t.side || ''}</td>
+            <td class="right">$${(t.cost || 0).toFixed(2)}</td>
+            <td class="right ${(t.pnl||0) >= 0 ? 'pos' : 'neg'}">$${(t.pnl || 0).toFixed(2)}</td>
+            <td>${t.won ? badge('won','green') : badge('lost','red')}</td>
+          </tr>`).join('')}
+        </table>
+      </div>
+    </div>
+    ${(() => {
+      const a = d.analysis || {};
+      const insights = a.insights || [];
+      const reasons = a.tradeReasons || [];
+      const byCity = a.byCity || {};
+      const bySide = a.bySide || {};
+      const byModel = a.byModelBucket || {};
+      const byEdge = a.byEdgeBucket || {};
+      const byCons = a.byConsensus || {};
+
+      const statRow = (label, data) => {
+        const total = data.w + data.l;
+        const rate = total > 0 ? Math.round(data.w / total * 100) : 0;
+        return `<tr>
+          <td class="text">${esc(label)}</td>
+          <td class="right">${data.w}/${total}</td>
+          <td class="right ${rate >= 70 ? 'pos' : rate < 40 ? 'neg' : ''}">${rate}%</td>
+          <td class="right ${data.pnl >= 0 ? 'pos' : 'neg'}">$${data.pnl.toFixed(2)}</td>
+        </tr>`;
+      };
+
+      return `
+    <div style="margin-bottom:20px">
+      <div class="section-title" style="font-size:13px;font-weight:700;letter-spacing:0;text-transform:none;color:var(--text-primary);margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid var(--border)">Trade Analysis & Memory</div>
+
+      ${insights.length ? `<div class="vdash-panel" style="margin-bottom:16px;border-left:3px solid var(--accent)">
+        <div class="vp-title">Key Insights (${insights.length} rules learned)</div>
+        ${insights.map(i => {
+          const isWarning = i.startsWith('Avoid') || i.startsWith('Never') || i.includes('underperforms');
+          const isPositive = i.includes('strong') || i.includes('reliable');
+          return `<div style="padding:6px 0;border-bottom:1px solid var(--border-light);font-size:12px;display:flex;align-items:flex-start;gap:8px">
+            <span style="color:${isWarning ? 'var(--red)' : isPositive ? 'var(--green)' : 'var(--yellow)'}; flex-shrink:0;font-weight:700">${isWarning ? '!' : isPositive ? '+' : '~'}</span>
+            <span>${esc(i)}</span>
+          </div>`;
+        }).join('')}
+      </div>` : ''}
+
+      <div class="vdash-grid">
+        <div class="vdash-panel">
+          <div class="vp-title">Win Rate by City</div>
+          <table class="vdash-table">
+            <tr><th>City</th><th class="right">Record</th><th class="right">Win%</th><th class="right">P&L</th></tr>
+            ${Object.entries(byCity).map(([k, v]) => statRow(k, v)).join('')}
+          </table>
+        </div>
+        <div class="vdash-panel">
+          <div class="vp-title">Win Rate by Side</div>
+          <table class="vdash-table">
+            <tr><th>Side</th><th class="right">Record</th><th class="right">Win%</th><th class="right">P&L</th></tr>
+            ${Object.entries(bySide).map(([k, v]) => statRow(k, v)).join('')}
+          </table>
+        </div>
+      </div>
+      <div class="vdash-grid">
+        <div class="vdash-panel">
+          <div class="vp-title">Win Rate by Model Confidence</div>
+          <table class="vdash-table">
+            <tr><th>Bucket</th><th class="right">Record</th><th class="right">Win%</th><th class="right">P&L</th></tr>
+            ${Object.entries(byModel).map(([k, v]) => statRow(k, v)).join('')}
+          </table>
+        </div>
+        <div class="vdash-panel">
+          <div class="vp-title">Win Rate by Edge Size</div>
+          <table class="vdash-table">
+            <tr><th>Edge</th><th class="right">Record</th><th class="right">Win%</th><th class="right">P&L</th></tr>
+            ${Object.entries(byEdge).map(([k, v]) => statRow(k, v)).join('')}
+          </table>
+        </div>
+      </div>
+      <div class="vdash-grid full">
+        <div class="vdash-panel">
+          <div class="vp-title">Win Rate by Consensus</div>
+          <table class="vdash-table">
+            <tr><th>Consensus</th><th class="right">Record</th><th class="right">Win%</th><th class="right">P&L</th></tr>
+            ${Object.entries(byCons).map(([k, v]) => statRow(k, v)).join('')}
+          </table>
+        </div>
+      </div>
+
+      <div class="vdash-panel" style="margin-top:16px">
+        <div class="vp-title">Per-Trade Analysis <span class="count">${reasons.length}</span></div>
+        <div style="max-height:400px;overflow-y:auto">
+          <table class="vdash-table">
+            <tr><th>Date</th><th>City</th><th>Side</th><th>Result</th><th class="right">P&L</th><th>Why</th></tr>
+            ${reasons.map(r => `<tr>
+              <td>${(r.date || '').slice(5)}</td>
+              <td class="text">${esc(r.city || '')}</td>
+              <td>${r.side || ''}</td>
+              <td>${r.won ? badge('won','green') : badge('lost','red')}</td>
+              <td class="right ${r.pnl >= 0 ? 'pos' : 'neg'}">$${r.pnl.toFixed(2)}</td>
+              <td class="text" style="white-space:normal;max-width:300px;font-size:10px;color:${r.won ? 'var(--text-secondary)' : 'var(--red)'}">${esc(r.reasons.join('; '))}</td>
+            </tr>`).join('')}
+          </table>
+        </div>
+      </div>
+    </div>`;
+    })()}`;
+};
+
+// ── GSA AUCTIONS DASHBOARD ──
+views['venture-gsa'] = async () => {
+  const d = await api('/api/venture/gsa');
+  const opps = (d.opportunities || []).sort((a,b) => (b.marginPercent||0) - (a.marginPercent||0));
+  const bestMargin = opps.length ? Math.max(...opps.map(o => o.marginPercent || 0)) : 0;
+  const totalProfit = opps.reduce((s, o) => s + (o.grossProfit || 0), 0);
+
+  const barData = opps.filter(o => (o.marginPercent || 0) > 0).slice(0, 12).map(o => ({
+    y: o.marginPercent || 0,
+    label: (o.itemName || '').substring(0, 12),
+    color: (o.marginPercent||0) >= 30 ? 'var(--green)' : (o.marginPercent||0) >= 15 ? 'var(--yellow)' : 'var(--red)',
+  }));
+
+  const tierColor = (t) => t === 'A' ? 'green' : t === 'B' ? 'yellow' : t === 'C' ? 'muted' : 'red';
+
+  return `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <div class="vd-back" onclick="switchView('ventures')" style="margin:0">&#8592; Pipeline</div>
+      <div style="margin-left:auto;font-size:11px"><span class="vd-link" onclick="_ventureDetail='GSA-Auction-Arbitrage.md';switchView('ventures')" style="cursor:pointer">Edit Details</span></div>
+    </div>
+    <div class="vdash-header">
+      <div class="vdash-title">GSA Auction Arbitrage</div>
+      <div class="vdash-stage" style="color:var(--yellow);border-color:var(--yellow)">Building</div>
+    </div>
+    <div class="vdash-metrics">
+      <div class="vm-stat"><div class="vm-val">${d.totalListings || 0}</div><div class="vm-label">Listings Scanned</div></div>
+      <div class="vm-stat"><div class="vm-val">${d.analyzed || 0}</div><div class="vm-label">Analyzed</div></div>
+      <div class="vm-stat"><div class="vm-val" style="color:var(--green)">${opps.length}</div><div class="vm-label">Opportunities</div></div>
+      <div class="vm-stat"><div class="vm-val" style="color:var(--green)">${bestMargin.toFixed(0)}%</div><div class="vm-label">Best Margin</div></div>
+      <div class="vm-stat"><div class="vm-val">$${totalProfit >= 1000 ? (totalProfit/1000).toFixed(0)+'k' : totalProfit.toFixed(0)}</div><div class="vm-label">Total Est. Profit</div></div>
+    </div>
+    <div class="vdash-grid">
+      <div class="vdash-panel" style="grid-column:1/-1">
+        <div class="vp-title">Margin Distribution</div>
+        ${svgBarChart(barData, {width: 900, height: 180})}
+      </div>
+    </div>
+    <div class="vdash-panel" style="margin-bottom:20px">
+      <div class="vp-title">Opportunities <span class="count">${opps.length}</span></div>
+      <div style="max-height:400px;overflow-y:auto">
+        <table class="vdash-table">
+          <tr><th>Item</th><th>State</th><th class="right">High Bid</th><th class="right">eBay Median</th><th class="right">Gross Profit</th><th class="right">Margin</th><th>Tier</th><th>Ends</th></tr>
+          ${opps.map(o => `<tr>
+            <td class="text" style="max-width:250px;overflow:hidden;text-overflow:ellipsis" title="${esc(o.itemName || '')}">${esc((o.itemName || '').substring(0, 40))}</td>
+            <td>${o.state || ''}</td>
+            <td class="right">$${(o.highBid || 0).toLocaleString()}</td>
+            <td class="right">$${(o.ebayMedian || 0).toLocaleString()}</td>
+            <td class="right ${(o.grossProfit||0) >= 0 ? 'pos' : 'neg'}">$${(o.grossProfit || 0).toLocaleString()}</td>
+            <td class="right ${(o.marginPercent||0) >= 15 ? 'pos' : (o.marginPercent||0) < 0 ? 'neg' : ''}">${(o.marginPercent || 0).toFixed(1)}%</td>
+            <td>${badge(o.tier || '?', tierColor(o.tier))}</td>
+            <td>${(o.endDate || '').slice(5)}</td>
+          </tr>`).join('')}
+        </table>
+      </div>
+    </div>
+    <div style="font-size:10px;color:var(--text-tertiary);font-family:var(--mono)">Scan: ${d.scanDate ? new Date(d.scanDate).toLocaleString() : 'N/A'}</div>`;
+};
+
+// ── SMB ACQUISITION DASHBOARD ──
+views['venture-smb'] = async () => {
+  const d = await api('/api/venture/smb');
+  const fm = d.frontmatter || {};
+  const body = d.body || '';
+
+  // Parse milestones from body
+  const milestones = [];
+  const re = /^- \[([ x])\] (.+)$/gm;
+  let m;
+  while ((m = re.exec(body)) !== null) {
+    milestones.push({ done: m[1] === 'x', text: m[2] });
+  }
+  const done = milestones.filter(m => m.done).length;
+  const pct = milestones.length ? Math.round(done / milestones.length * 100) : 0;
+
+  // Pipeline stages
+  const pipeline = [
+    { label: 'Sourced', count: d.dealsScreened || 0, width: 100, color: 'var(--accent)' },
+    { label: 'Screened', count: 0, width: 80, color: 'var(--yellow)' },
+    { label: 'Qualified', count: 0, width: 60, color: 'var(--orange)' },
+    { label: 'LOI Sent', count: 0, width: 45, color: 'var(--purple)' },
+    { label: 'Due Diligence', count: 0, width: 30, color: 'var(--green)' },
+    { label: 'Closed', count: 0, width: 20, color: 'var(--green)' },
+  ];
+
+  return `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <div class="vd-back" onclick="switchView('ventures')" style="margin:0">&#8592; Pipeline</div>
+      <div style="margin-left:auto;font-size:11px"><span class="vd-link" onclick="_ventureDetail='SMB-Acquisition-Pipeline.md';switchView('ventures')" style="cursor:pointer">Edit Details</span></div>
+    </div>
+    <div class="vdash-header">
+      <div class="vdash-title">SMB Acquisition Pipeline</div>
+      <div class="vdash-stage" style="color:var(--accent);border-color:var(--accent)">Research</div>
+    </div>
+    <div class="vdash-metrics">
+      <div class="vm-stat"><div class="vm-val">${fm.opportunity_score || 55}<span style="font-size:12px;opacity:0.5">/70</span></div><div class="vm-label">Score</div></div>
+      <div class="vm-stat"><div class="vm-val">${d.dealsScreened || 0}</div><div class="vm-label">Deals Screened</div></div>
+      <div class="vm-stat"><div class="vm-val">0</div><div class="vm-label">LOIs Sent</div></div>
+      <div class="vm-stat"><div class="vm-val">${pct}%</div><div class="vm-label">Milestones</div></div>
+      <div class="vm-stat"><div class="vm-val" style="color:var(--text-tertiary)">$200K-1.5M</div><div class="vm-label">Target Range</div></div>
+    </div>
+    <div class="vdash-grid">
+      <div class="vdash-panel">
+        <div class="vp-title">Deal Pipeline</div>
+        <div class="vdash-funnel">
+          ${pipeline.map(s => `<div class="funnel-stage">
+            <div class="funnel-label">${s.label}</div>
+            <div class="funnel-bar" style="width:${s.width}%;background:${s.color}22;color:${s.color};border:1px solid ${s.color}44">
+              <span class="funnel-count">${s.count}</span>
+            </div>
+          </div>`).join('')}
+        </div>
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Milestones <span class="count">${done}/${milestones.length}</span></div>
+        <div style="max-height:280px;overflow-y:auto">
+          ${milestones.map(m => `<div class="vdash-milestone">
+            <div class="vm-check ${m.done ? 'done' : ''}">${m.done ? '&#10003;' : ''}</div>
+            <div class="vm-text ${m.done ? 'done' : ''}">${esc(m.text)}</div>
+          </div>`).join('')}
+        </div>
+        <div style="margin-top:8px"><div class="progress-bar"><div class="fill ${pct<33?'low':pct<66?'mid':'high'}" style="width:${pct}%"></div></div></div>
+      </div>
+    </div>
+    <div class="vdash-grid">
+      <div class="vdash-panel">
+        <div class="vp-title">Target Industries</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${['HVAC','Plumbing','Landscaping','Cleaning','Surveying','Pool Service','Backflow Prevention','Civil Contracting'].map(i => `<span class="badge muted" style="font-size:10px;padding:3px 8px">${i}</span>`).join('')}
+        </div>
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Key Resources</div>
+        <div style="font-size:11px;display:flex;flex-direction:column;gap:4px">
+          <div class="vd-link" onclick="switchView('ventures');_ventureDetail='SMB-Acquisition-Pipeline.md';renderView()" style="cursor:pointer">Venture Detail</div>
+          <div class="vd-link" onclick="switchView('projects');_projectDetail='SMB-Acquisition-Pipeline.md';renderView()" style="cursor:pointer">Project Tracker</div>
+        </div>
+      </div>
+    </div>`;
+};
+
+// ── GOVERNMENT GRANTS DASHBOARD ──
+views['venture-grants'] = async () => {
+  const d = await api(`/api/venture?file=Government-Grants.md`);
+  if (!d) return '<div class="empty">Venture not found</div>';
+  const fm = d.frontmatter || {};
+  const body = d.body || '';
+  const milestones = [];
+  const re = /^- \[([ x])\] (.+)$/gm;
+  let m;
+  while ((m = re.exec(body)) !== null) milestones.push({ done: m[1] === 'x', text: m[2] });
+  const done = milestones.filter(m => m.done).length;
+
+  const programs = [
+    { name: 'SBIR Phase 1', amount: '$275K', rate: '25%', status: 'Not Started' },
+    { name: 'SBIR Phase 2', amount: '$1.5M', rate: '—', status: 'Not Started' },
+    { name: 'USDA Rural Business', amount: '$500K', rate: '—', status: 'Not Started' },
+    { name: 'Amber Grant', amount: '$10K/mo', rate: '—', status: 'Not Started' },
+    { name: 'MBDA Grants', amount: 'Varies', rate: '—', status: 'Not Started' },
+  ];
+
+  return `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <div class="vd-back" onclick="switchView('ventures')" style="margin:0">&#8592; Pipeline</div>
+      <div style="margin-left:auto;font-size:11px"><span class="vd-link" onclick="_ventureDetail='Government-Grants.md';switchView('ventures')" style="cursor:pointer">Edit Details</span></div>
+    </div>
+    <div class="vdash-header">
+      <div class="vdash-title">Government Grants</div>
+      <div class="vdash-stage" style="color:var(--accent);border-color:var(--accent)">Research</div>
+    </div>
+    <div class="vdash-metrics">
+      <div class="vm-stat"><div class="vm-val">${fm.opportunity_score || 51}<span style="font-size:12px;opacity:0.5">/70</span></div><div class="vm-label">Score</div></div>
+      <div class="vm-stat"><div class="vm-val" style="color:var(--green)">$0</div><div class="vm-label">Investment</div></div>
+      <div class="vm-stat"><div class="vm-val">$50K-500K</div><div class="vm-label">Est. Upside</div></div>
+      <div class="vm-stat"><div class="vm-val" style="color:var(--green)">low</div><div class="vm-label">Risk</div></div>
+    </div>
+    <div class="vdash-grid">
+      <div class="vdash-panel">
+        <div class="vp-title">Grant Programs</div>
+        <table class="vdash-table">
+          <tr><th>Program</th><th class="right">Amount</th><th class="right">Accept Rate</th><th>Status</th></tr>
+          ${programs.map(p => `<tr>
+            <td class="text">${p.name}</td>
+            <td class="right">${p.amount}</td>
+            <td class="right">${p.rate}</td>
+            <td>${badge(p.status, 'muted')}</td>
+          </tr>`).join('')}
+        </table>
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Milestones <span class="count">${done}/${milestones.length}</span></div>
+        ${milestones.map(m => `<div class="vdash-milestone">
+          <div class="vm-check ${m.done ? 'done' : ''}">${m.done ? '&#10003;' : ''}</div>
+          <div class="vm-text ${m.done ? 'done' : ''}">${esc(m.text)}</div>
+        </div>`).join('')}
+      </div>
+    </div>`;
+};
+
+// ── AI TRADE SCHOOL DASHBOARD ──
+views['venture-tradeschool'] = async () => {
+  const d = await api(`/api/venture?file=AI-Trade-School.md`);
+  if (!d) return '<div class="empty">Venture not found</div>';
+  const fm = d.frontmatter || {};
+  const body = d.body || '';
+  const milestones = [];
+  const re = /^- \[([ x])\] (.+)$/gm;
+  let m;
+  while ((m = re.exec(body)) !== null) milestones.push({ done: m[1] === 'x', text: m[2] });
+  const done = milestones.filter(m => m.done).length;
+
+  return `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <div class="vd-back" onclick="switchView('ventures')" style="margin:0">&#8592; Pipeline</div>
+      <div style="margin-left:auto;font-size:11px"><span class="vd-link" onclick="_ventureDetail='AI-Trade-School.md';switchView('ventures')" style="cursor:pointer">Edit Details</span></div>
+    </div>
+    <div class="vdash-header">
+      <div class="vdash-title">AI-Powered Trade School</div>
+      <div class="vdash-stage" style="color:var(--text-tertiary);border-color:var(--text-tertiary)">Idea</div>
+    </div>
+    <div class="vdash-metrics">
+      <div class="vm-stat"><div class="vm-val">${fm.opportunity_score || 47}<span style="font-size:12px;opacity:0.5">/70</span></div><div class="vm-label">Score</div></div>
+      <div class="vm-stat"><div class="vm-val">$50K-100K</div><div class="vm-label">Investment</div></div>
+      <div class="vm-stat"><div class="vm-val">$200K-1M/yr</div><div class="vm-label">Revenue Potential</div></div>
+      <div class="vm-stat"><div class="vm-val" style="color:var(--red)">high</div><div class="vm-label">Risk</div></div>
+    </div>
+    <div class="vdash-grid">
+      <div class="vdash-panel">
+        <div class="vp-title">Revenue Model</div>
+        <table class="vdash-table">
+          <tr><th>Metric</th><th class="right">Value</th></tr>
+          <tr><td class="text">Revenue per student (Pell Grant)</td><td class="right pos">$10,000+</td></tr>
+          <tr><td class="text">Students for breakeven</td><td class="right">TBD</td></tr>
+          <tr><td class="text">Pell Grant expansion</td><td class="right">July 2026</td></tr>
+          <tr><td class="text">Accreditation</td><td class="right">State first, then Federal</td></tr>
+        </table>
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Strategic Synergy</div>
+        <div style="font-size:12px;color:var(--text-secondary);line-height:1.6">
+          <div style="padding:10px;background:var(--bg-primary);border-radius:var(--radius);border-left:3px solid var(--accent);margin-bottom:8px">Trained workforce feeds directly into acquired service businesses from the SMB Acquisition pipeline.</div>
+          <div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-tertiary)">
+            Trade School <span style="color:var(--accent)">&#10132;</span> Workforce <span style="color:var(--accent)">&#10132;</span> SMB Portfolio
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="vdash-panel">
+      <div class="vp-title">Research Milestones <span class="count">${done}/${milestones.length}</span></div>
+      ${milestones.map(m => `<div class="vdash-milestone">
+        <div class="vm-check ${m.done ? 'done' : ''}">${m.done ? '&#10003;' : ''}</div>
+        <div class="vm-text ${m.done ? 'done' : ''}">${esc(m.text)}</div>
+      </div>`).join('')}
+    </div>`;
 };
 
 window.openDocFromLink = (link) => {
@@ -4710,7 +5675,7 @@ views.nutrition = async () => {
   ].join('');
 
   // Score cards (only show when at least one score is populated)
-  const hasScores = scores.some(s => s.score && !s.score.startsWith('—'));
+  const hasScores = scores.some(s => s.score && !s.score.replace(/\*/g, '').startsWith('—'));
   const scoreCards = !hasScores ? '' : scores.filter(s => s.domain !== 'Overall Grade').map(s => `
     <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:14px 16px;min-width:140px">
       <div style="font-size:22px;font-weight:700;color:${scoreColor(s.score)}">${s.score || '—'}</div>
@@ -5047,7 +6012,7 @@ views.nutrition = async () => {
       ${qualityCards}
     </div>
 
-    ${hasScores ? `<!-- Score Cards -->
+    ${scoreCards ? `<!-- Score Cards -->
     <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:24px">
       ${scoreCards}
     </div>` : ''}
@@ -6232,9 +7197,10 @@ function updateFooter(svc) {
 // --- Nav Badge Counts (updated independently of view) ---
 async function updateNavCounts() {
   try {
-    const [msgs, projects] = await Promise.all([
+    const [msgs, projects, ventures] = await Promise.all([
       api('/api/messages?group=all&limit=1&countOnly=1').catch(() => null),
       api('/api/projects').catch(() => null),
+      api('/api/ventures').catch(() => null),
     ]);
     const msgEl = $('#navMsgCount');
     if (msgEl && msgs) {
@@ -6245,6 +7211,11 @@ async function updateNavCounts() {
     if (projEl && projects) {
       const activeCount = Array.isArray(projects) ? projects.filter(p => p.status === 'active').length : 0;
       projEl.textContent = activeCount > 0 ? activeCount : '';
+    }
+    const ventEl = $('#navVentureCount');
+    if (ventEl && ventures) {
+      const activeCount = Array.isArray(ventures) ? ventures.filter(v => v.status === 'active').length : 0;
+      ventEl.textContent = activeCount > 0 ? activeCount : '';
     }
   } catch {}
 }
