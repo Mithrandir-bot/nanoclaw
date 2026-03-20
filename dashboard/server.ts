@@ -947,6 +947,7 @@ function pollSystemdServices(): ServiceStatus[] {
   checkTimer('nanoclaw-index-obsidian', 'Obsidian Indexer (daily 2am)', 'System');
   checkTimer('nanoclaw-drive-watcher', 'Google Drive Watcher (5min poll)', 'Google');
   checkTimer('nanoclaw-drive-sync', 'Google Drive Sync (daily 4am)', 'Google');
+  checkTimer('nanoclaw-github-backup', 'GitHub Off-site Backup (daily 5am)', 'System');
   checkTimer('nanoclaw-sync-contacts', 'Contacts Sync (daily 1am)', 'CRM');
   checkTimer('nanoclaw-nutrition-prices', 'Nutrition Price Scanner (Sun 5am)', 'System');
 
@@ -1041,6 +1042,10 @@ function getServices(): ServiceStatus[] {
   } catch {
     services.push({ name: 'OptionAlpha', category: 'Trading', status: 'unconfigured', lastChecked: now });
   }
+
+  // --- GSA API ---
+  const gsaKey = process.env.GSA_API_KEY;
+  services.push({ name: 'GSA Auctions API', category: 'Trading', status: gsaKey && gsaKey !== 'DEMO_KEY' ? 'connected' : gsaKey === 'DEMO_KEY' ? 'disconnected' : 'unconfigured', detail: gsaKey && gsaKey !== 'DEMO_KEY' ? 'Hourly scan' : gsaKey === 'DEMO_KEY' ? 'Using DEMO_KEY (rate limited)' : undefined, lastChecked: now });
 
   // --- External APIs (no shell, fast checks) ---
   // GitHub
@@ -1450,6 +1455,45 @@ function getVentureKalshi() {
     const arbRaw = readFileSafe(path.join(dataDir, 'arb-scan.json'));
     const arbScan = arbRaw ? JSON.parse(arbRaw) : null;
 
+    // Build combined performance tracking (backtest + paper trading)
+    const backtestResults = (() => {
+      try {
+        const raw = readFileSafe(path.join(dataDir, 'backtest-1yr-results.json'));
+        return raw ? JSON.parse(raw) : [];
+      } catch { return []; }
+    })();
+
+    // Weekly performance rollup from paper trades
+    const paperTrades = trades.trades || [];
+    const settledPaper = paperTrades.filter((t: Record<string, unknown>) => t.status === 'settled');
+    const weeklyPerf: Record<string, { trades: number; wins: number; pnl: number; cost: number }> = {};
+    for (const t of settledPaper) {
+      const tr = t as Record<string, unknown>;
+      const d = String(tr.date || '').slice(0, 10);
+      // Group by week (Monday start)
+      const dt = new Date(d + 'T12:00:00');
+      const day = dt.getDay();
+      const monday = new Date(dt);
+      monday.setDate(monday.getDate() - (day === 0 ? 6 : day - 1));
+      const weekKey = monday.toISOString().slice(0, 10);
+      if (!weeklyPerf[weekKey]) weeklyPerf[weekKey] = { trades: 0, wins: 0, pnl: 0, cost: 0 };
+      weeklyPerf[weekKey].trades++;
+      if (tr.won === true) weeklyPerf[weekKey].wins++;
+      weeklyPerf[weekKey].pnl += Number(tr.pnl || 0);
+      weeklyPerf[weekKey].cost += Number(tr.cost || 0);
+    }
+
+    // Daily P&L for trend chart
+    const dailyPnl: Record<string, { trades: number; wins: number; pnl: number }> = {};
+    for (const t of settledPaper) {
+      const tr = t as Record<string, unknown>;
+      const d = String(tr.date || '').slice(0, 10);
+      if (!dailyPnl[d]) dailyPnl[d] = { trades: 0, wins: 0, pnl: 0 };
+      dailyPnl[d].trades++;
+      if (tr.won === true) dailyPnl[d].wins++;
+      dailyPnl[d].pnl += Number(tr.pnl || 0);
+    }
+
     // Compute trade analysis
     const allTrades = trades.trades || [];
     const settledTrades = allTrades.filter((t: Record<string, unknown>) => t.status === 'settled');
@@ -1544,7 +1588,7 @@ function getVentureKalshi() {
       analysis.tradeReasons = tradeReasons;
     }
 
-    return { trades: allTrades, summary: trades.summary || {}, backtestSummary, todayScan, scanOrders, scanDate, arbScan, analysis };
+    return { trades: allTrades, summary: trades.summary || {}, backtestSummary, todayScan, scanOrders, scanDate, arbScan, analysis, weeklyPerf, dailyPnl };
   } catch (err) {
     console.error('[venture-kalshi]', err);
     return { trades: [], summary: {}, backtestSummary: null, todayScan: [], scanDate: '', arbScan: null };
@@ -1556,7 +1600,158 @@ function getVentureGsa() {
     const scanPath = path.join(GROUPS_DIR, 'business-ideas', 'gsa-monitor', 'latest-scan.json');
     const raw = readFileSafe(scanPath);
     if (!raw) return { error: 'No GSA scan data' };
-    return JSON.parse(raw);
+    const data = JSON.parse(raw);
+
+    // Load shipping analysis data
+    let shippingData: Record<string, { shippable: boolean | null; fba_adjusted: number; condition?: string; access_friction?: boolean }> = {};
+    try {
+      const shipRaw = readFileSafe(path.join(PROJECT_ROOT, 'data', 'gsa-shipping-data.json'));
+      if (shipRaw) shippingData = JSON.parse(shipRaw);
+    } catch {}
+
+    // Enrich opportunities with links and category detection
+    for (const o of (data.opportunities || [])) {
+      // GSA auction link — use numeric ID if available, otherwise Google search
+      if (o.auctionId) {
+        o.gsaUrl = `https://gsaauctions.gov/auctions/preview/${o.auctionId}`;
+      } else {
+        const gsaSearch = `${o.saleNo || ''} ${(o.itemName || '').substring(0, 25)}`.trim();
+        o.gsaUrl = `https://www.google.com/search?q=${encodeURIComponent('gsaauctions.gov ' + gsaSearch)}`;
+      }
+
+      // eBay sold search link
+      const searchTerms = (o.itemName || '').replace(/[()]/g, '').replace(/\b\d{4}\b/, '').trim();
+      o.ebaySearchUrl = `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(searchTerms)}&LH_Sold=1&LH_Complete=1`;
+      o.ebayActiveUrl = `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(searchTerms)}`;
+
+      // Amazon search link
+      o.amazonSearchUrl = `https://www.amazon.com/s?k=${encodeURIComponent(searchTerms)}`;
+
+      // Detect category, FBA score, and best resale venue
+      const name = (o.itemName || '').toUpperCase();
+      let fbaScore = 30; // default
+      if (/FORD|CHEVY|CHEVROLET|DODGE|RAM|TOYOTA|HONDA|GMC|JEEP|NISSAN|F150|F250|F350|SILVERADO|EXPEDITION|TAHOE|SEDAN|TRUCK|SUV|VAN|BUS|AMBULANCE|HUMVEE/.test(name)) {
+        o.category = 'Vehicle'; fbaScore = 5;
+        o.bestVenue = 'FB Marketplace'; o.bestVenueUrl = 'https://www.facebook.com/marketplace/category/vehicles';
+        o.altVenue = 'CarGurus'; o.altVenueUrl = `https://www.cargurus.com/Cars/l-Used-${searchTerms.replace(/\s+/g, '-')}`;
+      } else if (/ENGINE|MOTOR|TURBINE|GENERATOR|COMPRESSOR|FORKLIFT|CRANE|TRACTOR|BACKHOE|T700|BLACKHAWK|AIRCRAFT|HELICOPTER|BOAT|VESSEL/.test(name)) {
+        o.category = 'Heavy Equipment'; fbaScore = 5;
+        o.bestVenue = 'eBay'; o.bestVenueUrl = o.ebayActiveUrl;
+        o.altVenue = 'GovPlanet'; o.altVenueUrl = 'https://www.govplanet.com';
+      } else if (/SCRAP|TERM CONTRACT|BULK|DEMOLITION|HAZMAT|WASTE/.test(name)) {
+        o.category = 'Scrap/Contract'; fbaScore = 0;
+        o.bestVenue = 'N/A'; o.bestVenueUrl = ''; o.altVenue = ''; o.altVenueUrl = '';
+      } else if (/LAPTOP|COMPUTER|DELL|HP\s|LENOVO|SERVER|MONITOR|PRINTER|IPAD|TABLET|PHONE|SCANNER|SWITCH|ROUTER|CISCO|CPU|HEWLETT|TOUGHBOOK|SURFACE/.test(name)) {
+        o.category = 'IT/Electronics'; fbaScore = 85;
+        o.bestVenue = 'Amazon FBA'; o.bestVenueUrl = o.amazonSearchUrl;
+        o.altVenue = 'eBay'; o.altVenueUrl = o.ebayActiveUrl;
+      } else if (/CAMERA|PROJECTOR|GPS|BINOCULAR|SCOPE|METER|TEST|MULTIMETER|OSCILLOSCOPE|SPECTRUM|ANALYZER|SIGNAL/.test(name)) {
+        o.category = 'Test/Scientific'; fbaScore = 70;
+        o.bestVenue = 'eBay'; o.bestVenueUrl = o.ebayActiveUrl;
+        o.altVenue = 'Amazon'; o.altVenueUrl = o.amazonSearchUrl;
+      } else if (/TOOL|DRILL|SAW|WRENCH|SOCKET|DEWALT|MILWAUKEE|MAKITA|BOSCH|IMPACT/.test(name)) {
+        o.category = 'Tools'; fbaScore = 75;
+        o.bestVenue = 'Amazon FBA'; o.bestVenueUrl = o.amazonSearchUrl;
+        o.altVenue = 'eBay'; o.altVenueUrl = o.ebayActiveUrl;
+      } else if (/FURNITURE|DESK|CHAIR|TABLE|CABINET|SHELVING|LOCKER|CUBICLE/.test(name)) {
+        o.category = 'Furniture'; fbaScore = 10;
+        o.bestVenue = 'FB Marketplace'; o.bestVenueUrl = 'https://www.facebook.com/marketplace/category/furniture';
+        o.altVenue = 'OfferUp'; o.altVenueUrl = `https://offerup.com/search?q=${encodeURIComponent(searchTerms)}`;
+      } else if (/MEDICAL|SURGICAL|DEFIBRILLATOR|VENTILATOR|WHEELCHAIR|HOSPITAL/.test(name)) {
+        o.category = 'Medical'; fbaScore = 50;
+        o.bestVenue = 'eBay'; o.bestVenueUrl = o.ebayActiveUrl;
+        o.altVenue = 'Amazon'; o.altVenueUrl = o.amazonSearchUrl;
+      } else if (/CLOTHING|UNIFORM|BOOT|JACKET|PANTS|SHIRT|GLOVE|HELMET|VEST|BODY ARMOR/.test(name)) {
+        o.category = 'Clothing/Gear'; fbaScore = 80;
+        o.bestVenue = 'Amazon FBA'; o.bestVenueUrl = o.amazonSearchUrl;
+        o.altVenue = 'eBay'; o.altVenueUrl = o.ebayActiveUrl;
+      } else {
+        o.category = 'General'; fbaScore = 30;
+        o.bestVenue = 'eBay'; o.bestVenueUrl = o.ebayActiveUrl;
+        o.altVenue = 'Amazon'; o.altVenueUrl = o.amazonSearchUrl;
+      }
+      // Apply shipping + condition analysis if available
+      const shipInfo = shippingData[o.auctionId || ''];
+      if (shipInfo) {
+        o.shippable = shipInfo.shippable;
+        o.condition = shipInfo.condition || 'ok';
+        o.accessFriction = shipInfo.access_friction || false;
+        fbaScore = shipInfo.fba_adjusted;
+      } else {
+        o.shippable = null;
+        o.condition = 'ok';
+      }
+      o.fbaScore = fbaScore;
+
+      // Smart Score: weighted composite replacing the raw margin-calculator score
+      // Factors: margin quality, capital efficiency, shipping, resale speed, data confidence, risk
+      let smartScore = 0;
+
+      // 1. Margin quality (0-25 pts): higher margin = better
+      const margin = o.marginPercent || 0;
+      if (margin >= 50) smartScore += 25;
+      else if (margin >= 30) smartScore += 20;
+      else if (margin >= 15) smartScore += 12;
+      else if (margin > 0) smartScore += 5;
+      else smartScore += 0; // negative margin = 0 pts
+
+      // 2. Capital efficiency (0-25 pts): prefer low-bid / high-profit items
+      const bid = o.highBid || 0;
+      if (bid <= 0) smartScore += 0;
+      else if (bid <= 100) smartScore += 25;      // <$100 is low-risk entry
+      else if (bid <= 500) smartScore += 20;
+      else if (bid <= 2000) smartScore += 15;
+      else if (bid <= 10000) smartScore += 8;
+      else if (bid <= 50000) smartScore += 3;
+      else smartScore += 0;                        // $50K+ is very high capital risk
+
+      // 3. Shipping & automation (0-20 pts)
+      if (o.shippable === true && fbaScore >= 70) smartScore += 20;      // Shippable + FBA ready
+      else if (o.shippable === true && fbaScore >= 40) smartScore += 15;  // Shippable + decent FBA
+      else if (o.shippable === true) smartScore += 10;                    // Shippable but not FBA
+      else if (o.shippable === null) smartScore += 5;                     // Unknown shipping
+      else smartScore += 0;                                                // Pickup only
+
+      // 4. Resale speed (0-15 pts): categories that sell fast
+      if (/IT|Electronics/.test(o.category || '')) smartScore += 15;
+      else if (/Tools|Clothing/.test(o.category || '')) smartScore += 12;
+      else if (/Test|Scientific/.test(o.category || '')) smartScore += 10;
+      else if (/Medical|Parts/.test(o.category || '')) smartScore += 6;
+      else if (/Vehicle/.test(o.category || '')) smartScore += 4;   // Vehicles sell but slowly
+      else if (/Furniture/.test(o.category || '')) smartScore += 2;
+      else if (/Scrap|Heavy/.test(o.category || '')) smartScore += 0;
+      else smartScore += 5; // general/other
+
+      // 5. Data confidence (0-15 pts): real eBay comps vs heuristic estimates
+      const ebayCount = o.ebayCount || 0;
+      if (ebayCount >= 10) smartScore += 15;       // Strong comp data
+      else if (ebayCount >= 3) smartScore += 10;
+      else if (ebayCount >= 1) smartScore += 5;
+      else smartScore += 0;                         // Heuristic estimate only
+
+      // 6. Condition penalty (0 to -30)
+      if (o.condition === 'broken') smartScore -= 30;
+      else if (o.condition === 'needs_work') smartScore -= 15;
+      else if (o.condition === 'untested') smartScore -= 5;
+
+      // Cap at 100
+      o.smartScore = Math.min(100, Math.max(0, smartScore));
+      o.smartTier = smartScore >= 70 ? 'A' : smartScore >= 50 ? 'B' : smartScore >= 30 ? 'C' : 'D';
+    }
+
+    // Read venture file for milestones
+    const ventureContent = readFileSafe(path.join(VENTURES_DIR, 'GSA-Auction-Arbitrage.md'));
+    const { frontmatter: ventFm, body: ventBody } = parseFrontmatter(ventureContent);
+
+    // Also include total FBA-friendly count from enriched data
+    const fbaFriendly = (data.opportunities || []).filter((o: Record<string, unknown>) => (o.fbaScore as number) >= 60).length;
+    const totalCategories: Record<string, number> = {};
+    for (const o of (data.opportunities || [])) {
+      const cat = (o as Record<string, unknown>).category as string || 'Other';
+      totalCategories[cat] = (totalCategories[cat] || 0) + 1;
+    }
+
+    return { ...data, ventureFrontmatter: ventFm, ventureBody: ventBody, fbaFriendly, totalCategories };
   } catch (err) {
     console.error('[venture-gsa]', err);
     return { totalListings: 0, analyzed: 0, opportunities: [] };

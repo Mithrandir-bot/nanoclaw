@@ -497,8 +497,9 @@
   .vdash-chart { position: relative; }
   .vdash-chart svg { width: 100%; display: block; }
   .vdash-chart .chart-tooltip { position: absolute; background: var(--bg-primary); border: 1px solid var(--border);
-    border-radius: var(--radius-sm); padding: 6px 10px; font-size: 10px; font-family: var(--mono);
-    pointer-events: none; opacity: 0; transition: opacity 100ms; z-index: 10; white-space: nowrap; }
+    border-radius: var(--radius); padding: 10px 14px; font-size: 10px; font-family: var(--mono);
+    pointer-events: none; opacity: 0; transition: opacity 100ms; z-index: 10;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.5); min-width: 260px; max-width: 340px; line-height: 1.5; }
   .vdash-funnel { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; }
   .vdash-funnel .funnel-stage { display: flex; align-items: center; gap: 12px; }
   .vdash-funnel .funnel-bar { height: 32px; border-radius: var(--radius-sm); display: flex;
@@ -1886,7 +1887,7 @@ views.daily = async () => {
 
   // Right sidebar: Timeline
   const allItems = data.sections.flatMap(s => s.items.filter(i => i.status !== 'link').map(i => ({ ...i, sectionColor: s.color, sectionIcon: s.icon })));
-  allItems.sort((a, b) => new Date(a.runAt).getTime() - new Date(b.runAt).getTime());
+  allItems.sort((a, b) => new Date(b.runAt).getTime() - new Date(a.runAt).getTime());
 
   html += `<div>
     <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-tertiary);margin-bottom:12px;font-weight:500">Activity Timeline</div>
@@ -3855,7 +3856,7 @@ window.ventureDropStage = async (event, newStage) => {
 // --- Venture Sub-Dashboards ---
 
 // Helper: build SVG line chart
-function svgLineChart(data, {width=600, height=200, color='var(--accent)', yLabel='', showDots=true, baseline=true} = {}) {
+function svgLineChart(data, {width=600, height=200, color='var(--accent)', yLabel='', showDots=true, baseline=true, chartId=''} = {}) {
   if (!data.length) return '<div style="padding:40px;text-align:center;color:var(--text-tertiary);font-size:11px">No data</div>';
   const pad = {top: 10, right: 10, bottom: 24, left: 50};
   const w = width - pad.left - pad.right;
@@ -3864,8 +3865,9 @@ function svgLineChart(data, {width=600, height=200, color='var(--accent)', yLabe
   const minY = Math.min(0, ...vals);
   const maxY = Math.max(...vals) * 1.1 || 1;
   const rangeY = maxY - minY || 1;
+  const cid = chartId || 'lc' + Math.random().toString(36).slice(2,8);
 
-  const scaleX = (i) => pad.left + (i / (data.length - 1 || 1)) * w;
+  const scaleX = (i) => pad.left + (i / Math.max(1, data.length - 1)) * w;
   const scaleY = (v) => pad.top + h - ((v - minY) / rangeY) * h;
 
   const points = data.map((d, i) => `${scaleX(i).toFixed(1)},${scaleY(d.y).toFixed(1)}`).join(' ');
@@ -3890,51 +3892,114 @@ function svgLineChart(data, {width=600, height=200, color='var(--accent)', yLabe
     }
   });
 
-  // Baseline at y=0
   const baselineEl = baseline && minY < 0 ? `<line x1="${pad.left}" y1="${scaleY(0)}" x2="${width-pad.right}" y2="${scaleY(0)}" stroke="var(--text-tertiary)" stroke-width="1" stroke-dasharray="4,3"/>` : '';
 
-  // Dots
+  // Dots with hover hit areas
   let dots = '';
   if (showDots) {
     data.forEach((d, i) => {
       const cx = scaleX(i).toFixed(1), cy = scaleY(d.y).toFixed(1);
       const c = d.color || color;
-      dots += `<circle cx="${cx}" cy="${cy}" r="3" fill="${c}" stroke="var(--bg-secondary)" stroke-width="1.5"/>`;
+      // Visible dot
+      dots += `<circle cx="${cx}" cy="${cy}" r="3" fill="${c}" stroke="var(--bg-secondary)" stroke-width="1.5" style="pointer-events:none"/>`;
+      // Larger invisible hit area + hover effect
+      if (d.tooltip) {
+        const safeTip = d.tooltip.replace(/`/g,"'").replace(/\\/g,"\\\\").replace(/"/g,"&quot;");
+        dots += `<circle cx="${cx}" cy="${cy}" r="10" fill="transparent" style="cursor:pointer"
+          onmouseenter="this.previousElementSibling.setAttribute('r','5');showChartTip('${cid}',event,\`${safeTip}\`)"
+          onmouseleave="this.previousElementSibling.setAttribute('r','3');hideChartTip('${cid}')"/>`;
+      }
     });
   }
 
-  return `<div class="vdash-chart"><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">
+  return `<div class="vdash-chart" id="${cid}" style="position:relative">
+    <div class="chart-tooltip" id="${cid}-tip"></div>
+    <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">
     ${yLabels}${xLabels}${baselineEl}
-    <defs><linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+    <defs><linearGradient id="areaGrad-${cid}" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="${color}" stop-opacity="0.15"/>
       <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
     </linearGradient></defs>
-    <polygon points="${areaPoints}" fill="url(#areaGrad)"/>
+    <polygon points="${areaPoints}" fill="url(#areaGrad-${cid})"/>
     <polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>
     ${dots}
   </svg></div>`;
 }
 
+window.showChartTip = (chartId, event, html) => {
+  const tip = document.getElementById(chartId + '-tip');
+  if (!tip) return;
+  const chart = document.getElementById(chartId);
+  const rect = chart.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  tip.innerHTML = html;
+  tip.style.opacity = '1';
+  // Measure actual tooltip width after content is set, clamp to chart bounds
+  const tipW = tip.offsetWidth || 260;
+  const tipH = tip.offsetHeight || 100;
+  const left = x + tipW + 24 > rect.width ? Math.max(4, x - tipW - 10) : x + 14;
+  const top = Math.min(Math.max(4, y - 10), rect.height - tipH - 4);
+  tip.style.left = left + 'px';
+  tip.style.top = top + 'px';
+};
+window.hideChartTip = (chartId) => {
+  const tip = document.getElementById(chartId + '-tip');
+  if (tip) tip.style.opacity = '0';
+};
+
 // Helper: build bar chart
-function svgBarChart(data, {width=600, height=180, barColor='var(--accent)'} = {}) {
+function svgBarChart(data, {width=600, height=180, barColor='var(--accent)', valueFmt=null, labelRotate=false} = {}) {
   if (!data.length) return '<div style="padding:40px;text-align:center;color:var(--text-tertiary);font-size:11px">No data</div>';
-  const pad = {top: 10, right: 10, bottom: 24, left: 50};
+  const pad = {top: 16, right: 10, bottom: labelRotate ? 40 : 24, left: 10};
   const w = width - pad.left - pad.right;
   const h = height - pad.top - pad.bottom;
-  const maxVal = Math.max(...data.map(d => d.y)) * 1.1 || 1;
-  const barW = Math.min(40, (w / data.length) * 0.7);
-  const gap = (w / data.length);
+  const vals = data.map(d => Math.abs(d.y));
+  const maxVal = Math.max(...vals) * 1.15 || 1;
+  const minVal = Math.min(0, ...data.map(d => d.y));
+  const hasNeg = minVal < 0;
+  const range = (hasNeg ? maxVal - minVal : maxVal) || 1;
+  const barW = Math.min(50, Math.max(12, (w / data.length) * 0.65));
+  const gap = w / data.length;
+  const zeroY = hasNeg ? pad.top + (maxVal / range) * h : pad.top + h;
+
+  // Auto-skip labels if too dense
+  const labelStep = data.length <= 1 ? 1 : Math.max(1, Math.ceil(data.length * 8 / w * 6));
+
+  const fmtVal = valueFmt || ((v) => v >= 0 ? '$' + v.toFixed(0) : '-$' + Math.abs(v).toFixed(0));
 
   let bars = '';
   data.forEach((d, i) => {
-    const x = pad.left + gap * i + (gap - barW) / 2;
-    const barH = (d.y / maxVal) * h;
-    const y = pad.top + h - barH;
+    const cx = pad.left + gap * i + gap / 2;
+    const x = cx - barW / 2;
     const c = d.color || barColor;
-    bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW}" height="${barH.toFixed(1)}" fill="${c}" rx="2"/>`;
-    bars += `<text x="${(x + barW/2).toFixed(1)}" y="${y - 4}" text-anchor="middle" fill="${c}" font-size="9" font-family="var(--mono)">${d.y.toFixed(0)}%</text>`;
-    bars += `<text x="${(x + barW/2).toFixed(1)}" y="${height - 4}" text-anchor="middle" fill="var(--text-tertiary)" font-size="8" font-family="var(--mono)">${(d.label || '').substring(0,8)}</text>`;
+
+    if (d.y >= 0) {
+      const barH = Math.max(1, (d.y / range) * h);
+      const y = zeroY - barH;
+      bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW}" height="${barH.toFixed(1)}" fill="${c}" rx="2" opacity="0.85"/>`;
+      bars += `<text x="${cx.toFixed(1)}" y="${y - 4}" text-anchor="middle" fill="${c}" font-size="9" font-family="var(--mono)">${fmtVal(d.y)}</text>`;
+    } else {
+      const barH = Math.max(1, (Math.abs(d.y) / range) * h);
+      const y = zeroY;
+      bars += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW}" height="${barH.toFixed(1)}" fill="${c}" rx="2" opacity="0.85"/>`;
+      bars += `<text x="${cx.toFixed(1)}" y="${y + barH + 12}" text-anchor="middle" fill="${c}" font-size="9" font-family="var(--mono)">${fmtVal(d.y)}</text>`;
+    }
+
+    // X-axis labels (skip some if dense)
+    if (i % labelStep === 0 || i === data.length - 1) {
+      if (labelRotate) {
+        bars += `<text x="${cx.toFixed(1)}" y="${height - 4}" text-anchor="end" fill="var(--text-tertiary)" font-size="8" font-family="var(--mono)" transform="rotate(-45 ${cx.toFixed(1)} ${height - 4})">${(d.label || '').substring(0,10)}</text>`;
+      } else {
+        bars += `<text x="${cx.toFixed(1)}" y="${height - 4}" text-anchor="middle" fill="var(--text-tertiary)" font-size="8" font-family="var(--mono)">${(d.label || '').substring(0,8)}</text>`;
+      }
+    }
   });
+
+  // Zero baseline for charts with negative values
+  if (hasNeg) {
+    bars += `<line x1="${pad.left}" y1="${zeroY}" x2="${width - pad.right}" y2="${zeroY}" stroke="var(--text-tertiary)" stroke-width="0.5" stroke-dasharray="3,3"/>`;
+  }
 
   return `<div class="vdash-chart"><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">${bars}</svg></div>`;
 }
@@ -3949,11 +4014,39 @@ views['venture-kalshi'] = async () => {
   const settled = trades.filter(t => t.status === 'settled');
   const open = trades.filter(t => t.status === 'open');
 
-  // Cumulative P&L data for chart
+  // Group settled trades by day for the chart
+  const byDay = {};
+  for (const t of settled) {
+    const d = t.date || '';
+    if (!byDay[d]) byDay[d] = [];
+    byDay[d].push(t);
+  }
+  const days = Object.keys(byDay).sort();
+
+  // Build one data point per day with cumulative P&L
   let cumPnl = 0;
-  const pnlData = settled.map(t => {
-    cumPnl += (t.pnl || 0);
-    return { y: cumPnl, label: (t.date || '').slice(5), color: t.won ? 'var(--green)' : 'var(--red)' };
+  const pnlData = days.map(day => {
+    const dayTrades = byDay[day];
+    const dayPnl = dayTrades.reduce((s, t) => s + (t.pnl || 0), 0);
+    const dayWins = dayTrades.filter(t => t.won).length;
+    const dayLosses = dayTrades.length - dayWins;
+    cumPnl += dayPnl;
+
+    // Build compact daily tooltip
+    const header = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;padding-bottom:5px;border-bottom:1px solid var(--border)"><span style="font-weight:700">${day}</span><span style="font-weight:700;color:${dayPnl >= 0 ? 'var(--green)' : 'var(--red)'}">${dayPnl >= 0 ? '+' : ''}$${dayPnl.toFixed(2)}</span></div>`;
+    const summary = `<div style="display:flex;gap:10px;margin-bottom:6px;font-size:9px;color:var(--text-tertiary)"><span>${dayTrades.length} trades</span><span style="color:var(--green)">${dayWins}W</span><span style="color:var(--red)">${dayLosses}L</span><span>Cum: $${cumPnl.toFixed(2)}</span></div>`;
+    const rows = dayTrades.map(t => {
+      const icon = t.won ? '<span style="color:var(--green)">+</span>' : '<span style="color:var(--red)">-</span>';
+      const pnlColor = (t.pnl||0) >= 0 ? 'var(--green)' : 'var(--red)';
+      return `<div style="display:grid;grid-template-columns:12px 28px 20px auto 42px 36px;gap:4px;align-items:center;padding:2px 0">${icon}<span>${t.city}</span><span>${t.side}</span><span style="color:var(--text-tertiary)">${(t.subtitle||'').substring(0,16)}</span><span style="text-align:right;color:${pnlColor}">$${(t.pnl||0).toFixed(2)}</span><span style="text-align:right;color:var(--text-tertiary)">${t.edge||0}%</span></div>`;
+    }).join('');
+
+    return {
+      y: cumPnl,
+      label: day.slice(5),
+      color: dayPnl >= 0 ? 'var(--green)' : 'var(--red)',
+      tooltip: header + summary + rows,
+    };
   });
 
   return `
@@ -3976,7 +4069,7 @@ views['venture-kalshi'] = async () => {
     <div class="vdash-grid">
       <div class="vdash-panel" style="grid-column:1/-1">
         <div class="vp-title">Cumulative P&L (Paper Trading)</div>
-        ${svgLineChart(pnlData, {width: 900, height: 220, color: 'var(--green)', showDots: true, baseline: true})}
+        ${svgLineChart(pnlData, {width: 900, height: 220, color: 'var(--green)', showDots: true, baseline: true, chartId: 'kalshi-pnl'})}
       </div>
     </div>
     <div class="vdash-grid">
@@ -3996,15 +4089,54 @@ views['venture-kalshi'] = async () => {
         </table></div>` : '<div style="padding:20px;text-align:center;color:var(--text-tertiary);font-size:11px">No signals today</div>'}
       </div>
       <div class="vdash-panel">
-        <div class="vp-title">Backtest (${bt.period || 'N/A'})</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
-          <div><span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase">Trades</span><div style="font-family:var(--mono);font-size:18px;font-weight:700">${bt.totalTrades || 0}</div></div>
-          <div><span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase">Win Rate</span><div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--green)">${bt.winRate || 0}%</div></div>
-          <div><span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase">Total P&L</span><div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--green)">$${(bt.totalPnL || 0).toFixed(2)}</div></div>
-          <div><span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase">ROI</span><div style="font-family:var(--mono);font-size:18px;font-weight:700">${(bt.roi || 0).toFixed(1)}%</div></div>
-          <div><span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase">Profit Factor</span><div style="font-family:var(--mono);font-size:18px;font-weight:700">${(bt.profitFactor || 0).toFixed(2)}</div></div>
-          <div><span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase">Max Drawdown</span><div style="font-family:var(--mono);font-size:18px;font-weight:700">$${(bt.maxDrawdown || 0).toFixed(2)}</div></div>
+        <div class="vp-title">Performance Tracking</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--border);border-radius:var(--radius);overflow:hidden;margin-bottom:12px">
+          ${[
+            {label:'Backtest',sub:bt.period||'N/A',win:bt.winRate||0,pnl:bt.totalPnL||0,roi:bt.roi||0,trades:bt.totalTrades||0},
+            {label:'Paper Trading',sub:settled.length ? 'Since ' + settled[0].date : 'N/A',win:s.winRate||0,pnl:s.totalPnL||0,roi:s.roi||0,trades:s.totalTrades||0}
+          ].map(p => `<div style="background:var(--bg-primary);padding:12px">
+            <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;font-weight:600;margin-bottom:8px">${p.label} <span style="font-weight:400;text-transform:none;font-style:italic">${p.sub}</span></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">
+              <div><div style="font-family:var(--mono);font-size:16px;font-weight:700">${p.trades}</div><div style="font-size:9px;color:var(--text-tertiary)">trades</div></div>
+              <div><div style="font-family:var(--mono);font-size:16px;font-weight:700;color:${p.win>=70?'var(--green)':'var(--yellow)'}">${p.win}%</div><div style="font-size:9px;color:var(--text-tertiary)">win rate</div></div>
+              <div><div style="font-family:var(--mono);font-size:16px;font-weight:700;color:${p.pnl>=0?'var(--green)':'var(--red)'}">$${p.pnl.toFixed(0)}</div><div style="font-size:9px;color:var(--text-tertiary)">P&L</div></div>
+              <div><div style="font-family:var(--mono);font-size:16px;font-weight:700">${p.roi.toFixed(1)}%</div><div style="font-size:9px;color:var(--text-tertiary)">ROI</div></div>
+            </div>
+          </div>`).join('')}
         </div>
+        ${(() => {
+          const daily = d.dailyPnl || {};
+          const days = Object.keys(daily).sort();
+          if (!days.length) return '';
+          const dailyData = days.map(day => ({
+            y: daily[day].pnl,
+            label: day.slice(5),
+            color: daily[day].pnl >= 0 ? 'var(--green)' : 'var(--red)',
+          }));
+          return `<div style="margin-top:8px"><div style="font-size:10px;color:var(--text-tertiary);margin-bottom:6px;text-transform:uppercase;font-weight:600">Daily P&L</div>
+            ${svgBarChart(dailyData, {width: 400, height: 140, valueFmt: (v) => (v >= 0 ? '$' : '-$') + Math.abs(v).toFixed(0)})}</div>`;
+        })()}
+        ${(() => {
+          const weekly = d.weeklyPerf || {};
+          const weeks = Object.keys(weekly).sort().reverse();
+          if (!weeks.length) return '';
+          return `<div style="margin-top:12px"><div style="font-size:10px;color:var(--text-tertiary);margin-bottom:6px;text-transform:uppercase;font-weight:600">Weekly Breakdown</div>
+            <table class="vdash-table">
+              <tr><th>Week</th><th class="right">Trades</th><th class="right">Win%</th><th class="right">P&L</th><th class="right">ROI</th></tr>
+              ${weeks.map(w => {
+                const wk = weekly[w];
+                const wr = wk.trades > 0 ? Math.round(wk.wins / wk.trades * 100) : 0;
+                const roi = wk.cost > 0 ? (wk.pnl / wk.cost * 100) : 0;
+                return `<tr>
+                  <td>${w.slice(5)}</td>
+                  <td class="right">${wk.trades}</td>
+                  <td class="right ${wr >= 60 ? 'pos' : wr < 40 ? 'neg' : ''}">${wr}%</td>
+                  <td class="right ${wk.pnl >= 0 ? 'pos' : 'neg'}">$${wk.pnl.toFixed(2)}</td>
+                  <td class="right ${roi >= 0 ? 'pos' : 'neg'}">${roi.toFixed(1)}%</td>
+                </tr>`;
+              }).join('')}
+            </table></div>`;
+        })()}
       </div>
     </div>
     ${open.length ? `<div class="vdash-panel" style="margin-bottom:16px">
@@ -4027,7 +4159,7 @@ views['venture-kalshi'] = async () => {
       <div style="max-height:300px;overflow-y:auto">
         <table class="vdash-table">
           <tr><th>Date</th><th>City</th><th>Ticker</th><th>Side</th><th class="right">Cost</th><th class="right">P&L</th><th>Result</th></tr>
-          ${settled.map(t => `<tr>
+          ${[...settled].reverse().map(t => `<tr>
             <td>${(t.date || '').slice(5)}</td>
             <td class="text">${esc(t.city || '')}</td>
             <td style="font-size:10px">${esc(t.ticker || '')}</td>
@@ -4123,7 +4255,7 @@ views['venture-kalshi'] = async () => {
         <div style="max-height:400px;overflow-y:auto">
           <table class="vdash-table">
             <tr><th>Date</th><th>City</th><th>Side</th><th>Result</th><th class="right">P&L</th><th>Why</th></tr>
-            ${reasons.map(r => `<tr>
+            ${[...reasons].reverse().map(r => `<tr>
               <td>${(r.date || '').slice(5)}</td>
               <td class="text">${esc(r.city || '')}</td>
               <td>${r.side || ''}</td>
@@ -4139,19 +4271,47 @@ views['venture-kalshi'] = async () => {
 };
 
 // ── GSA AUCTIONS DASHBOARD ──
+let _gsaSort = 'fba'; // 'fba' | 'margin' | 'score' | 'ending'
+let _gsaPage = 1;
+const GSA_PAGE_SIZE = 10;
 views['venture-gsa'] = async () => {
   const d = await api('/api/venture/gsa');
-  const opps = (d.opportunities || []).sort((a,b) => (b.marginPercent||0) - (a.marginPercent||0));
-  const bestMargin = opps.length ? Math.max(...opps.map(o => o.marginPercent || 0)) : 0;
-  const totalProfit = opps.reduce((s, o) => s + (o.grossProfit || 0), 0);
+  const sortFns = {
+    fba: (a,b) => (b.fbaScore||0) - (a.fbaScore||0) || (b.smartScore||0) - (a.smartScore||0),
+    margin: (a,b) => (b.marginPercent||0) - (a.marginPercent||0),
+    score: (a,b) => (b.smartScore||0) - (a.smartScore||0),
+    ending: (a,b) => (a.endDate||'z').localeCompare(b.endDate||'z'),
+  };
+  const opps = (d.opportunities || []).sort(sortFns[_gsaSort] || sortFns.fba);
+  const positiveOpps = opps.filter(o => (o.marginPercent || 0) > 0);
+  const bestMargin = positiveOpps.length ? Math.max(...positiveOpps.map(o => o.marginPercent || 0)) : 0;
+  const totalProfit = positiveOpps.reduce((s, o) => s + (o.grossProfit || 0), 0);
+  const avgMargin = positiveOpps.length ? positiveOpps.reduce((s, o) => s + (o.marginPercent || 0), 0) / positiveOpps.length : 0;
 
-  const barData = opps.filter(o => (o.marginPercent || 0) > 0).slice(0, 12).map(o => ({
-    y: o.marginPercent || 0,
-    label: (o.itemName || '').substring(0, 12),
-    color: (o.marginPercent||0) >= 30 ? 'var(--green)' : (o.marginPercent||0) >= 15 ? 'var(--yellow)' : 'var(--red)',
-  }));
+  // Category breakdown
+  const cats = {};
+  for (const o of opps) { const c = o.category || 'General'; if (!cats[c]) cats[c] = {count:0, profit:0}; cats[c].count++; cats[c].profit += (o.grossProfit||0); }
+
+  // Bar chart with category labels
+  const barData = positiveOpps.slice(0, 12).map(o => {
+    const label = (o.category === 'Vehicle' ? (o.itemName||'').match(/\d{4}\s+\w+/)?.[0] : (o.itemName||'').substring(0, 14)) || '?';
+    return {
+      y: o.marginPercent || 0,
+      label,
+      color: (o.marginPercent||0) >= 30 ? 'var(--green)' : (o.marginPercent||0) >= 15 ? 'var(--yellow)' : 'var(--red)',
+    };
+  });
 
   const tierColor = (t) => t === 'A' ? 'green' : t === 'B' ? 'yellow' : t === 'C' ? 'muted' : 'red';
+  const catIcon = (c) => c === 'Vehicle' ? '&#9673;' : c === 'Heavy Equipment' ? '&#9881;' : c === 'IT Equipment' ? '&#9633;' : c === 'Furniture' ? '&#9634;' : '&#9671;';
+
+  // Milestones from venture body
+  const ventBody = d.ventureBody || '';
+  const milestones = [];
+  const msRe = /^- \[([ x])\] (.+)$/gm;
+  let msm;
+  while ((msm = msRe.exec(ventBody)) !== null) milestones.push({ done: msm[1] === 'x', text: msm[2] });
+  const msDone = milestones.filter(m => m.done).length;
 
   return `
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
@@ -4163,37 +4323,176 @@ views['venture-gsa'] = async () => {
       <div class="vdash-stage" style="color:var(--yellow);border-color:var(--yellow)">Building</div>
     </div>
     <div class="vdash-metrics">
-      <div class="vm-stat"><div class="vm-val">${d.totalListings || 0}</div><div class="vm-label">Listings Scanned</div></div>
-      <div class="vm-stat"><div class="vm-val">${d.analyzed || 0}</div><div class="vm-label">Analyzed</div></div>
-      <div class="vm-stat"><div class="vm-val" style="color:var(--green)">${opps.length}</div><div class="vm-label">Opportunities</div></div>
-      <div class="vm-stat"><div class="vm-val" style="color:var(--green)">${bestMargin.toFixed(0)}%</div><div class="vm-label">Best Margin</div></div>
-      <div class="vm-stat"><div class="vm-val">$${totalProfit >= 1000 ? (totalProfit/1000).toFixed(0)+'k' : totalProfit.toFixed(0)}</div><div class="vm-label">Total Est. Profit</div></div>
+      <div class="vm-stat" title="Total active GSA listings found in last scan"><div class="vm-val">${d.totalListings || 0}</div><div class="vm-label">Listings Scanned</div></div>
+      <div class="vm-stat" title="${d.analyzed || 0} listings had bids and were cross-referenced with eBay sold data"><div class="vm-val">${d.analyzed || 0}</div><div class="vm-label">Analyzed</div></div>
+      <div class="vm-stat" title="${positiveOpps.length} items with positive margin after fees and estimated shipping" style="cursor:help"><div class="vm-val" style="color:var(--green)">${positiveOpps.length}</div><div class="vm-label">Opportunities</div></div>
+      <div class="vm-stat" title="Highest margin opportunity: ${positiveOpps[0]?.itemName || 'N/A'}" style="cursor:help"><div class="vm-val" style="color:var(--green)">${bestMargin.toFixed(0)}%</div><div class="vm-label">Best Margin</div></div>
+      <div class="vm-stat" title="Average margin across ${positiveOpps.length} positive opportunities" style="cursor:help"><div class="vm-val">${avgMargin.toFixed(0)}%</div><div class="vm-label">Avg Margin</div></div>
+      <div class="vm-stat" title="Sum of gross profit across all positive-margin opportunities (before shipping and fees)" style="cursor:help"><div class="vm-val">$${totalProfit >= 1000 ? (totalProfit/1000).toFixed(0)+'k' : totalProfit.toFixed(0)}</div><div class="vm-label">Est. Gross Profit</div></div>
+      <div class="vm-stat" title="${d.fbaFriendly || 0} items with FBA score >= 60 and confirmed shippable" style="cursor:help"><div class="vm-val" style="color:var(--purple)">${d.fbaFriendly || 0}</div><div class="vm-label">FBA-Ready</div></div>
+      <div class="vm-stat" title="${opps.filter(o => o.shippable === true).length} parcel + ${opps.filter(o => o.shippable === 'freight').length} freight / ${opps.filter(o => o.shippable === false).length} local only" style="cursor:help"><div class="vm-val" style="color:var(--green)">${opps.filter(o => o.shippable === true || o.shippable === 'freight').length}<span style="font-size:12px;color:var(--text-tertiary)">/${opps.length}</span></div><div class="vm-label">Shippable</div></div>
     </div>
-    <div class="vdash-grid">
-      <div class="vdash-panel" style="grid-column:1/-1">
-        <div class="vp-title">Margin Distribution</div>
-        ${svgBarChart(barData, {width: 900, height: 180})}
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+      <span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;font-weight:600;margin-right:4px">Sort by:</span>
+      ${['fba','margin','score','ending'].map(s => {
+        const active = _gsaSort === s;
+        const label = s === 'fba' ? 'Automation' : s === 'margin' ? 'Margin' : s === 'score' ? 'Score' : 'Ending Soon';
+        return `<button style="font-size:10px;padding:4px 12px;border-radius:var(--radius-sm);cursor:pointer;border:1px solid ${active ? 'var(--accent)' : 'var(--border)'};background:${active ? 'var(--accent-muted)' : 'var(--bg-tertiary)'};color:${active ? 'var(--accent)' : 'var(--text-secondary)'};font-weight:${active ? '600' : '400'};font-family:var(--font);transition:all 120ms" onclick="_gsaSort='${s}';_gsaPage=1;renderView()">${label}</button>`;
+      }).join('')}
+    </div>
+    ${(() => {
+      const totalPages = Math.ceil(opps.length / GSA_PAGE_SIZE);
+      if (_gsaPage > totalPages && totalPages > 0) _gsaPage = totalPages;
+      const start = (_gsaPage - 1) * GSA_PAGE_SIZE;
+      const pageOpps = opps.slice(start, start + GSA_PAGE_SIZE);
+      return `<div class="vdash-panel" style="margin-bottom:20px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div class="vp-title" style="margin:0;border:0;padding:0">Opportunities <span class="count">${opps.length}</span></div>
+        <div style="display:flex;align-items:center;gap:8px;font-size:11px">
+          <span style="color:var(--text-tertiary);font-family:var(--mono)">${start+1}-${Math.min(start+GSA_PAGE_SIZE, opps.length)} of ${opps.length}</span>
+          <button style="padding:3px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer;font-family:var(--font);font-size:11px;opacity:${_gsaPage <= 1 ? '0.3' : '1'}" ${_gsaPage <= 1 ? 'disabled' : `onclick="_gsaPage--;renderView()"`}>&lsaquo; Prev</button>
+          <span style="font-family:var(--mono);color:var(--text-tertiary)">${_gsaPage}/${totalPages}</span>
+          <button style="padding:3px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer;font-family:var(--font);font-size:11px;opacity:${_gsaPage >= totalPages ? '0.3' : '1'}" ${_gsaPage >= totalPages ? 'disabled' : `onclick="_gsaPage++;renderView()"`}>Next &rsaquo;</button>
+        </div>
       </div>
-    </div>
-    <div class="vdash-panel" style="margin-bottom:20px">
-      <div class="vp-title">Opportunities <span class="count">${opps.length}</span></div>
-      <div style="max-height:400px;overflow-y:auto">
         <table class="vdash-table">
-          <tr><th>Item</th><th>State</th><th class="right">High Bid</th><th class="right">eBay Median</th><th class="right">Gross Profit</th><th class="right">Margin</th><th>Tier</th><th>Ends</th></tr>
-          ${opps.map(o => `<tr>
-            <td class="text" style="max-width:250px;overflow:hidden;text-overflow:ellipsis" title="${esc(o.itemName || '')}">${esc((o.itemName || '').substring(0, 40))}</td>
+          <tr><th>Source</th><th>Item</th><th>Category</th><th>Cond</th><th>Ship</th><th>State</th><th class="right">Bid</th><th class="right">Resale Est.</th><th class="right">Profit</th><th class="right">Margin</th><th>Score</th><th>FBA</th><th>Resell Via</th><th>Links</th></tr>
+          ${pageOpps.map(o => `<tr>
+            <td style="font-size:9px"><span class="badge accent" style="padding:1px 5px">GSA</span></td>
+            <td class="text" style="max-width:200px;overflow:hidden;text-overflow:ellipsis" title="${esc(o.itemName || '')}">
+              <a href="${o.gsaUrl || '#'}" target="_blank" style="color:var(--accent);text-decoration:none" title="View on GSA Auctions">${esc((o.itemName || '').substring(0, 35))}</a>
+            </td>
+            <td class="text" style="font-size:10px">${badge(o.category || 'General', o.category === 'Vehicle' ? 'accent' : o.category === 'Heavy Equipment' ? 'yellow' : /IT|Electronics/.test(o.category||'') ? 'purple' : 'muted')}</td>
+            <td style="text-align:center;font-size:9px;white-space:nowrap">${o.condition === 'broken' ? '<span style="color:var(--red)" title="Listed as broken/non-working/for parts">BROKE</span>' : o.condition === 'needs_work' ? '<span style="color:var(--yellow)" title="Needs repair or has damage">REPAIR</span>' : o.condition === 'untested' ? '<span style="color:var(--text-tertiary)" title="Not tested, condition unknown">UNTEST</span>' : '<span style="color:var(--green)" title="No condition issues noted">OK</span>'}${o.accessFriction ? ' <span style="color:var(--red)" title="Security/licensing/access requirements">!</span>' : ''}</td>
+            <td style="text-align:center;font-size:9px">${o.shippable === true ? '<span style="color:var(--green)" title="Parcel shippable">PARCEL</span>' : o.shippable === 'freight' ? '<span style="color:var(--yellow)" title="Needs freight/crating — buyer arranges">FREIGHT</span>' : o.shippable === false ? '<span style="color:var(--red)" title="Pickup only or vehicle transport">LOCAL</span>' : '<span style="color:var(--text-tertiary)" title="Shipping status unclear">?</span>'}</td>
             <td>${o.state || ''}</td>
             <td class="right">$${(o.highBid || 0).toLocaleString()}</td>
-            <td class="right">$${(o.ebayMedian || 0).toLocaleString()}</td>
-            <td class="right ${(o.grossProfit||0) >= 0 ? 'pos' : 'neg'}">$${(o.grossProfit || 0).toLocaleString()}</td>
+            <td class="right">${o.ebayCount > 0 ? '$' + (o.ebayMedian || 0).toLocaleString() : '<span style="color:var(--text-tertiary);font-size:9px">est</span> $' + (o.ebayMedian || 0).toLocaleString()}</td>
+            <td class="right ${(o.grossProfit||0) >= 0 ? 'pos' : 'neg'}">$${Math.abs(o.grossProfit || 0) >= 1000 ? (Math.abs(o.grossProfit)/1000).toFixed(1)+'k' : (o.grossProfit||0).toFixed(0)}</td>
             <td class="right ${(o.marginPercent||0) >= 15 ? 'pos' : (o.marginPercent||0) < 0 ? 'neg' : ''}">${(o.marginPercent || 0).toFixed(1)}%</td>
-            <td>${badge(o.tier || '?', tierColor(o.tier))}</td>
-            <td>${(o.endDate || '').slice(5)}</td>
+            <td style="text-align:center;white-space:nowrap"><span class="vc-score ${(o.smartScore||0) >= 70 ? 'hot' : (o.smartScore||0) >= 50 ? 'warm' : 'cool'}">${o.smartScore||0}</span> <span style="font-size:9px;font-weight:700;color:${o.smartTier==='A'?'var(--green)':o.smartTier==='B'?'var(--yellow)':o.smartTier==='C'?'var(--text-tertiary)':'var(--red)'}">${o.smartTier||'?'}</span></td>
+            <td style="text-align:center"><span class="vc-score ${(o.fbaScore||0) >= 70 ? 'hot' : (o.fbaScore||0) >= 40 ? 'warm' : 'cool'}" title="FBA automation score: ${o.fbaScore||0}/100">${o.fbaScore||0}</span></td>
+            <td class="text" style="font-size:10px">
+              <a href="${o.bestVenueUrl || '#'}" target="_blank" style="color:var(--green);text-decoration:none">${esc(o.bestVenue || 'eBay')}</a>
+            </td>
+            <td style="white-space:nowrap">
+              <a href="${o.ebaySearchUrl || '#'}" target="_blank" style="color:var(--text-tertiary);font-size:9px;margin-right:4px" title="eBay sold comps">eBay</a>
+              <a href="${o.amazonSearchUrl || '#'}" target="_blank" style="color:var(--text-tertiary);font-size:9px;margin-right:4px" title="Amazon search">Amz</a>
+              ${o.altVenueUrl ? `<a href="${o.altVenueUrl}" target="_blank" style="color:var(--text-tertiary);font-size:9px" title="${esc(o.altVenue || '')}">${esc((o.altVenue||'').substring(0,6))}</a>` : ''}
+            </td>
           </tr>`).join('')}
         </table>
+    </div>`;
+    })()}
+    <div class="vdash-grid">
+      <div class="vdash-panel">
+        <div class="vp-title">Profit by Category</div>
+        ${(() => {
+          const catData = Object.entries(cats)
+            .filter(([,v]) => v.profit > 0)
+            .sort((a,b) => b[1].profit - a[1].profit)
+            .map(([cat, v]) => ({
+              y: v.profit >= 1000 ? v.profit / 1000 : v.profit,
+              label: cat.substring(0, 12),
+              color: v.profit >= 10000 ? 'var(--green)' : v.profit >= 1000 ? 'var(--yellow)' : 'var(--text-tertiary)',
+            }));
+          const maxProfit = Math.max(...Object.values(cats).map(v => v.profit));
+          return catData.length ? svgBarChart(catData, {width: 420, height: 160, valueFmt: (v) => maxProfit >= 1000 ? '$' + v.toFixed(0) + 'k' : '$' + v.toFixed(0)}) : '<div style="padding:20px;text-align:center;color:var(--text-tertiary);font-size:11px">No data</div>';
+        })()}
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Fulfillment Breakdown</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;padding:8px 0">
+          <div style="text-align:center;padding:10px;background:var(--bg-primary);border-radius:var(--radius)">
+            <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--green)">${opps.filter(o => o.shippable === true).length}</div>
+            <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px">Parcel</div>
+            <div style="font-size:9px;color:var(--green);margin-top:3px">FBA/prep ready</div>
+          </div>
+          <div style="text-align:center;padding:10px;background:var(--bg-primary);border-radius:var(--radius)">
+            <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--yellow)">${opps.filter(o => o.shippable === 'freight').length}</div>
+            <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px">Freight</div>
+            <div style="font-size:9px;color:var(--yellow);margin-top:3px">Needs carrier</div>
+          </div>
+          <div style="text-align:center;padding:10px;background:var(--bg-primary);border-radius:var(--radius)">
+            <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--text-tertiary)">${opps.filter(o => o.shippable === null || o.shippable === undefined).length}</div>
+            <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px">Unknown</div>
+            <div style="font-size:9px;color:var(--text-tertiary);margin-top:3px">Check listing</div>
+          </div>
+          <div style="text-align:center;padding:10px;background:var(--bg-primary);border-radius:var(--radius)">
+            <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--red)">${opps.filter(o => o.shippable === false).length}</div>
+            <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px">Local Only</div>
+            <div style="font-size:9px;color:var(--red);margin-top:3px">Vehicle/pickup</div>
+          </div>
+        </div>
+        <div style="margin-top:8px;padding:8px;background:var(--bg-primary);border-radius:var(--radius);border-left:3px solid var(--purple)">
+          <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;font-weight:600;margin-bottom:4px">Automation Pipeline</div>
+          <div style="font-size:11px;color:var(--text-secondary);display:flex;align-items:center;gap:6px">
+            <span>Win auction</span><span style="color:var(--accent)">&#10132;</span>
+            <span>Ship to prep center</span><span style="color:var(--accent)">&#10132;</span>
+            <span>Prep sends to FBA</span><span style="color:var(--accent)">&#10132;</span>
+            <span style="color:var(--green);font-weight:600">Auto-sold</span>
+          </div>
+        </div>
       </div>
     </div>
-    <div style="font-size:10px;color:var(--text-tertiary);font-family:var(--mono)">Scan: ${d.scanDate ? new Date(d.scanDate).toLocaleString() : 'N/A'}</div>`;
+    <div class="vdash-grid">
+      <div class="vdash-panel">
+        <div class="vp-title">By Category (click to expand)</div>
+        ${Object.entries(cats).sort((a,b) => b[1].profit - a[1].profit).map(([cat, v]) => {
+          const catItems = opps.filter(o => o.category === cat);
+          return `<details style="margin-bottom:4px">
+            <summary style="cursor:pointer;display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--radius-sm);transition:background 120ms;font-size:12px" onmouseenter="this.style.background='var(--bg-hover)'" onmouseleave="this.style.background=''">
+              <span style="color:var(--text-tertiary)">${catIcon(cat)}</span>
+              <span style="flex:1;font-weight:500">${cat}</span>
+              <span style="font-family:var(--mono);font-size:11px;color:var(--text-tertiary)">${v.count}</span>
+              <span style="font-family:var(--mono);font-size:11px;color:${v.profit >= 0 ? 'var(--green)' : 'var(--red)'}">$${v.profit >= 1000 ? (v.profit/1000).toFixed(0)+'k' : v.profit.toFixed(0)}</span>
+            </summary>
+            <div style="padding:4px 0 4px 24px;font-size:10px">
+              ${catItems.map(o => `<div style="display:flex;gap:8px;padding:3px 0;border-bottom:1px solid var(--border-light);align-items:center">
+                <a href="${o.gsaUrl || '#'}" target="_blank" style="flex:1;color:var(--text-secondary);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(o.itemName || '')}</a>
+                <span style="color:var(--text-tertiary)">${o.state}</span>
+                <span style="font-family:var(--mono);color:${(o.marginPercent||0) >= 15 ? 'var(--green)' : 'var(--text-tertiary)'}">${(o.marginPercent||0).toFixed(0)}%</span>
+                <span style="font-family:var(--mono);color:${(o.grossProfit||0) >= 0 ? 'var(--green)' : 'var(--red)'}">$${(o.grossProfit||0).toFixed(0)}</span>
+              </div>`).join('')}
+            </div>
+          </details>`;
+        }).join('')}
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Milestones <span class="count">${msDone}/${milestones.length}</span></div>
+        <div style="max-height:240px;overflow-y:auto">
+          ${milestones.map(m => `<div class="vdash-milestone">
+            <div class="vm-check ${m.done ? 'done' : ''}">${m.done ? '&#10003;' : ''}</div>
+            <div class="vm-text ${m.done ? 'done' : ''}">${esc(m.text)}</div>
+          </div>`).join('')}
+        </div>
+      </div>
+    </div>
+    <div class="vdash-grid">
+      <div class="vdash-panel">
+        <div class="vp-title">Sourcing Platforms</div>
+        <div style="display:flex;flex-direction:column;gap:4px;font-size:11px">
+          <a href="https://gsaauctions.gov" target="_blank" style="color:var(--text-secondary);text-decoration:none;padding:4px 0;border-bottom:1px solid var(--border-light);transition:color 120ms" onmouseenter="this.style.color='var(--accent)'" onmouseleave="this.style.color='var(--text-secondary)'">GSA Auctions <span style="color:var(--text-tertiary)">— Federal surplus (2.5% premium)</span></a>
+          <a href="https://govdeals.com" target="_blank" style="color:var(--text-secondary);text-decoration:none;padding:4px 0;border-bottom:1px solid var(--border-light);transition:color 120ms" onmouseenter="this.style.color='var(--accent)'" onmouseleave="this.style.color='var(--text-secondary)'">GovDeals <span style="color:var(--text-tertiary)">— State/local surplus (7.5-12.5%)</span></a>
+          <a href="https://govplanet.com" target="_blank" style="color:var(--text-secondary);text-decoration:none;padding:4px 0;border-bottom:1px solid var(--border-light);transition:color 120ms" onmouseenter="this.style.color='var(--accent)'" onmouseleave="this.style.color='var(--text-secondary)'">GovPlanet <span style="color:var(--text-tertiary)">— Heavy equipment (Ritchie Bros)</span></a>
+          <a href="https://propertyroom.com" target="_blank" style="color:var(--text-secondary);text-decoration:none;padding:4px 0;border-bottom:1px solid var(--border-light);transition:color 120ms" onmouseenter="this.style.color='var(--accent)'" onmouseleave="this.style.color='var(--text-secondary)'">PropertyRoom <span style="color:var(--text-tertiary)">— Police confiscated</span></a>
+          <a href="https://www.estatesales.net/FL/Miami" target="_blank" style="color:var(--text-secondary);text-decoration:none;padding:4px 0;border-bottom:1px solid var(--border-light);transition:color 120ms" onmouseenter="this.style.color='var(--accent)'" onmouseleave="this.style.color='var(--text-secondary)'">EstateSales.net <span style="color:var(--text-tertiary)">— Miami estate sales</span></a>
+          <a href="https://www.auctionzip.com/FL" target="_blank" style="color:var(--text-secondary);text-decoration:none;padding:4px 0;transition:color 120ms" onmouseenter="this.style.color='var(--accent)'" onmouseleave="this.style.color='var(--text-secondary)'">AuctionZip <span style="color:var(--text-tertiary)">— Florida local auctions</span></a>
+        </div>
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Resale Channels</div>
+        <div style="display:flex;flex-direction:column;gap:4px;font-size:11px">
+          <a href="https://www.ebay.com/sl/sell" target="_blank" style="color:var(--text-secondary);text-decoration:none;padding:4px 0;border-bottom:1px solid var(--border-light);transition:color 120ms" onmouseenter="this.style.color='var(--accent)'" onmouseleave="this.style.color='var(--text-secondary)'">eBay <span style="color:var(--text-tertiary)">— General/IT/Equipment</span></a>
+          <a href="https://sellercentral.amazon.com" target="_blank" style="color:var(--text-secondary);text-decoration:none;padding:4px 0;border-bottom:1px solid var(--border-light);transition:color 120ms" onmouseenter="this.style.color='var(--accent)'" onmouseleave="this.style.color='var(--text-secondary)'">Amazon FBA <span style="color:var(--text-tertiary)">— New/refurbished goods</span></a>
+          <a href="https://facebook.com/marketplace" target="_blank" style="color:var(--text-secondary);text-decoration:none;padding:4px 0;border-bottom:1px solid var(--border-light);transition:color 120ms" onmouseenter="this.style.color='var(--accent)'" onmouseleave="this.style.color='var(--text-secondary)'">FB Marketplace <span style="color:var(--text-tertiary)">— Vehicles/furniture (no fees)</span></a>
+          <a href="https://offerup.com" target="_blank" style="color:var(--text-secondary);text-decoration:none;padding:4px 0;border-bottom:1px solid var(--border-light);transition:color 120ms" onmouseenter="this.style.color='var(--accent)'" onmouseleave="this.style.color='var(--text-secondary)'">OfferUp <span style="color:var(--text-tertiary)">— Local pickup items</span></a>
+          <a href="https://mercari.com" target="_blank" style="color:var(--text-secondary);text-decoration:none;padding:4px 0;border-bottom:1px solid var(--border-light);transition:color 120ms" onmouseenter="this.style.color='var(--accent)'" onmouseleave="this.style.color='var(--text-secondary)'">Mercari <span style="color:var(--text-tertiary)">— Mid-range resale</span></a>
+          <a href="https://keepa.com" target="_blank" style="color:var(--text-secondary);text-decoration:none;padding:4px 0;transition:color 120ms" onmouseenter="this.style.color='var(--accent)'" onmouseleave="this.style.color='var(--text-secondary)'">Keepa <span style="color:var(--text-tertiary)">— Amazon price tracking</span></a>
+        </div>
+      </div>
+    </div>
+    <div style="font-size:10px;color:var(--text-tertiary);font-family:var(--mono);margin-top:12px">Last scan: ${d.scanDate ? new Date(d.scanDate).toLocaleString() : 'N/A'} | Settings: ${d.analyzed}/${d.totalListings} analyzed, min profit $${d.settings?.minProfit || 50}</div>`;
 };
 
 // ── SMB ACQUISITION DASHBOARD ──
@@ -4744,7 +5043,7 @@ views.sessions = async () => {
   const d = await api('/api/sessions');
   return `<div class="card"><table>
     <tr><th>Group</th><th>Session ID</th><th>Size</th><th>Last Modified</th></tr>
-    ${d.map(s=>`<tr>
+    ${[...d].sort((a,b) => (b.lastModified||'').localeCompare(a.lastModified||'')).map(s=>`<tr>
       <td>${esc(s.group)}</td>
       <td class="mono">${esc(s.sessionId.substring(0,12))}...</td>
       <td>${esc(s.fileSize)}</td>
@@ -5211,7 +5510,7 @@ views.accounting = async () => {
             </tr>
           </thead>
           <tbody>
-            ${d.entries.length ? d.entries.map(e => `<tr>
+            ${d.entries.length ? [...d.entries].sort((a,b) => (b.date||'').localeCompare(a.date||'')).map(e => `<tr>
               <td class="mono" style="white-space:nowrap">${e.date}</td>
               <td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.description)}">${esc(e.description)}</td>
               <td style="font-size:11px">${esc(e.account_name)}</td>
@@ -5423,7 +5722,7 @@ window.showAccountDetail = (accountName, accountType) => {
       </div>
       ${sparkHtml}
       <div class="acct-overlay-body">
-        ${entries.map(e => `<div class="ao-entry">
+        ${[...entries].sort((a,b) => (b.date||'').localeCompare(a.date||'')).map(e => `<div class="ao-entry">
           <div class="ao-date">${e.date}</div>
           <div class="ao-desc">
             ${esc(e.description)}
