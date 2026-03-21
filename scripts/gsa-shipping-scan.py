@@ -142,15 +142,6 @@ for r in results:
     # NOTE: "repairs may be required" and "parts may be missing" are standard GSA boilerplate
     # on nearly every listing — do NOT treat as condition issues
 
-    # Check stated condition explicitly (e.g. "condition is listed as repairable/usable/salvage")
-    stated_cond = re.search(r'condition\s+(?:is\s+)?(?:listed\s+as|rated|classified\s+(?:as|in))\s+(\w+)', combined)
-    if stated_cond:
-        cond_word = stated_cond.group(1).lower()
-        if cond_word in ('salvage', 'scrap', 'condemned', 'unserviceable'):
-            condition = 'broken'  # override
-        elif cond_word in ('repairable', 'fair', 'poor'):
-            condition = 'needs_work'  # override
-
     # Access friction — security clearance, licensing, special requirements
     has_access_friction = bool(re.search(
         r'real id|homeland security|security clearance|security requirement|'
@@ -180,6 +171,17 @@ for r in results:
         condition = 'untested'
     else:
         condition = 'ok'
+
+    # Override with explicitly stated condition (e.g. "condition is listed as repairable")
+    # This is more authoritative than keyword matching
+    stated_cond = re.search(r'condition\s+(?:is\s+)?(?:listed\s+as|rated|classified\s+(?:as|in))\s+(\w+)', combined)
+    if stated_cond:
+        cond_word = stated_cond.group(1).lower()
+        if cond_word in ('salvage', 'scrap', 'condemned', 'unserviceable'):
+            condition = 'broken'
+        elif cond_word in ('repairable', 'fair', 'poor'):
+            condition = 'needs_work'
+        # 'usable', 'good', 'excellent' don't override — keep current condition
 
     # De-prioritize based on shipping
     if shippable == False:

@@ -2709,9 +2709,9 @@ function renderKanban(d) {
   // Recurring tasks — compact table
   if (cronTasks.length) {
     const activeCron = cronTasks.filter(t => t.status === 'active');
-    const pausedCron = cronTasks.filter(t => t.status !== 'active');
+    const stoppedCron = cronTasks.filter(t => t.status !== 'active');
     kanban += `<div style="margin-top:20px">
-      <div class="section-title">Recurring Tasks <span class="count">${activeCron.length} active${pausedCron.length ? ` · ${pausedCron.length} paused` : ''}</span></div>
+      <div class="section-title">Recurring Tasks <span class="count">${activeCron.length} active${stoppedCron.length ? ` · <span style="color:var(--red)">${stoppedCron.length} stopped</span>` : ''}</span></div>
       <div class="card" style="padding:0;overflow:hidden">
         <table style="width:100%;border-collapse:collapse;font-size:11px">
           <thead><tr style="background:var(--bg-secondary);text-align:left">
@@ -2723,7 +2723,7 @@ function renderKanban(d) {
             <th style="padding:8px 6px;font-weight:500">Status</th>
             <th style="padding:8px 6px;font-weight:500;width:60px"></th>
           </tr></thead>
-          <tbody>${activeCron.concat(pausedCron).map(t => {
+          <tbody>${activeCron.concat(stoppedCron).map(t => {
             const title = taskTitle(t.prompt);
             const grpColor = GROUP_COLORS[t.group_folder] || 'var(--text-tertiary)';
             const costStr = t.lastRunCost > 0 ? '$' + t.lastRunCost.toFixed(2) : '-';
@@ -2733,9 +2733,9 @@ function renderKanban(d) {
               <td style="padding:6px"><span class="mono text-dim" style="font-size:10px">${esc(t.schedule_value)}</span></td>
               <td style="padding:6px;color:var(--text-tertiary);font-size:10px">${t.last_run ? timeAgo(t.last_run) : 'never'}</td>
               <td style="padding:6px;font-family:var(--mono);font-size:10px;color:var(--yellow)">${costStr}</td>
-              <td style="padding:6px">${badge(t.status, t.status === 'active' ? 'green' : 'muted')}</td>
-              <td style="padding:6px;text-align:right">
-                <button class="btn" style="font-size:9px;padding:1px 5px" onclick="moveTask('${t.id}','review')" title="Review">⊙</button>
+              <td style="padding:6px">${badge(t.status, t.status === 'active' ? 'green' : t.status === 'paused' ? 'yellow' : t.status === 'completed' ? 'red' : t.status === 'needs_review' ? 'purple' : 'muted')}</td>
+              <td style="padding:6px;text-align:right;white-space:nowrap">
+                ${t.status === 'active' ? `<button class="btn" style="font-size:9px;padding:1px 5px" onclick="event.stopPropagation();post('/api/task/status',{taskId:'${t.id}',status:'paused'}).then(()=>renderView())" title="Pause">⏸</button>` : `<button class="btn btn-green" style="font-size:9px;padding:1px 5px" onclick="event.stopPropagation();post('/api/task/status',{taskId:'${t.id}',status:'active'}).then(()=>renderView())" title="Reactivate">▶</button>`}
               </td>
             </tr>`;
           }).join('')}</tbody>
@@ -2842,6 +2842,21 @@ function renderTaskList(d) {
 }
 
 window.moveTask = async (id, target) => {
+  // Prevent accidentally completing recurring tasks
+  if (target === 'done') {
+    // Check if this is a cron task by looking it up
+    try {
+      const taskData = await api(`/api/task?id=${encodeURIComponent(id)}`);
+      if (taskData?.schedule_type === 'cron') {
+        const reallyComplete = await confirmAction('This is a RECURRING task. Completing it will STOP all future runs permanently. Are you sure?');
+        if (!reallyComplete) {
+          // User cancelled — don't complete, just return
+          renderView();
+          return;
+        }
+      }
+    } catch {}
+  }
   if (target === 'done') {
     await post('/api/review', {taskId:id, action:'completed'});
     const res = await post('/api/task/status', {taskId:id, status:'completed'});
@@ -3026,8 +3041,8 @@ async function renderTaskDetail(taskId) {
       <div style="display:flex;gap:6px">
         ${d.stage==='queued'?`<button class="btn btn-green" onclick="officeRunTask('${d.id}')">▶ Start</button>`:''}
         ${d.status==='active'?`<button class="btn" onclick="post('/api/task/status',{taskId:'${d.id}',status:'paused'}).then(()=>renderView())">⏸ Pause</button>`:''}
-        ${d.status==='paused'?`<button class="btn btn-green" onclick="post('/api/task/status',{taskId:'${d.id}',status:'active'}).then(()=>renderView())">▶ Resume</button>`:''}
-        <button class="btn btn-green" onclick="post('/api/task/status',{taskId:'${d.id}',status:'completed'}).then(()=>{_taskDetailId=null;renderView()})">✓ Complete</button>
+        ${d.status==='paused'||d.status==='completed'||d.status==='needs_review'?`<button class="btn btn-green" onclick="post('/api/task/status',{taskId:'${d.id}',status:'active'}).then(()=>renderView())">▶ ${d.status==='paused'?'Resume':'Reactivate'}</button>`:''}
+        ${d.schedule_type==='cron'?`<span style="font-size:10px;color:var(--yellow);padding:4px 8px;border:1px solid var(--yellow);border-radius:var(--radius-sm)">Recurring: ${esc(d.schedule_value)}</span>`:`<button class="btn btn-green" onclick="post('/api/task/status',{taskId:'${d.id}',status:'completed'}).then(()=>{_taskDetailId=null;renderView()})">✓ Complete</button>`}
       </div>
     </div>
 
@@ -4274,6 +4289,10 @@ views['venture-kalshi'] = async () => {
 let _gsaSort = 'fba'; // 'fba' | 'margin' | 'score' | 'ending'
 let _gsaPage = 1;
 const GSA_PAGE_SIZE = 10;
+let _gsaFilterCat = '';     // category filter
+let _gsaFilterShip = '';    // shipping filter
+let _gsaFilterCond = '';    // condition filter
+let _gsaFilterMinEdge = 0;  // minimum margin %
 views['venture-gsa'] = async () => {
   const d = await api('/api/venture/gsa');
   const sortFns = {
@@ -4282,7 +4301,20 @@ views['venture-gsa'] = async () => {
     score: (a,b) => (b.smartScore||0) - (a.smartScore||0),
     ending: (a,b) => (a.endDate||'z').localeCompare(b.endDate||'z'),
   };
-  const opps = (d.opportunities || []).sort(sortFns[_gsaSort] || sortFns.fba);
+  let opps = (d.opportunities || []).sort(sortFns[_gsaSort] || sortFns.fba);
+
+  // Apply filters
+  if (_gsaFilterCat) opps = opps.filter(o => o.category === _gsaFilterCat);
+  if (_gsaFilterShip === 'parcel') opps = opps.filter(o => o.shippable === true);
+  else if (_gsaFilterShip === 'freight') opps = opps.filter(o => o.shippable === 'freight');
+  else if (_gsaFilterShip === 'local') opps = opps.filter(o => o.shippable === false);
+  else if (_gsaFilterShip === 'shippable') opps = opps.filter(o => o.shippable === true || o.shippable === 'freight');
+  if (_gsaFilterCond === 'ok') opps = opps.filter(o => o.condition === 'ok');
+  else if (_gsaFilterCond === 'needs_work') opps = opps.filter(o => o.condition === 'needs_work');
+  else if (_gsaFilterCond === 'broken') opps = opps.filter(o => o.condition === 'broken');
+  else if (_gsaFilterCond === 'not_broken') opps = opps.filter(o => o.condition !== 'broken');
+  if (_gsaFilterMinEdge > 0) opps = opps.filter(o => (o.marginPercent || 0) >= _gsaFilterMinEdge);
+
   const positiveOpps = opps.filter(o => (o.marginPercent || 0) > 0);
   const bestMargin = positiveOpps.length ? Math.max(...positiveOpps.map(o => o.marginPercent || 0)) : 0;
   const totalProfit = positiveOpps.reduce((s, o) => s + (o.grossProfit || 0), 0);
@@ -4339,6 +4371,40 @@ views['venture-gsa'] = async () => {
         const label = s === 'fba' ? 'Automation' : s === 'margin' ? 'Margin' : s === 'score' ? 'Score' : 'Ending Soon';
         return `<button style="font-size:10px;padding:4px 12px;border-radius:var(--radius-sm);cursor:pointer;border:1px solid ${active ? 'var(--accent)' : 'var(--border)'};background:${active ? 'var(--accent-muted)' : 'var(--bg-tertiary)'};color:${active ? 'var(--accent)' : 'var(--text-secondary)'};font-weight:${active ? '600' : '400'};font-family:var(--font);transition:all 120ms" onclick="_gsaSort='${s}';_gsaPage=1;renderView()">${label}</button>`;
       }).join('')}
+      ${(() => {
+        // Collect unique categories from unfiltered data
+        const allOpps = (d.opportunities || []);
+        const cats = [...new Set(allOpps.map(o => o.category).filter(Boolean))].sort();
+        const selStyle = 'appearance:none;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);font-size:10px;padding:4px 8px;cursor:pointer;font-family:var(--font)';
+        const activeFilters = [_gsaFilterCat, _gsaFilterShip, _gsaFilterCond, _gsaFilterMinEdge].filter(Boolean).length;
+        return `<span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;font-weight:600;margin-left:12px;margin-right:4px">Filters:</span>
+        <select style="${selStyle}" onchange="_gsaFilterCat=this.value;_gsaPage=1;renderView()">
+          <option value="">All Categories</option>
+          ${cats.map(c => `<option value="${c}"${_gsaFilterCat===c?' selected':''}>${c}</option>`).join('')}
+        </select>
+        <select style="${selStyle}" onchange="_gsaFilterShip=this.value;_gsaPage=1;renderView()">
+          <option value="">Any Shipping</option>
+          <option value="shippable"${_gsaFilterShip==='shippable'?' selected':''}>Shippable (parcel+freight)</option>
+          <option value="parcel"${_gsaFilterShip==='parcel'?' selected':''}>Parcel Only</option>
+          <option value="freight"${_gsaFilterShip==='freight'?' selected':''}>Freight Only</option>
+          <option value="local"${_gsaFilterShip==='local'?' selected':''}>Local Pickup</option>
+        </select>
+        <select style="${selStyle}" onchange="_gsaFilterCond=this.value;_gsaPage=1;renderView()">
+          <option value="">Any Condition</option>
+          <option value="ok"${_gsaFilterCond==='ok'?' selected':''}>OK Only</option>
+          <option value="not_broken"${_gsaFilterCond==='not_broken'?' selected':''}>Not Broken</option>
+          <option value="needs_work"${_gsaFilterCond==='needs_work'?' selected':''}>Needs Work</option>
+          <option value="broken"${_gsaFilterCond==='broken'?' selected':''}>Broken</option>
+        </select>
+        <select style="${selStyle}" onchange="_gsaFilterMinEdge=parseInt(this.value)||0;_gsaPage=1;renderView()">
+          <option value="0">Any Margin</option>
+          <option value="10"${_gsaFilterMinEdge===10?' selected':''}>10%+ Margin</option>
+          <option value="20"${_gsaFilterMinEdge===20?' selected':''}>20%+ Margin</option>
+          <option value="30"${_gsaFilterMinEdge===30?' selected':''}>30%+ Margin</option>
+          <option value="50"${_gsaFilterMinEdge===50?' selected':''}>50%+ Margin</option>
+        </select>
+        ${activeFilters > 0 ? `<button style="font-size:9px;padding:3px 8px;border-radius:var(--radius-sm);border:1px solid var(--red);background:var(--red-muted);color:var(--red);cursor:pointer;font-family:var(--font)" onclick="_gsaFilterCat='';_gsaFilterShip='';_gsaFilterCond='';_gsaFilterMinEdge=0;_gsaPage=1;renderView()">Clear (${activeFilters})</button>` : ''}`;
+      })()}
     </div>
     ${(() => {
       const totalPages = Math.ceil(opps.length / GSA_PAGE_SIZE);
