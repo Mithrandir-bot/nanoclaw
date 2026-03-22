@@ -2650,6 +2650,29 @@ async function postTaskStatus(req: http.IncomingMessage) {
   const { taskId, status, archiveThread } = body as { taskId: string; status: string; archiveThread?: boolean };
   if (!taskId || !['active', 'paused', 'completed', 'needs_review'].includes(status)) throw new Error('taskId and valid status required');
 
+  // Warn if trying to complete a cron task (but allow it — user may intentionally want to stop it)
+  if (status === 'completed') {
+    const task = db.prepare('SELECT schedule_type FROM scheduled_tasks WHERE id = ?').get(taskId) as { schedule_type: string } | undefined;
+    if (task?.schedule_type === 'cron') {
+      // Log warning but allow — the frontend already has a confirmation dialog
+      console.warn(`[tasks] Completing cron task ${taskId} — this will stop all future runs`);
+    }
+  }
+
+  // When reactivating a cron task, also recompute next_run so it starts running again
+  if (status === 'active') {
+    const task = db.prepare('SELECT schedule_type, schedule_value FROM scheduled_tasks WHERE id = ?').get(taskId) as { schedule_type: string; schedule_value: string } | undefined;
+    if (task?.schedule_type === 'cron' && task.schedule_value) {
+      try {
+        const { CronExpressionParser } = require('cron-parser');
+        const interval = CronExpressionParser.parse(task.schedule_value, { tz: TZ });
+        const nextRun = interval.next().toISOString();
+        dbWrite.prepare('UPDATE scheduled_tasks SET status = ?, next_run = ? WHERE id = ?').run(status, nextRun, taskId);
+        return { ok: true, nextRun };
+      } catch {}
+    }
+  }
+
   dbWrite.prepare('UPDATE scheduled_tasks SET status = ? WHERE id = ?').run(status, taskId);
 
   // If completing a task with a thread, queue thread archive request

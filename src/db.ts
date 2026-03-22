@@ -542,9 +542,17 @@ export function updateTaskAfterRun(
       `UPDATE scheduled_tasks SET next_run = ?, last_run = ?, last_result = ?, status = ? WHERE id = ?`,
     ).run(nextRun, now, lastResult, statusOverride, id);
   } else {
+    // Only auto-complete one-off tasks (schedule_type = 'once') when nextRun is null.
+    // Cron tasks should NEVER be auto-completed — they must stay active.
     db.prepare(
-      `UPDATE scheduled_tasks SET next_run = ?, last_run = ?, last_result = ?, status = CASE WHEN ? IS NULL THEN 'completed' ELSE status END WHERE id = ?`,
-    ).run(nextRun, now, lastResult, nextRun, id);
+      `UPDATE scheduled_tasks SET next_run = ?, last_run = ?, last_result = ?,
+       status = CASE
+         WHEN ? IS NULL AND schedule_type = 'once' THEN 'completed'
+         WHEN ? IS NULL AND schedule_type = 'cron' THEN status  -- keep active
+         ELSE status
+       END
+       WHERE id = ?`,
+    ).run(nextRun, now, lastResult, nextRun, nextRun, id);
   }
 }
 

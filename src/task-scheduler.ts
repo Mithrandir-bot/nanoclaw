@@ -373,11 +373,20 @@ async function runTask(
     return;
   }
 
-  // Daily cron tasks auto-complete on success (they ran today, done).
-  // Non-daily recurring tasks (weekly, interval, etc.) stay active.
-  if (!error && isDailyCron(task)) {
-    logger.info({ taskId: task.id }, 'Daily task succeeded, auto-completing');
-    updateTaskAfterRun(task.id, null, resultSummary, 'completed');
+  // Cron tasks should NEVER be marked completed — they need to run again.
+  // Compute next run and keep them active.
+  if (task.schedule_type === 'cron') {
+    if (!nextRun) {
+      // Safety: if computeNextRun failed for a cron task, compute it again
+      nextRun = computeNextRun(task);
+    }
+    if (!nextRun) {
+      // Last resort: set next run to 1 hour from now to prevent permanent death
+      logger.warn({ taskId: task.id }, 'Cron task has no next_run, forcing 1h fallback');
+      nextRun = new Date(Date.now() + 3600000).toISOString();
+    }
+    updateTaskAfterRun(task.id, nextRun, resultSummary);
+    logger.info({ taskId: task.id, nextRun }, 'Cron task completed run, staying active');
     return;
   }
 
