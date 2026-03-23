@@ -116,24 +116,52 @@ Each channel has a dedicated folder. When you produce something worth saving (re
 | Contacts | `1a6ulBIuF4ArKizJuFTSOp_IXMC719DX_` |
 | Contacts/Network Notes | `1AEaQX4W5HnqDuaBwDmIuhyeLbQx8wcGV` |
 | Contacts/HubSpot Exports | `1twyUpcnJLWlIWz1I6ao1Lhf7oaE6TrBD` |
+| Real Estate | `1LaIZOy4K7S7uKLvfMbJ9Q_j1lOUXmQab` |
+| Real Estate/Deal Analyses | `1hPlHxmbHm6e3-DYBh9Yo24pCwk_Cm93g` |
+| Real Estate/Market Research | `1NW4pnbuZRksGWJubu8GgpB0nknJVJka-` |
+| Real Estate/Active Deals | `1fG12JpjsqkIGxRwRbQw-lk0qANvW_NCF` |
+| Real Estate/Contracts & Legal | `1C1X7Gtiga6p0bkOHJzYE41KapF32_efb` |
+| Real Estate/Screenshots & Photos | `1eedPiMBH2VExCRq13504VDdckk3ASlWX` |
+| Real Estate/Financial Models | `1pqXQhltsqoulpVIy9uqq1QouLc5p9oUZ` |
+| Real Estate/Leads | `1r8u04ZTXh1XhsE_ftvYHOclqyFM_LlM7` |
+| Real Estate/Reference | `1U3F_oPLZ0b4kx3-KIuDHxNIN-s4_ONw6` |
 
 **Key files:**
 - Contacts Master (Sheet): `1znTsVDzQe9m8xJHxlasy4uMjKtXwzYSn31TPWekOJPA`
 - Tom King Strategies (Sheet): `1ZHKqy-NMHDOgZL50ImK5Mox3lP4Ll6SSYI16276_LKQ`
 - Dashboard (Doc): `1Ys6sT9YltVWTd6Mg7c8Fzl1e5j6pRoovmAWCwGEjiWc`
 
-**To create a file in a Drive folder:**
+**CRITICAL: Check before creating — never create duplicates.**
+
+Before creating any file in Drive, ALWAYS search for an existing file with the same name in the target folder first. If it exists, UPDATE it instead of creating a new one.
+
 ```bash
 ACCESS_TOKEN=$(curl -s -X POST https://oauth2.googleapis.com/token \
   -d "client_id=$GOOGLE_CLIENT_ID&client_secret=$GOOGLE_CLIENT_SECRET&refresh_token=$GOOGLE_REFRESH_TOKEN&grant_type=refresh_token" \
   | jq -r '.access_token')
 
-# Create a Google Doc
-curl -s -X POST "https://www.googleapis.com/drive/v3/files" \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"My Report","mimeType":"application/vnd.google-apps.document","parents":["FOLDER_ID"]}'
+# Step 1: Check if file already exists in the folder
+EXISTING=$(curl -s "https://www.googleapis.com/drive/v3/files?q=name='My Report' and 'FOLDER_ID' in parents and trashed=false&fields=files(id,name)" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" | jq -r '.files[0].id // empty')
+
+if [ -n "$EXISTING" ]; then
+  # Step 2a: UPDATE existing file (don't create duplicate)
+  curl -s -X PATCH "https://www.googleapis.com/upload/drive/v3/files/$EXISTING?uploadType=media" \
+    -H "Authorization: Bearer $ACCESS_TOKEN" \
+    -H "Content-Type: text/plain" \
+    --data-binary @content.txt
+else
+  # Step 2b: Create new file only if none exists
+  curl -s -X POST "https://www.googleapis.com/drive/v3/files" \
+    -H "Authorization: Bearer $ACCESS_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d '{"name":"My Report","mimeType":"application/vnd.google-apps.document","parents":["FOLDER_ID"]}'
+fi
 ```
+
+**Naming convention:** Always use Title Case with spaces (e.g., "Option Alpha Research"). Never use kebab-case (e.g., "option-alpha-research") for Drive file names.
+
+**MIME type safety:** Before PATCHing an existing file, verify the MIME type matches. If the existing file is a Google Sheet but you're uploading markdown, create a new file with a different name (append date or version) instead of overwriting.
 
 **Obsidian is source of truth** — save everything there first, then publish to Drive on demand or when you produce a completed output.
 

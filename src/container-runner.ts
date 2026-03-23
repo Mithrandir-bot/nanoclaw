@@ -152,6 +152,11 @@ function buildVolumeMounts(
     );
   }
 
+  // Ensure .claude subdirectories exist for new groups (prevents ENOENT on first run)
+  for (const subdir of ['debug', 'backups', 'plugins', 'session-env', 'shell-snapshots']) {
+    fs.mkdirSync(path.join(groupSessionsDir, subdir), { recursive: true });
+  }
+
   // Sync skills from container/skills/ into each group's .claude/skills/
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');

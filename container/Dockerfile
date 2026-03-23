@@ -48,6 +48,10 @@ COPY agent-runner/ ./
 # Build TypeScript
 RUN npm run build
 
+# Install property-lookup tool
+COPY skills/property-lookup/property-lookup /usr/local/bin/property-lookup
+RUN chmod +x /usr/local/bin/property-lookup
+
 # Create workspace directories
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
 

@@ -1774,6 +1774,102 @@ function getVentureSmb() {
   }
 }
 
+// ── REAL ESTATE DEALS DASHBOARD ──
+
+function getVentureRealestate() {
+  try {
+    const dealsDir = path.join(GROUPS_DIR, 'real-estate', 'deals');
+    let deals: Record<string, unknown>[] = [];
+
+    // Load deal files
+    if (fs.existsSync(dealsDir)) {
+      const files = fs.readdirSync(dealsDir).filter(f => f.endsWith('.json') && f !== 'index.json');
+      for (const f of files) {
+        try {
+          const raw = readFileSafe(path.join(dealsDir, f));
+          if (raw) {
+            const deal = JSON.parse(raw);
+            deal._file = f;
+            deals.push(deal);
+          }
+        } catch {}
+      }
+    }
+
+    // Sort by analyzed_at descending
+    deals.sort((a, b) => String(b.analyzed_at || '').localeCompare(String(a.analyzed_at || '')));
+
+    // Pipeline counts
+    const stages = ['lead', 'analyzing', 'watch', 'offer', 'under_contract', 'closed', 'passed'];
+    const pipeline: Record<string, number> = {};
+    for (const s of stages) pipeline[s] = 0;
+    for (const d of deals) {
+      const s = String(d.stage || 'lead');
+      if (pipeline[s] !== undefined) pipeline[s]++;
+      else pipeline['lead']++;
+    }
+
+    // Strategy breakdown
+    const strategies: Record<string, number> = { rental: 0, flip: 0, both: 0 };
+    for (const d of deals) {
+      const s = String(d.strategy || 'rental');
+      if (strategies[s] !== undefined) strategies[s]++;
+    }
+
+    // Aggregate metrics
+    const scored = deals.filter(d => typeof d.score === 'number' && (d.score as number) > 0);
+    const avgScore = scored.length ? Math.round(scored.reduce((s, d) => s + (d.score as number), 0) / scored.length) : 0;
+    const buyDeals = scored.filter(d => (d.score as number) >= 70);
+    const totalDeals = deals.length;
+
+    // Avg cap rate and cash-on-cash from rental analyses
+    const withRental = deals.filter(d => d.rental && typeof (d.rental as Record<string, unknown>).cap_rate === 'number');
+    const avgCapRate = withRental.length ? (withRental.reduce((s, d) => s + ((d.rental as Record<string, number>).cap_rate || 0), 0) / withRental.length).toFixed(1) : '—';
+    const avgCashOnCash = withRental.length ? (withRental.reduce((s, d) => s + ((d.rental as Record<string, number>).cash_on_cash || 0), 0) / withRental.length).toFixed(1) : '—';
+
+    // Read venture file for milestones
+    const ventureContent = readFileSafe(path.join(VENTURES_DIR, 'Real-Estate-Deals.md'));
+    const { frontmatter: ventFm, body: ventBody } = parseFrontmatter(ventureContent);
+
+    // Load active property searches
+    const searchesDir = path.join(GROUPS_DIR, 'real-estate', 'searches');
+    const searches: Record<string, unknown>[] = [];
+    if (fs.existsSync(searchesDir)) {
+      const searchFiles = fs.readdirSync(searchesDir).filter(f => f.endsWith('.json') && !f.includes('-seen') && !f.includes('-results'));
+      for (const sf of searchFiles) {
+        try {
+          const searchConfig = JSON.parse(readFileSafe(path.join(searchesDir, sf)));
+          // Load results file
+          const resultsPath = path.join(GROUPS_DIR, 'real-estate', searchConfig.results_file || `searches/${sf.replace('.json', '-results.json')}`);
+          let results: Record<string, unknown> = { lastScan: null, totalScans: 0, totalFound: 0, totalAlerted: 0, listings: [] };
+          try {
+            const raw = readFileSafe(resultsPath);
+            if (raw) results = JSON.parse(raw);
+          } catch {}
+          searches.push({ ...searchConfig, results });
+        } catch {}
+      }
+    }
+
+    return {
+      deals,
+      pipeline,
+      strategies,
+      totalDeals,
+      avgScore,
+      buyCount: buyDeals.length,
+      avgCapRate,
+      avgCashOnCash,
+      ventureFrontmatter: ventFm,
+      ventureBody: ventBody,
+      searches,
+    };
+  } catch (err) {
+    console.error('[venture-realestate]', err);
+    return { deals: [], pipeline: {}, strategies: {}, totalDeals: 0, avgScore: 0, buyCount: 0, avgCapRate: '—', avgCashOnCash: '—', ventureFrontmatter: {}, ventureBody: '', searches: [] };
+  }
+}
+
 // --- Path traversal guard ---
 
 function isPathSafe(requestedPath: string, allowedRoot: string): boolean {
@@ -5474,6 +5570,7 @@ const getRoutes: Record<string, Handler> = {
   '/api/venture/kalshi': () => getVentureKalshi(),
   '/api/venture/gsa': () => getVentureGsa(),
   '/api/venture/smb': () => getVentureSmb(),
+  '/api/venture/realestate': () => getVentureRealestate(),
   '/api/docs': (p) => getDocs(p.get('folder') || undefined),
   '/api/doc': (p) => getDocContent(p.get('path') || ''),
   '/api/memory': (p) => getMemory(p.get('date') || undefined),

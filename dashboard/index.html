@@ -18,6 +18,7 @@
     --yellow: #d4a72c; --yellow-muted: rgba(212,167,44,0.12);
     --purple: #9f7aea; --purple-muted: rgba(159,122,234,0.12);
     --orange: #d97706; --orange-muted: rgba(217,119,6,0.12);
+    --grp-trading: #e07c39; --grp-crypto: #3ecf8e; --grp-contacts: #cf6679; --grp-realestate: #4a9eff;
     --radius: 6px; --radius-sm: 4px;
     --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     --mono: 'SF Mono', 'JetBrains Mono', 'Fira Code', monospace;
@@ -36,6 +37,7 @@
     --yellow: #e67700; --yellow-muted: rgba(230,119,0,0.08);
     --purple: #7048e8; --purple-muted: rgba(112,72,232,0.08);
     --orange: #d9480f; --orange-muted: rgba(217,72,15,0.08);
+    --grp-trading: #c96820; --grp-crypto: #1d8e55; --grp-contacts: #b84d63; --grp-realestate: #2d7ed6;
   }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -146,9 +148,10 @@
   .grp-ai-research { border-left-color: var(--purple) !important; }
   .grp-business-ideas { border-left-color: var(--yellow) !important; }
   .grp-health-wellness { border-left-color: var(--green) !important; }
-  .grp-trading { border-left-color: #e07c39 !important; }
-  .grp-crypto { border-left-color: #3ecf8e !important; }
-  .grp-contacts { border-left-color: #cf6679 !important; }
+  .grp-trading { border-left-color: var(--grp-trading) !important; }
+  .grp-crypto { border-left-color: var(--grp-crypto) !important; }
+  .grp-contacts { border-left-color: var(--grp-contacts) !important; }
+  .grp-real-estate { border-left-color: var(--grp-realestate) !important; }
 
   /* Unread badge (iOS-style) */
   .unread-badge { display: inline-flex; align-items: center; justify-content: center;
@@ -1095,6 +1098,7 @@
       <div class="nav-item" data-view="venture-smb"><span class="icon">&#9670;</span> SMB Acquisition</div>
       <div class="nav-item" data-view="venture-grants"><span class="icon">&#9830;</span> Gov Grants</div>
       <div class="nav-item" data-view="venture-tradeschool"><span class="icon">&#9998;</span> Trade School</div>
+      <div class="nav-item" data-view="venture-realestate"><span class="icon">&#9962;</span> Real Estate</div>
     </div>
     <div class="nav-section">
       <div class="nav-section-label">Knowledge</div>
@@ -1336,10 +1340,11 @@ function taskTitle(prompt) {
 }
 const GROUP_COLORS = {
   main: 'var(--accent)', 'ai-research': 'var(--purple)', 'business-ideas': 'var(--yellow)',
-  'health-wellness': 'var(--green)', trading: '#e07c39', crypto: '#3ecf8e', contacts: '#cf6679',
+  'health-wellness': 'var(--green)', trading: 'var(--grp-trading)', crypto: 'var(--grp-crypto)', contacts: 'var(--grp-contacts)',
+  'real-estate': 'var(--grp-realestate)',
 };
 function switchView(v, pushState = true) {
-  const viewTitles = {'venture-kalshi':'Kalshi','venture-gsa':'GSA Auctions','venture-smb':'SMB Acquisition','venture-grants':'Government Grants','venture-tradeschool':'Trade School'};
+  const viewTitles = {'venture-kalshi':'Kalshi','venture-gsa':'GSA Auctions','venture-smb':'SMB Acquisition','venture-grants':'Government Grants','venture-tradeschool':'Trade School','venture-realestate':'Real Estate'};
   currentView = v;
   $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
   $('#viewTitle').textContent = viewTitles[v] || v.charAt(0).toUpperCase() + v.slice(1);
@@ -3850,6 +3855,7 @@ const VENTURE_DASHBOARDS = {
   'SMB-Acquisition-Pipeline.md': 'venture-smb',
   'Government-Grants.md': 'venture-grants',
   'AI-Trade-School.md': 'venture-tradeschool',
+  'Real-Estate-Deals.md': 'venture-realestate',
 };
 window.ventureCardClick = (file) => {
   const dashView = VENTURE_DASHBOARDS[file];
@@ -4755,6 +4761,602 @@ views['venture-tradeschool'] = async () => {
         <div class="vm-check ${m.done ? 'done' : ''}">${m.done ? '&#10003;' : ''}</div>
         <div class="vm-text ${m.done ? 'done' : ''}">${esc(m.text)}</div>
       </div>`).join('')}
+    </div>`;
+};
+
+// ── REAL ESTATE DEALS DASHBOARD ──
+let _reSort = 'score'; // 'score' | 'caprate' | 'cashflow' | 'date'
+
+// ── Real Estate Action Handlers ──
+window._reAction = async function(action, scanId, listingIdx, price, addrEnc, cityEnc) {
+  const addr = decodeURIComponent(addrEnc);
+  const city = decodeURIComponent(cityEnc);
+
+  if (action === 'remove') {
+    if (!confirm('Remove ' + addr + ', ' + city + ' from scan results?')) return;
+    try {
+      // Load results, remove listing, save back via API
+      const d = await api('/api/venture/realestate');
+      const search = (d.searches || []).find(s => s.id === scanId);
+      if (search && search.results && search.results.listings) {
+        search.results.listings.splice(listingIdx, 1);
+        // Save via chat send to trigger agent to update the file
+        await post('/api/chat/send', { group: 'real-estate', message: '[SYSTEM] Remove listing at index ' + listingIdx + ' from scan ' + scanId + ' results. Property: ' + addr + ', ' + city });
+      }
+    } catch (e) { console.error(e); }
+    renderView();
+    return;
+  }
+
+  if (action === 'score') {
+    const newScore = prompt('Override score for ' + addr + ' (0-100):', '');
+    if (newScore === null || newScore === '') return;
+    const s = parseInt(newScore, 10);
+    if (isNaN(s) || s < 0 || s > 100) { alert('Score must be 0-100'); return; }
+    await post('/api/chat/send', { group: 'real-estate', message: '[SYSTEM] Override score for ' + addr + ', ' + city + ' to ' + s + '/100 in scan ' + scanId });
+    renderView();
+    return;
+  }
+
+  if (action === 'toured') {
+    await post('/api/chat/send', { group: 'real-estate', message: '[SYSTEM] Mark ' + addr + ', ' + city + ' as TOURED in scan ' + scanId + '. Add tour notes when available.' });
+    alert(addr + ' marked as toured');
+    return;
+  }
+
+  if (action === 'watch') {
+    await post('/api/chat/send', { group: 'real-estate', message: '[SYSTEM] Add ' + addr + ', ' + city + ' to Watchlist. Monitor for price changes.' });
+    alert(addr + ' added to watchlist');
+    return;
+  }
+
+  if (action === 'verify-str') {
+    await post('/api/chat/send', { group: 'real-estate', message: 'Call the HOA for ' + addr + ', ' + city + ' and verify their short-term rental policy. Get: minimum rental period, max rentals per year, any pending STR rule changes, and HOA contact info.' });
+    alert('STR verification request sent to Mithrandir');
+    return;
+  }
+
+  if (action === 'offer') {
+    // Show offer creation modal
+    const modal = document.getElementById('reOfferModal');
+    document.getElementById('reOfferAddr').textContent = addr + ', ' + city;
+    document.getElementById('reOfferListPrice').textContent = '$' + price.toLocaleString();
+    document.getElementById('reOfferPrice').value = Math.round(price * 0.90); // Default 10% below ask
+    document.getElementById('reOfferScanId').value = scanId;
+    document.getElementById('reOfferIdx').value = listingIdx;
+    document.getElementById('reOfferAddress').value = addr + ', ' + city + ', FL';
+    document.getElementById('reOfferDeposit').value = Math.round(price * 0.01); // 1% EMD
+    document.getElementById('reOfferInspection').value = '15';
+    document.getElementById('reOfferFinancing').value = '30';
+    document.getElementById('reOfferClosing').value = '45';
+    document.getElementById('reOfferAgent').value = '';
+    document.getElementById('reOfferAgentEmail').value = '';
+    document.getElementById('reOfferNotes').value = '';
+    modal.style.display = 'flex';
+    return;
+  }
+};
+
+window._reSubmitOffer = async function() {
+  const addr = document.getElementById('reOfferAddress').value;
+  const offerPrice = document.getElementById('reOfferPrice').value;
+  const deposit = document.getElementById('reOfferDeposit').value;
+  const inspection = document.getElementById('reOfferInspection').value;
+  const financing = document.getElementById('reOfferFinancing').value;
+  const closing = document.getElementById('reOfferClosing').value;
+  const agentName = document.getElementById('reOfferAgent').value;
+  const agentEmail = document.getElementById('reOfferAgentEmail').value;
+  const notes = document.getElementById('reOfferNotes').value;
+  const listPrice = document.getElementById('reOfferListPrice').textContent;
+
+  if (!agentEmail) { alert('Listing agent email is required to create the draft'); return; }
+
+  // Send to Mithrandir to create Gmail draft
+  const msg = '[OFFER DRAFT] Create a Gmail draft to ' + agentEmail + ' (' + agentName + ') for property: ' + addr +
+    '. List price: ' + listPrice + '. Offer price: $' + parseInt(offerPrice).toLocaleString() +
+    '. Earnest money deposit: $' + parseInt(deposit).toLocaleString() +
+    '. Inspection period: ' + inspection + ' days. Financing contingency: ' + financing + ' days. Closing: ' + closing + ' days.' +
+    (notes ? ' Additional terms: ' + notes : '') +
+    ' Draft a professional letter of intent (LOI) expressing interest, requesting a call to discuss terms, and noting we are a cash-capable buyer who can close quickly. Keep it concise and professional. Save draft in Gmail (do not send). Confirm back when done.';
+
+  await post('/api/chat/send', { group: 'real-estate', message: msg });
+  document.getElementById('reOfferModal').style.display = 'none';
+  alert('Offer draft request sent to Mithrandir. Check Gmail drafts shortly.');
+};
+let _reFilterStage = '';
+let _reFilterStrategy = '';
+let _reFilterVerdict = '';
+let _rePage = 1;
+const RE_PAGE_SIZE = 15;
+
+views['venture-realestate'] = async () => {
+  const d = await api('/api/venture/realestate');
+  const allDeals = d.deals || [];
+  const pipeline = d.pipeline || {};
+  const sortFns = {
+    score: (a,b) => (b.score||0) - (a.score||0),
+    caprate: (a,b) => ((b.rental||{}).cap_rate||0) - ((a.rental||{}).cap_rate||0),
+    cashflow: (a,b) => ((b.rental||{}).monthly_cashflow||0) - ((a.rental||{}).monthly_cashflow||0),
+    date: (a,b) => (b.analyzed_at||'').localeCompare(a.analyzed_at||''),
+  };
+  let deals = [...allDeals].sort(sortFns[_reSort] || sortFns.score);
+
+  // Apply filters
+  if (_reFilterStage) deals = deals.filter(d => d.stage === _reFilterStage);
+  if (_reFilterStrategy) deals = deals.filter(d => d.strategy === _reFilterStrategy);
+  if (_reFilterVerdict) {
+    if (_reFilterVerdict === 'buy') deals = deals.filter(d => (d.score||0) >= 70);
+    else if (_reFilterVerdict === 'watch') deals = deals.filter(d => (d.score||0) >= 40 && (d.score||0) < 70);
+    else if (_reFilterVerdict === 'pass') deals = deals.filter(d => (d.score||0) < 40);
+  }
+
+  // Milestone parsing
+  const ventBody = d.ventureBody || '';
+  const milestones = [];
+  const msRe = /^- \[([ x])\] (.+)$/gm;
+  let msm;
+  while ((msm = msRe.exec(ventBody)) !== null) milestones.push({ done: msm[1] === 'x', text: msm[2] });
+  const msDone = milestones.filter(m => m.done).length;
+
+  // Pipeline stages for funnel
+  const pipeStages = [
+    { key: 'lead', label: 'Leads', color: 'var(--text-tertiary)', width: 100 },
+    { key: 'analyzing', label: 'Analyzing', color: 'var(--accent)', width: 85 },
+    { key: 'watch', label: 'Watching', color: 'var(--yellow)', width: 70 },
+    { key: 'offer', label: 'Offer', color: 'var(--orange)', width: 55 },
+    { key: 'under_contract', label: 'Under Contract', color: 'var(--purple)', width: 40 },
+    { key: 'closed', label: 'Closed', color: 'var(--green)', width: 25 },
+    { key: 'passed', label: 'Passed', color: 'var(--red)', width: 15 },
+  ];
+
+  const verdictBadge = (score) => {
+    if (score >= 70) return '<span style="color:var(--green);font-weight:700">BUY</span>';
+    if (score >= 40) return '<span style="color:var(--yellow);font-weight:600">WATCH</span>';
+    return '<span style="color:var(--red)">PASS</span>';
+  };
+
+  const stratBadge = (s) => s === 'flip' ? badge('Flip', 'yellow') : s === 'both' ? badge('Both', 'purple') : badge('Rental', 'green');
+
+  const selStyle = 'appearance:none;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);font-size:10px;padding:4px 8px;cursor:pointer;font-family:var(--font)';
+  const activeFilters = [_reFilterStage, _reFilterStrategy, _reFilterVerdict].filter(Boolean).length;
+
+  return `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <div class="vd-back" onclick="switchView('ventures')" style="margin:0">&#8592; Pipeline</div>
+      <div style="margin-left:auto;font-size:11px"><span class="vd-link" onclick="_ventureDetail='Real-Estate-Deals.md';switchView('ventures')" style="cursor:pointer">Edit Details</span></div>
+    </div>
+    <div class="vdash-header">
+      <div class="vdash-title">Real Estate Deals</div>
+      <div class="vdash-stage" style="color:var(--accent);border-color:var(--accent)">Research</div>
+    </div>
+    <div class="vdash-metrics">
+      <div class="vm-stat"><div class="vm-val">${d.totalDeals}</div><div class="vm-label">Total Deals</div></div>
+      <div class="vm-stat"><div class="vm-val" style="color:var(--green)">${d.buyCount}</div><div class="vm-label">Buy Rated</div></div>
+      <div class="vm-stat"><div class="vm-val">${d.avgScore}<span style="font-size:12px;opacity:0.5">/100</span></div><div class="vm-label">Avg Score</div></div>
+      <div class="vm-stat"><div class="vm-val">${d.avgCapRate}%</div><div class="vm-label">Avg Cap Rate</div></div>
+      <div class="vm-stat"><div class="vm-val">${d.avgCashOnCash}%</div><div class="vm-label">Avg CoC</div></div>
+      <div class="vm-stat"><div class="vm-val">${pipeline.under_contract || 0}</div><div class="vm-label">Under Contract</div></div>
+      <div class="vm-stat"><div class="vm-val" style="color:var(--green)">${pipeline.closed || 0}</div><div class="vm-label">Closed</div></div>
+    </div>
+    <div class="vdash-grid">
+      <div class="vdash-panel">
+        <div class="vp-title">Deal Pipeline</div>
+        <div class="vdash-funnel">
+          ${pipeStages.map(s => `<div class="funnel-stage">
+            <div class="funnel-label">${s.label}</div>
+            <div class="funnel-bar" style="width:${s.width}%;background:${s.color}22;color:${s.color};border:1px solid ${s.color}44">
+              <span class="funnel-count">${pipeline[s.key] || 0}</span>
+            </div>
+          </div>`).join('')}
+        </div>
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Strategy Mix</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;padding:8px 0">
+          <div style="text-align:center;padding:12px;background:var(--bg-primary);border-radius:var(--radius)">
+            <div style="font-family:var(--mono);font-size:20px;font-weight:700;color:var(--green)">${(d.strategies||{}).rental || 0}</div>
+            <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px">Rental</div>
+          </div>
+          <div style="text-align:center;padding:12px;background:var(--bg-primary);border-radius:var(--radius)">
+            <div style="font-family:var(--mono);font-size:20px;font-weight:700;color:var(--yellow)">${(d.strategies||{}).flip || 0}</div>
+            <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px">Flip</div>
+          </div>
+          <div style="text-align:center;padding:12px;background:var(--bg-primary);border-radius:var(--radius)">
+            <div style="font-family:var(--mono);font-size:20px;font-weight:700;color:var(--purple)">${(d.strategies||{}).both || 0}</div>
+            <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px">Both</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+      <span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;font-weight:600;margin-right:4px">Sort by:</span>
+      ${['score','caprate','cashflow','date'].map(s => {
+        const active = _reSort === s;
+        const label = s === 'score' ? 'Score' : s === 'caprate' ? 'Cap Rate' : s === 'cashflow' ? 'Cash Flow' : 'Newest';
+        return '<button style="font-size:10px;padding:4px 12px;border-radius:var(--radius-sm);cursor:pointer;border:1px solid ' + (active ? 'var(--accent)' : 'var(--border)') + ';background:' + (active ? 'var(--accent-muted)' : 'var(--bg-tertiary)') + ';color:' + (active ? 'var(--accent)' : 'var(--text-secondary)') + ';font-weight:' + (active ? '600' : '400') + ';font-family:var(--font);transition:all 120ms" onclick="_reSort=\'' + s + '\';_rePage=1;renderView()">' + label + '</button>';
+      }).join('')}
+      <span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;font-weight:600;margin-left:12px;margin-right:4px">Filters:</span>
+      <select style="${selStyle}" onchange="_reFilterStage=this.value;_rePage=1;renderView()">
+        <option value="">All Stages</option>
+        ${['lead','analyzing','watch','offer','under_contract','closed','passed'].map(s => '<option value="' + s + '"' + (_reFilterStage===s?' selected':'') + '>' + s.replace(/_/g,' ').replace(/^./,c=>c.toUpperCase()) + '</option>').join('')}
+      </select>
+      <select style="${selStyle}" onchange="_reFilterStrategy=this.value;_rePage=1;renderView()">
+        <option value="">All Strategies</option>
+        <option value="rental"${_reFilterStrategy==='rental'?' selected':''}>Rental</option>
+        <option value="flip"${_reFilterStrategy==='flip'?' selected':''}>Flip</option>
+        <option value="both"${_reFilterStrategy==='both'?' selected':''}>Both</option>
+      </select>
+      <select style="${selStyle}" onchange="_reFilterVerdict=this.value;_rePage=1;renderView()">
+        <option value="">All Verdicts</option>
+        <option value="buy"${_reFilterVerdict==='buy'?' selected':''}>Buy (70+)</option>
+        <option value="watch"${_reFilterVerdict==='watch'?' selected':''}>Watch (40-69)</option>
+        <option value="pass"${_reFilterVerdict==='pass'?' selected':''}>Pass (&lt;40)</option>
+      </select>
+      ${activeFilters > 0 ? `<button style="font-size:9px;padding:3px 8px;border-radius:var(--radius-sm);border:1px solid var(--red);background:var(--red-muted);color:var(--red);cursor:pointer;font-family:var(--font)" onclick="_reFilterStage='';_reFilterStrategy='';_reFilterVerdict='';_rePage=1;renderView()">Clear (${activeFilters})</button>` : ''}
+    </div>
+    ${(() => {
+      // ── PROPERTY SCANS SECTION (above deals table) ──
+      const searches = d.searches || [];
+      if (!searches.length) return '';
+
+      const scanAccents = [
+        { color: 'var(--accent)', muted: 'var(--accent-muted)', border: 'rgba(94,106,210,0.25)' },
+        { color: 'var(--green)', muted: 'var(--green-muted)', border: 'rgba(77,168,112,0.25)' },
+        { color: 'var(--purple)', muted: 'var(--purple-muted)', border: 'rgba(159,122,234,0.25)' },
+        { color: '#4a9eff', muted: 'rgba(74,158,255,0.12)', border: 'rgba(74,158,255,0.25)' },
+        { color: 'var(--yellow)', muted: 'var(--yellow-muted)', border: 'rgba(212,167,44,0.25)' },
+        { color: 'var(--orange)', muted: 'var(--orange-muted)', border: 'rgba(217,119,6,0.25)' },
+      ];
+
+      if (!window._scanPages) window._scanPages = {};
+      if (!window._scanSorts) window._scanSorts = {};
+      if (!window._scanExpanded) window._scanExpanded = {};
+      const SCAN_PAGE_SIZE = 15;
+
+      const countyAppraiserUrl = (city, address, zip) => {
+        const c = String(city || '').toLowerCase();
+        const z = String(zip || '');
+        if (['miami','miami beach','key biscayne','surfside','bal harbour','sunny isles beach','golden beach','hallandale beach'].some(x => c.includes(x)) || z.match(/^331/)) return 'https://www.miamidade.gov/Apps/PA/propertysearch/#/';
+        if (['hollywood','dania beach','fort lauderdale','lauderdale-by-the-sea','pompano beach','deerfield beach'].some(x => c.includes(x)) || z.match(/^330/)) return 'https://web.bcpa.net/BcpaClient/#/Record-Search';
+        if (['boca raton','delray beach','boynton beach','palm beach','jupiter','juno beach','singer island'].some(x => c.includes(x)) || z.match(/^334/)) return 'https://www.pbcpao.gov/search.htm';
+        if (['stuart','jensen beach','fort pierce'].some(x => c.includes(x)) || z.match(/^349/)) return 'https://www.pa.martin.fl.us/';
+        if (['vero beach','sebastian','indian river'].some(x => c.includes(x)) || z.match(/^3296/)) return 'https://www.ircpa.org/';
+        if (['cocoa beach','cape canaveral','satellite beach','indialantic','melbourne beach'].some(x => c.includes(x)) || z.match(/^3293|^3292/)) return 'https://www.bcpao.us/PropertySearch/';
+        if (['key west','marathon','islamorada','key largo','tavernier'].some(x => c.includes(x)) || z.match(/^330[4-5]/)) return 'https://www.mcpafl.org/';
+        return 'https://www.miamidade.gov/Apps/PA/propertysearch/#/';
+      };
+      const zillowSearchUrl = (address, city, zip) => 'https://www.zillow.com/homes/' + encodeURIComponent((address||'') + ' ' + (city||'') + ' FL ' + (zip||'')) + '_rb/';
+
+      const totalActive = searches.filter(s => s.status === 'active').length;
+      const totalMatches = searches.reduce((sum, s) => sum + ((s.results || {}).listings || []).length, 0);
+      const totalAlerts = searches.reduce((sum, s) => sum + ((s.results || {}).totalAlerted || 0), 0);
+      const totalScansRun = searches.reduce((sum, s) => sum + ((s.results || {}).totalScans || 0), 0);
+
+      let html = '<div style="margin-bottom:20px">';
+      html += '<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">';
+      html += '<div style="font-size:15px;font-weight:700;letter-spacing:-0.3px">Property Scans</div>';
+      html += '<span style="font-size:11px;color:var(--text-tertiary)">' + searches.length + ' configured</span>';
+      html += '</div>';
+      html += '<div class="vdash-metrics">';
+      html += '<div class="vm-stat"><div class="vm-val" style="color:var(--green)">' + totalActive + '</div><div class="vm-label">Active Scans</div></div>';
+      html += '<div class="vm-stat"><div class="vm-val">' + totalMatches + '</div><div class="vm-label">Total Matches</div></div>';
+      html += '<div class="vm-stat"><div class="vm-val">' + totalAlerts + '</div><div class="vm-label">Alerts Sent</div></div>';
+      html += '<div class="vm-stat"><div class="vm-val">' + totalScansRun + '</div><div class="vm-label">Scans Completed</div></div>';
+      html += '</div>';
+
+      html += searches.map((search, idx) => {
+        const accent = scanAccents[idx % scanAccents.length];
+        const r = search.results || {};
+        const listings = r.listings || [];
+        const criteria = search.criteria || {};
+        const segments = search.geography?.segments || [];
+        const isActive = search.status === 'active';
+        const statusBadge = isActive ? 'background:var(--green-muted);color:var(--green);border:1px solid rgba(77,168,112,0.3)' : 'background:var(--bg-tertiary);color:var(--text-tertiary);border:1px solid var(--border)';
+        const lastScanValid = r.lastScan && !isNaN(Date.parse(r.lastScan));
+        const lastScan = lastScanValid ? new Date(r.lastScan).toLocaleString() : 'Awaiting first scan';
+        const scanId = search.id || 'scan-' + idx;
+
+        if (!window._scanPages[scanId]) window._scanPages[scanId] = 1;
+        const page = window._scanPages[scanId];
+
+        const critTags = [];
+        if (criteria.property_type) critTags.push(criteria.property_type.charAt(0).toUpperCase() + criteria.property_type.slice(1));
+        if (criteria.min_beds) critTags.push(criteria.min_beds + '+ Bed');
+        if (criteria.min_baths) critTags.push(criteria.min_baths + '+ Bath');
+        if (criteria.max_price) { const mp = criteria.max_price; critTags.push('Under $' + (mp >= 1000000 ? (mp/1000000).toFixed(1).replace(/\.0$/,'') + 'M' : mp >= 1000 ? Math.round(mp/1000) + 'K' : mp)); }
+        if (criteria.view) critTags.push(criteria.view.charAt(0).toUpperCase() + criteria.view.slice(1) + ' View');
+        if (criteria.beach_access) critTags.push('Beach Access');
+        if (criteria.str_allowed) critTags.push('STR Allowed');
+        if (criteria.no_55_plus) critTags.push('No 55+');
+
+        let card = '';
+        card += '<div style="margin-bottom:24px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;border-top:3px solid ' + accent.color + '">';
+        card += '<div style="padding:16px 20px 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">';
+        card += '<div style="font-size:14px;font-weight:600;color:var(--text-primary)">' + esc(search.name || 'Unnamed Search') + '</div>';
+        card += '<span style="font-size:9px;padding:2px 8px;border-radius:10px;' + statusBadge + ';font-weight:600;text-transform:uppercase;letter-spacing:0.3px">' + (search.status || 'active') + '</span>';
+        card += '<div style="margin-left:auto;display:flex;align-items:center;gap:16px;font-size:10px;color:var(--text-tertiary)">';
+        card += '<span>Every ' + (search.scan_interval_hours || 4) + 'h</span>';
+        card += '<span style="font-family:var(--mono)">' + esc(lastScan) + '</span>';
+        card += '</div></div>';
+
+        card += '<div style="display:flex;border-top:1px solid var(--border-light);border-bottom:1px solid var(--border-light)">';
+        [{val:r.totalScans||0,label:'Scans',color:''},{val:listings.length,label:'Matches',color:listings.length>0?'color:var(--green)':''},{val:r.totalAlerted||0,label:'Alerts',color:''},{val:segments.length,label:'Zones',color:''}].forEach(s => {
+          card += '<div style="flex:1;padding:10px 16px;text-align:center;border-right:1px solid var(--border-light)"><div style="font-family:var(--mono);font-size:16px;font-weight:700;' + s.color + '">' + s.val + '</div><div style="font-size:9px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;margin-top:1px">' + s.label + '</div></div>';
+        });
+        card += '</div>';
+
+        card += '<div style="padding:12px 20px;display:flex;gap:16px;flex-wrap:wrap">';
+        card += '<div style="flex:1;min-width:280px"><div style="font-size:9px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Criteria</div><div style="display:flex;flex-wrap:wrap;gap:4px">';
+        card += critTags.map(t => '<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:' + accent.muted + ';color:' + accent.color + ';border:1px solid ' + accent.border + '">' + esc(t) + '</span>').join('');
+        card += '</div></div>';
+        card += '<div style="flex:1;min-width:280px"><div style="font-size:9px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Coverage</div><div style="display:flex;flex-wrap:wrap;gap:4px">';
+        card += segments.map(s => '<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border)">' + esc(s.name) + '</span>').join('');
+        card += '</div></div></div>';
+
+        if (listings.length) {
+          // ── Deal Scoring Engine ──
+          const scoring = search.scoring || {};
+          const weights = scoring.weights || { size: 25, hoa: 20, str: 20, view: 15, location: 10, value: 10 };
+          const prefs = scoring.preferences || {};
+          const locTiers = prefs.location_tiers || {};
+          const viewTiers = prefs.view_tiers || {};
+
+          // Compute ranges for normalization
+          const allSqft = listings.map(l => l.sqft || 0).filter(v => v > 0);
+          const allHoa = listings.map(l => l.hoaFee).filter(v => v != null && v > 0);
+          const allPpsf = listings.map(l => (l.price && l.sqft) ? l.price / l.sqft : 0).filter(v => v > 0);
+          const minSqft = Math.min(...allSqft), maxSqft = Math.max(...allSqft);
+          const minHoa = Math.min(...allHoa), maxHoa = Math.max(...allHoa);
+          const minPpsf = Math.min(...allPpsf), maxPpsf = Math.max(...allPpsf);
+
+          // Determine which segment a city belongs to
+          const citySegment = (city) => {
+            const c = (city || '').toLowerCase();
+            for (const seg of segments) {
+              if ((seg.cities || []).some(sc => c.includes(sc.toLowerCase()))) return seg.name;
+            }
+            return '';
+          };
+
+          // Score each listing (0-100)
+          listings.forEach(l => {
+            let score = 0;
+            const sqft = l.sqft || 0;
+            const hoa = l.hoaFee;
+            const ppsf = (l.price && sqft) ? l.price / sqft : 0;
+            const v = (l.view || '').toLowerCase();
+            const seg = citySegment(l.city);
+
+            // Size score (0-25): larger = better, normalized
+            if (sqft > 0 && maxSqft > minSqft) {
+              score += ((sqft - minSqft) / (maxSqft - minSqft)) * weights.size;
+            } else if (sqft > 0) { score += weights.size * 0.5; }
+
+            // HOA score (0-20): lower = better, inverted normalized
+            if (hoa != null && hoa > 0 && maxHoa > minHoa) {
+              score += (1 - (hoa - minHoa) / (maxHoa - minHoa)) * weights.hoa;
+            } else if (hoa != null && hoa === 0) { score += weights.hoa; }
+            else if (hoa == null) { score += weights.hoa * 0.3; }
+
+            // STR score (0-20): confirmed yes = full, unverified = partial, no = 0
+            if (l.strAllowed === true) score += weights.str;
+            else if (l.strAllowed === null || l.strAllowed === undefined) score += weights.str * 0.3;
+
+            // View score (0-15): direct > ocean > partial
+            const directViews = viewTiers.direct || ['direct oceanfront','oceanfront','beachfront','atlantic oceanfront'];
+            const oceanViews = viewTiers.ocean || ['ocean view','ocean views','oceanfront complex','ocean + icw'];
+            if (directViews.some(dv => v.includes(dv))) score += weights.view;
+            else if (oceanViews.some(ov => v.includes(ov))) score += weights.view * 0.7;
+            else score += weights.view * 0.4;
+
+            // Location score (0-10): high / mid / low
+            const locHigh = (locTiers.high || []).map(s => s.toLowerCase());
+            const locLow = (locTiers.low || []).map(s => s.toLowerCase());
+            const segLow = seg.toLowerCase();
+            if (locHigh.some(t => segLow.includes(t))) score += weights.location;
+            else if (locLow.some(t => segLow.includes(t))) score += weights.location * 0.2;
+            else score += weights.location * 0.6;
+
+            // Value score (0-10): lower $/sqft = better, inverted normalized
+            if (ppsf > 0 && maxPpsf > minPpsf) {
+              score += (1 - (ppsf - minPpsf) / (maxPpsf - minPpsf)) * weights.value;
+            } else if (ppsf > 0) { score += weights.value * 0.5; }
+
+            l._score = Math.round(score);
+            l._tier = score >= 75 ? 'A' : score >= 55 ? 'B' : score >= 35 ? 'C' : 'D';
+            l._segment = seg;
+          });
+
+          const sortKey = window._scanSorts[scanId] || 'score';
+          const sorted = [...listings].sort((a,b) => {
+            if (sortKey==='score') return (b._score||0)-(a._score||0);
+            if (sortKey==='price-asc') return (a.price||0)-(b.price||0);
+            if (sortKey==='price-desc') return (b.price||0)-(a.price||0);
+            if (sortKey==='sqft') return (b.sqft||0)-(a.sqft||0);
+            return (b.foundAt||'').localeCompare(a.foundAt||'');
+          });
+          const totalPages = Math.max(1, Math.ceil(sorted.length / SCAN_PAGE_SIZE));
+          const cp = Math.min(Math.max(page,1), totalPages);
+          const start = (cp-1)*SCAN_PAGE_SIZE;
+          const pl = sorted.slice(start, start+SCAN_PAGE_SIZE);
+          const sbtn = (key) => 'font-size:9px;padding:3px 8px;border-radius:var(--radius-sm);cursor:pointer;border:1px solid ' + (sortKey===key?accent.color:'var(--border)') + ';background:' + (sortKey===key?accent.muted:'var(--bg-tertiary)') + ';color:' + (sortKey===key?accent.color:'var(--text-secondary)') + ';font-weight:' + (sortKey===key?'600':'400') + ';font-family:var(--font)';
+
+          card += '<div style="padding:0 20px 16px">';
+          card += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px">';
+          card += '<div style="display:flex;align-items:center;gap:8px">';
+          card += '<div style="font-size:9px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px">Matched Listings <span style="font-family:var(--mono);margin-left:4px;color:' + accent.color + '">' + listings.length + '</span></div>';
+          card += '<span style="font-size:9px;color:var(--text-tertiary)">Sort:</span>';
+          ['score','date','price-asc','price-desc','sqft'].forEach((k,i) => {
+            const labels = ['Best Deal','Newest','Price Low','Price High','Largest'];
+            card += '<button style="' + sbtn(k) + '" onclick="window._scanSorts[\'' + scanId + '\']=\'' + k + '\';window._scanPages[\'' + scanId + '\']=1;renderView()">' + labels[i] + '</button>';
+          });
+          card += '</div>';
+          if (totalPages > 1) {
+            card += '<div style="display:flex;align-items:center;gap:6px;font-size:10px">';
+            card += '<span style="color:var(--text-tertiary);font-family:var(--mono)">' + (start+1) + '-' + Math.min(start+SCAN_PAGE_SIZE,sorted.length) + ' of ' + sorted.length + '</span>';
+            card += '<button style="padding:2px 8px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer;font-family:var(--font);font-size:10px;opacity:' + (cp<=1?'0.3':'1') + '" ' + (cp<=1?'disabled':'onclick="window._scanPages[\'' + scanId + '\']--;renderView()"') + '>&lsaquo;</button>';
+            card += '<span style="font-family:var(--mono);color:var(--text-tertiary);font-size:10px">' + cp + '/' + totalPages + '</span>';
+            card += '<button style="padding:2px 8px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer;font-family:var(--font);font-size:10px;opacity:' + (cp>=totalPages?'0.3':'1') + '" ' + (cp>=totalPages?'disabled':'onclick="window._scanPages[\'' + scanId + '\']++;renderView()"') + '>&rsaquo;</button>';
+            card += '</div>';
+          }
+          card += '</div>';
+          card += '<table class="vdash-table"><tr><th>Score</th><th>Address</th><th>City</th><th class="right">Price</th><th class="right">$/sf</th><th>Bed/Ba</th><th class="right">Sqft</th><th class="right">HOA</th><th>View</th><th>STR</th><th>Links</th><th>Action</th></tr>';
+          card += pl.map((l, li) => {
+            const lp=l.price||0; const ps = lp>=1000000?'$'+(lp/1000000).toFixed(1).replace(/\.0$/,'')+'M':lp>=1000?'$'+Math.round(lp/1000)+'K':'$'+lp;
+            const ppsf = (lp && l.sqft) ? '$' + Math.round(lp/l.sqft) : '--';
+            const zUrl = zillowSearchUrl(l.address,l.city,l.zip);
+            const paUrl = countyAppraiserUrl(l.city,l.address,l.zip);
+            const sc = l._score || 0;
+            const tierColor = l._tier==='A'?'var(--green)':l._tier==='B'?'var(--yellow)':l._tier==='C'?'var(--text-tertiary)':'var(--red)';
+            const rowId = scanId + '-row-' + li;
+            const actionId = scanId + '-act-' + li;
+            const addrEnc = encodeURIComponent(l.address || '');
+            const cityEnc = encodeURIComponent(l.city || '');
+            const isExpanded = !!window._scanExpanded[rowId];
+            let row = '<tr style="cursor:pointer" onclick="window._scanExpanded[\'' + rowId + '\']=!window._scanExpanded[\'' + rowId + '\'];renderView()" title="Click for rental analysis"><td style="text-align:center;white-space:nowrap"><span class="vc-score ' + (sc>=75?'hot':sc>=55?'warm':'cool') + '" title="Size:' + weights.size + ' HOA:' + weights.hoa + ' STR:' + weights.str + ' View:' + weights.view + ' Loc:' + weights.location + ' Val:' + weights.value + '">' + sc + '</span> <span style="font-size:9px;font-weight:700;color:' + tierColor + '">' + (l._tier||'?') + '</span></td><td class="text" style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="'+esc((l.building?l.building+' — ':'')+( l.address||''))+'">'+esc((l.address||'').substring(0,32))+(l.building?'<div style="font-size:9px;color:var(--text-tertiary);margin-top:1px">'+esc(l.building)+'</div>':'')+'</td><td class="text">'+esc(l.city||'')+'</td><td class="right" style="font-weight:600">'+ps+'</td><td class="right">'+ppsf+'</td><td class="text">'+(l.beds||'?')+'/'+(l.baths||'?')+'</td><td class="right">'+(l.sqft ? l.sqft.toLocaleString() : '--')+'</td><td class="right">'+(l.hoaFee!==undefined&&l.hoaFee!==null?'$'+l.hoaFee.toLocaleString():'--')+'</td><td class="text" style="font-size:10px">'+esc(l.view||'')+'</td><td style="text-align:center;font-size:10px">'+(l.strAllowed===true?'<span style="color:var(--green)">Yes</span>':l.strAllowed===false?'<span style="color:var(--red)">No</span>':'<span style="color:var(--text-tertiary)">?</span>')+'</td><td style="white-space:nowrap"><a href="'+(l.url||'#')+'" target="_blank" style="color:'+accent.color+';font-size:9px;text-decoration:none;font-weight:500;margin-right:6px" title="Original listing" onclick="event.stopPropagation()">Listing</a><a href="'+zUrl+'" target="_blank" style="color:var(--text-tertiary);font-size:9px;text-decoration:none;margin-right:6px" title="Zillow" onclick="event.stopPropagation()">Zillow</a><a href="'+paUrl+'" target="_blank" style="color:var(--text-tertiary);font-size:9px;text-decoration:none" title="Tax Records" onclick="event.stopPropagation()">Tax</a></td>' +
+              '<td onclick="event.stopPropagation()"><select style="font-size:10px;padding:2px 4px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);cursor:pointer;font-family:var(--font)" onchange="window._reAction(this.value,\'' + scanId + '\',' + li + ',' + lp + ',\'' + addrEnc + '\',\'' + cityEnc + '\');this.selectedIndex=0"><option value="">--</option><option value="offer">Create Offer</option><option value="score">Set Score</option><option value="toured">Mark Toured</option><option value="watch">Add to Watchlist</option><option value="verify-str">Verify STR</option><option value="remove">Remove</option></select></td></tr>';
+
+            // Expandable rental analysis row
+            const ra = l.rental || {};
+            if (ra.str || ra.ltr) {
+              const $ = v => (v !== null && v !== undefined) ? (v === 0 ? '$0' : v < 0 ? '-$' + Math.abs(v).toLocaleString() : '$' + v.toLocaleString()) : '--';
+              const pct = v => (v !== null && v !== undefined) ? v.toFixed(1) + '%' : '--';
+              const cfColor = v => v > 0 ? 'color:var(--green)' : v < 0 ? 'color:var(--red)' : '';
+              const ltr = ra.ltr || {};
+              const str = ra.str || {};
+
+              row += '<tr id="' + rowId + '" style="display:' + (isExpanded ? 'table-row' : 'none') + ';background:var(--bg-tertiary)"><td colspan="12" style="padding:12px 16px">';
+              row += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;font-size:11px">';
+
+              // Column 1: Financing
+              row += '<div>';
+              row += '<div style="font-size:9px;font-weight:700;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">Financing (20% down, ' + pct(ra.mortgage_rate * 100) + ')</div>';
+              row += '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 12px;color:var(--text-secondary)">';
+              row += '<span style="color:var(--text-tertiary)">Down Payment</span><span style="font-family:var(--mono);text-align:right">' + $(ra.down_payment) + '</span>';
+              row += '<span style="color:var(--text-tertiary)">Loan</span><span style="font-family:var(--mono);text-align:right">' + $(ra.loan_amount) + '</span>';
+              row += '<span style="color:var(--text-tertiary)">Monthly P&I</span><span style="font-family:var(--mono);text-align:right">' + $(ra.monthly_pi) + '</span>';
+              row += '<span style="color:var(--text-tertiary)">Taxes</span><span style="font-family:var(--mono);text-align:right">' + $(ra.monthly_tax) + '/mo</span>';
+              row += '<span style="color:var(--text-tertiary)">Insurance</span><span style="font-family:var(--mono);text-align:right">' + $(ra.monthly_insurance) + '/mo</span>';
+              row += '<span style="color:var(--text-tertiary)">HOA</span><span style="font-family:var(--mono);text-align:right">$' + (l.hoaFee || 0) + '/mo</span>';
+              row += '<span style="color:var(--text-tertiary);font-weight:600">Total Fixed</span><span style="font-family:var(--mono);text-align:right;font-weight:600">' + $(ra.monthly_total_fixed) + '/mo</span>';
+              row += '</div></div>';
+
+              // Column 2: Long-Term Rental
+              if (ltr.monthly_rent) {
+                row += '<div>';
+                row += '<div style="font-size:9px;font-weight:700;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">Long-Term Rental</div>';
+                row += '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 12px;color:var(--text-secondary)">';
+                row += '<span style="color:var(--text-tertiary)">Monthly Rent</span><span style="font-family:var(--mono);text-align:right">' + $(ltr.monthly_rent) + '</span>';
+                row += '<span style="color:var(--text-tertiary)">Source</span><span style="font-size:9px;color:var(--accent)">' + esc(ltr.source || '') + '</span>';
+                row += '<span style="color:var(--text-tertiary)">Vacancy</span><span style="font-family:var(--mono);text-align:right">' + (ltr.vacancy_pct * 100) + '%</span>';
+                row += '<span style="color:var(--text-tertiary)">Management</span><span style="font-family:var(--mono);text-align:right">' + (ltr.mgmt_pct * 100) + '%</span>';
+                row += '<span style="color:var(--text-tertiary)">NOI</span><span style="font-family:var(--mono);text-align:right">' + $(ltr.noi) + '/yr</span>';
+                row += '<span style="color:var(--text-tertiary)">Cap Rate</span><span style="font-family:var(--mono);text-align:right;' + (ltr.cap_rate >= 5 ? 'color:var(--green)' : '') + '">' + pct(ltr.cap_rate) + '</span>';
+                row += '<span style="color:var(--text-tertiary)">Cash Flow</span><span style="font-family:var(--mono);text-align:right;' + cfColor(ltr.monthly_cashflow) + '">' + $(ltr.monthly_cashflow) + '/mo</span>';
+                row += '<span style="color:var(--text-tertiary);font-weight:600">Cash-on-Cash</span><span style="font-family:var(--mono);text-align:right;font-weight:600;' + cfColor(ltr.cash_on_cash) + '">' + pct(ltr.cash_on_cash) + '</span>';
+                row += '</div></div>';
+              } else {
+                row += '<div>';
+                row += '<div style="font-size:9px;font-weight:700;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">Long-Term Rental</div>';
+                row += '<div style="color:var(--text-tertiary);font-size:10px;padding:8px 0">Not available (resort-managed STR only)</div>';
+                row += '</div>';
+              }
+
+              // Column 3: Short-Term Rental
+              row += '<div>';
+              row += '<div style="font-size:9px;font-weight:700;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">Short-Term Rental</div>';
+              row += '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 12px;color:var(--text-secondary)">';
+              row += '<span style="color:var(--text-tertiary)">Nightly ADR</span><span style="font-family:var(--mono);text-align:right">$' + (str.adr || 0) + '</span>';
+              row += '<span style="color:var(--text-tertiary)">Occupancy</span><span style="font-family:var(--mono);text-align:right">' + ((str.occupancy || 0) * 100) + '%</span>';
+              row += '<span style="color:var(--text-tertiary)">Gross Monthly</span><span style="font-family:var(--mono);text-align:right">' + $(str.gross_monthly) + '</span>';
+              row += '<span style="color:var(--text-tertiary)">Source</span><span style="font-size:9px;color:var(--accent)">' + esc(str.source || '') + '</span>';
+              row += '<span style="color:var(--text-tertiary)">Management</span><span style="font-family:var(--mono);text-align:right">' + ((str.mgmt_pct || 0) * 100) + '%</span>';
+              row += '<span style="color:var(--text-tertiary)">NOI</span><span style="font-family:var(--mono);text-align:right">' + $(str.noi) + '/yr</span>';
+              row += '<span style="color:var(--text-tertiary)">Cap Rate</span><span style="font-family:var(--mono);text-align:right;' + (str.cap_rate >= 5 ? 'color:var(--green)' : '') + '">' + pct(str.cap_rate) + '</span>';
+              row += '<span style="color:var(--text-tertiary)">Cash Flow</span><span style="font-family:var(--mono);text-align:right;' + cfColor(str.monthly_cashflow) + '">' + $(str.monthly_cashflow) + '/mo</span>';
+              row += '<span style="color:var(--text-tertiary);font-weight:600">Cash-on-Cash</span><span style="font-family:var(--mono);text-align:right;font-weight:600;' + cfColor(str.cash_on_cash) + '">' + pct(str.cash_on_cash) + '</span>';
+              row += '</div></div>';
+
+              row += '</div></td></tr>';
+            }
+            return row;
+          }).join('');
+          card += '</table></div>';
+        } else {
+          card += '<div style="padding:24px 20px;text-align:center;border-top:1px solid var(--border-light)"><div style="font-size:12px;color:var(--text-tertiary)">No matches yet</div><div style="font-size:10px;color:var(--text-tertiary);margin-top:2px">Scanner will check every ' + (search.scan_interval_hours||4) + ' hours</div></div>';
+        }
+        card += '</div>';
+        return card;
+      }).join('');
+
+      html += '</div>';
+      return html;
+    })()}
+    ${(() => {
+      if (!deals.length) return '<div class="vdash-panel" style="padding:40px;text-align:center"><div style="font-size:14px;color:var(--text-tertiary);margin-bottom:8px">No deals yet</div><div style="font-size:12px;color:var(--text-tertiary)">Submit properties in the #real-estate Discord channel for analysis</div></div>';
+      const totalPages = Math.ceil(deals.length / RE_PAGE_SIZE);
+      if (_rePage > totalPages && totalPages > 0) _rePage = totalPages;
+      const start = (_rePage - 1) * RE_PAGE_SIZE;
+      const pageDeals = deals.slice(start, start + RE_PAGE_SIZE);
+      return '<div class="vdash-panel" style="margin-bottom:20px">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
+        '<div class="vp-title" style="margin:0;border:0;padding:0">Deals <span class="count">' + deals.length + '</span></div>' +
+        '<div style="display:flex;align-items:center;gap:8px;font-size:11px">' +
+          '<span style="color:var(--text-tertiary);font-family:var(--mono)">' + (start+1) + '-' + Math.min(start+RE_PAGE_SIZE, deals.length) + ' of ' + deals.length + '</span>' +
+          '<button style="padding:3px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer;font-family:var(--font);font-size:11px;opacity:' + (_rePage <= 1 ? '0.3' : '1') + '" ' + (_rePage <= 1 ? 'disabled' : 'onclick="_rePage--;renderView()"') + '>&lsaquo; Prev</button>' +
+          '<span style="font-family:var(--mono);color:var(--text-tertiary)">' + _rePage + '/' + totalPages + '</span>' +
+          '<button style="padding:3px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer;font-family:var(--font);font-size:11px;opacity:' + (_rePage >= totalPages ? '0.3' : '1') + '" ' + (_rePage >= totalPages ? 'disabled' : 'onclick="_rePage++;renderView()"') + '>Next &rsaquo;</button>' +
+        '</div>' +
+      '</div>' +
+        '<table class="vdash-table">' +
+          '<tr><th>Address</th><th>Type</th><th>Bed/Bath</th><th class="right">List Price</th><th class="right">ARV</th><th class="right">Cap Rate</th><th class="right">CoC</th><th class="right">Cash Flow</th><th>Strategy</th><th>Score</th><th>Verdict</th><th>Stage</th></tr>' +
+          pageDeals.map(deal => {
+            const r = deal.rental || {};
+            const arv = deal.arv || {};
+            const arvMid = arv.mid || arv.high || arv.low || 0;
+            const scoreClass = (deal.score||0) >= 70 ? 'hot' : (deal.score||0) >= 40 ? 'warm' : 'cool';
+            const stageColors = {lead:'var(--text-tertiary)',analyzing:'var(--accent)',watch:'var(--yellow)',offer:'var(--orange)',under_contract:'var(--purple)',closed:'var(--green)',passed:'var(--red)'};
+            const stageColor = stageColors[deal.stage] || 'var(--text-tertiary)';
+            return '<tr>' +
+              '<td class="text" style="max-width:220px;overflow:hidden;text-overflow:ellipsis" title="' + esc(deal.address || '') + '">' + esc((deal.address || '').substring(0, 40)) + '</td>' +
+              '<td class="text" style="font-size:10px">' + esc(deal.property_type || 'SFR') + '</td>' +
+              '<td class="text" style="font-size:10px">' + (deal.beds || '?') + '/' + (deal.baths || '?') + '</td>' +
+              '<td class="right">$' + ((deal.list_price || 0) >= 1000 ? ((deal.list_price/1000).toFixed(0) + 'K') : (deal.list_price || 0)) + '</td>' +
+              '<td class="right">' + (arvMid ? '$' + (arvMid >= 1000 ? (arvMid/1000).toFixed(0) + 'K' : arvMid) : '--') + '</td>' +
+              '<td class="right ' + ((r.cap_rate||0) >= 8 ? 'pos' : '') + '">' + (r.cap_rate ? r.cap_rate.toFixed(1) + '%' : '--') + '</td>' +
+              '<td class="right ' + ((r.cash_on_cash||0) >= 12 ? 'pos' : '') + '">' + (r.cash_on_cash ? r.cash_on_cash.toFixed(1) + '%' : '--') + '</td>' +
+              '<td class="right ' + ((r.monthly_cashflow||0) > 0 ? 'pos' : (r.monthly_cashflow||0) < 0 ? 'neg' : '') + '">' + (r.monthly_cashflow !== undefined ? '$' + r.monthly_cashflow.toLocaleString() : '--') + '/mo</td>' +
+              '<td>' + stratBadge(deal.strategy || 'rental') + '</td>' +
+              '<td style="text-align:center"><span class="vc-score ' + scoreClass + '">' + (deal.score || 0) + '</span></td>' +
+              '<td style="text-align:center">' + verdictBadge(deal.score || 0) + '</td>' +
+              '<td style="text-align:center;font-size:9px"><span style="color:' + stageColor + '">' + (deal.stage || 'lead').replace(/_/g, ' ').toUpperCase() + '</span></td>' +
+            '</tr>';
+          }).join('') +
+        '</table>' +
+      '</div>';
+    })()}
+    <div class="vdash-grid">
+      <div class="vdash-panel">
+        <div class="vp-title">Key Metrics Reference</div>
+        <table class="vdash-table">
+          <tr><th>Metric</th><th>Target</th><th>Description</th></tr>
+          <tr><td class="text">Cap Rate</td><td class="right pos">8%+</td><td class="text" style="font-size:10px">NOI / Purchase Price</td></tr>
+          <tr><td class="text">Cash-on-Cash</td><td class="right pos">12%+</td><td class="text" style="font-size:10px">Annual Cash Flow / Cash Invested</td></tr>
+          <tr><td class="text">DSCR</td><td class="right pos">1.25+</td><td class="text" style="font-size:10px">NOI / Annual Debt Service</td></tr>
+          <tr><td class="text">GRM</td><td class="right">&lt;12</td><td class="text" style="font-size:10px">Purchase Price / Annual Rent</td></tr>
+          <tr><td class="text">Flip MAO</td><td class="right">70% Rule</td><td class="text" style="font-size:10px">ARV x 0.70 - Rehab</td></tr>
+          <tr><td class="text">Flip Profit</td><td class="right pos">$30K+</td><td class="text" style="font-size:10px">Net after all costs</td></tr>
+        </table>
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Milestones <span class="count">${msDone}/${milestones.length}</span></div>
+        <div style="max-height:240px;overflow-y:auto">
+          ${milestones.map(m => `<div class="vdash-milestone">
+            <div class="vm-check ${m.done ? 'done' : ''}">${m.done ? '&#10003;' : ''}</div>
+            <div class="vm-text ${m.done ? 'done' : ''}">${esc(m.text)}</div>
+          </div>`).join('')}
+        </div>
+      </div>
     </div>`;
 };
 
@@ -7794,6 +8396,63 @@ function downloadFile(content, filename, mime) {
     <input type="password" id="authTokenInput" placeholder="Paste token here..." autocomplete="off">
     <button onclick="submitLogin()">Authenticate</button>
     <div class="auth-error" id="authError"></div>
+  </div>
+</div>
+
+<!-- Offer Creation Modal -->
+<div id="reOfferModal" style="display:none;position:fixed;inset:0;z-index:250;background:rgba(0,0,0,0.6);align-items:center;justify-content:center">
+  <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:24px;width:480px;max-height:90vh;overflow-y:auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <h3 style="font-size:16px;font-weight:600">Create Offer</h3>
+      <span style="cursor:pointer;font-size:18px;color:var(--text-tertiary)" onclick="document.getElementById('reOfferModal').style.display='none'">&times;</span>
+    </div>
+    <div style="font-size:13px;font-weight:500;color:var(--accent);margin-bottom:4px" id="reOfferAddr"></div>
+    <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:16px">List price: <span id="reOfferListPrice"></span></div>
+    <input type="hidden" id="reOfferScanId">
+    <input type="hidden" id="reOfferIdx">
+    <input type="hidden" id="reOfferAddress">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <div>
+        <label style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;display:block;margin-bottom:4px">Offer Price ($)</label>
+        <input type="number" id="reOfferPrice" style="width:100%;padding:8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-family:var(--mono);font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;display:block;margin-bottom:4px">Earnest Money ($)</label>
+        <input type="number" id="reOfferDeposit" style="width:100%;padding:8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-family:var(--mono);font-size:13px">
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
+      <div>
+        <label style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;display:block;margin-bottom:4px">Inspection (days)</label>
+        <input type="number" id="reOfferInspection" style="width:100%;padding:8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-family:var(--mono);font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;display:block;margin-bottom:4px">Financing (days)</label>
+        <input type="number" id="reOfferFinancing" style="width:100%;padding:8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-family:var(--mono);font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;display:block;margin-bottom:4px">Closing (days)</label>
+        <input type="number" id="reOfferClosing" style="width:100%;padding:8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-family:var(--mono);font-size:13px">
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <div>
+        <label style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;display:block;margin-bottom:4px">Listing Agent Name</label>
+        <input type="text" id="reOfferAgent" placeholder="Agent name" style="width:100%;padding:8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-family:var(--font);font-size:13px">
+      </div>
+      <div>
+        <label style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;display:block;margin-bottom:4px">Agent Email (required)</label>
+        <input type="email" id="reOfferAgentEmail" placeholder="agent@example.com" style="width:100%;padding:8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-family:var(--font);font-size:13px">
+      </div>
+    </div>
+    <div style="margin-bottom:16px">
+      <label style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;display:block;margin-bottom:4px">Additional Terms / Notes</label>
+      <textarea id="reOfferNotes" rows="3" placeholder="Contingencies, special terms, closing cost credits..." style="width:100%;padding:8px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-family:var(--font);font-size:12px;resize:vertical"></textarea>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" onclick="document.getElementById('reOfferModal').style.display='none'">Cancel</button>
+      <button class="btn btn-green" onclick="window._reSubmitOffer()" style="font-weight:600">Create Gmail Draft</button>
+    </div>
   </div>
 </div>
 

@@ -1,0 +1,622 @@
+#!/usr/bin/env node
+// property-lookup: Query Florida county property appraiser ArcGIS APIs
+// No API key required. Returns property details, comps, and market data.
+
+import https from 'https';
+import http from 'http';
+
+// ── County Registry ──
+const COUNTIES = {
+  'miami-dade': {
+    name: 'Miami-Dade',
+    baseUrl: 'https://gisweb.miamidade.gov/arcgis/rest/services/MD_ComparableSales/MapServer/5/query',
+    // Coordinates are State Plane FL East (2236) — request outSR=4326 for WGS84
+    srid: 2236,
+    fields: {
+      folio: 'FOLIO',
+      address: 'TRUE_SITE_ADDR',
+      city: 'TRUE_SITE_CITY',
+      zip: 'TRUE_SITE_ZIP_CODE',
+      owner: 'TRUE_OWNER1',
+      owner2: 'TRUE_OWNER2',
+      beds: 'BEDROOM_COUNT',
+      baths: 'BATHROOM_COUNT',
+      halfBaths: 'HALF_BATHROOM_COUNT',
+      sqft: 'BUILDING_HEATED_AREA',
+      grossSqft: 'BUILDING_GROSS_AREA',
+      lotSqft: 'LOT_SIZE',
+      yearBuilt: 'YEAR_BUILT',
+      stories: 'FLOOR_COUNT',
+      units: 'UNIT_COUNT',
+      buildingCount: 'BUILDING_COUNT',
+      zoning: 'PRIMARY_ZONE',
+      landUse: 'DOR_CODE_CUR',
+      landUseDesc: 'DOR_DESC',
+      // Current values
+      landValue: 'LAND_VAL_PRI',       // note: "_PRI" = current year in this service
+      buildingValue: 'BUILDING_VAL_PRI',
+      totalValue: 'TOTAL_VAL_PRI',
+      assessedValue: 'ASSESSED_VAL_PRI',
+      // Prior year values
+      landValuePrior: 'LAND_VAL_2_PRI',
+      buildingValuePrior: 'BUILDING_VAL_2_PRI',
+      totalValuePrior: 'TOTAL_VAL_2_PRI',
+      assessedValuePrior: 'ASSESSED_VAL_2_PRI',
+      // Sales (3 most recent)
+      saleDate1: 'DOS_1',
+      salePrice1: 'PRICE_1',
+      saleGrantor1: 'GRANTOR_1',
+      saleGrantee1: 'GRANTEE_1',
+      saleQual1: 'QU_FLG_1',
+      saleDate2: 'DOS_2',
+      salePrice2: 'PRICE_2',
+      saleDate3: 'DOS_3',
+      salePrice3: 'PRICE_3',
+      // Tax info
+      taxableCounty: 'CNTY_TAXABLE_VAL_PRI',
+      taxableSchool: 'SCHOOL_TAXABLE_VAL_PRI',
+      // Exemptions
+      homestead: 'HSTEAD_EX_VAL_PRI',
+      // Coords from geometry (X_COORD/Y_COORD are State Plane, we reproject via outSR=4326)
+      xCoord: 'X_COORD',
+      yCoord: 'Y_COORD',
+    },
+    // ZIP format: "33139-0000" — use LIKE for prefix match
+    zipFormat: 'suffixed',
+    // DOR codes are 4-digit: "0101" — residential starts with "01"-"08"
+    dorFormat: '4digit',
+    maxRecords: 20000,
+  },
+  'broward': {
+    name: 'Broward',
+    baseUrl: 'https://gisweb.bcpa.net/arcgis/rest/services/BCPA/Property_Public/MapServer/0/query',
+    srid: 2236,
+    fields: {
+      folio: 'FOLIO',
+      address: 'SITUS_ADDR',
+      city: 'SITUS_CITY',
+      zip: 'SITUS_ZIP',
+      owner: 'OWNER1',
+      beds: 'BEDROOMS',
+      baths: 'BATHROOMS',
+      sqft: 'LIVING_AREA',
+      lotSqft: 'LOT_SIZE',
+      yearBuilt: 'YEAR_BUILT',
+      totalValue: 'JUST_VALUE',
+      assessedValue: 'ASSESSED_VALUE',
+      landUse: 'DOR_CODE',
+    },
+    zipFormat: 'plain',
+    dorFormat: '2digit',
+    maxRecords: 2000,
+  },
+  'palm-beach': {
+    name: 'Palm Beach',
+    baseUrl: 'https://maps.co.palm-beach.fl.us/arcgis/rest/services/Parcels/Parcels/MapServer/0/query',
+    srid: 2881,
+    fields: {
+      folio: 'PARCEL_ID',
+      address: 'SITUS',
+      owner: 'OWNER',
+      sqft: 'LIVING_AREA',
+      lotSqft: 'LOT_SIZE',
+      yearBuilt: 'YEAR_BUILT',
+      totalValue: 'TOTAL_VALUE',
+      assessedValue: 'ASSESSED_VALUE',
+      landUse: 'USE_CODE',
+    },
+    zipFormat: 'plain',
+    dorFormat: '2digit',
+    maxRecords: 1000,
+  },
+};
+
+// ── HTTP fetch helper ──
+function fetchJSON(url) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https') ? https : http;
+    const req = mod.get(url, { headers: { 'User-Agent': 'property-lookup/1.0' } }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}: ${data.substring(0, 200)}`));
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(new Error(`Invalid JSON: ${data.substring(0, 200)}`)); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Request timeout')); });
+  });
+}
+
+// ── Query ArcGIS ──
+async function queryArcGIS(county, where, opts = {}) {
+  const config = COUNTIES[county];
+  if (!config) throw new Error(`Unknown county: ${county}. Supported: ${Object.keys(COUNTIES).join(', ')}`);
+
+  const limit = Math.min(opts.limit || 10, config.maxRecords);
+  const needGeometry = opts.withCoords !== false;
+  const params = new URLSearchParams({
+    where,
+    outFields: '*',
+    returnGeometry: needGeometry ? 'true' : 'false',
+    resultRecordCount: String(limit),
+    f: 'json',
+  });
+
+  // Reproject geometry to WGS84 lat/lon
+  if (needGeometry) params.set('outSR', '4326');
+  if (opts.orderBy) params.set('orderByFields', opts.orderBy);
+
+  const url = `${config.baseUrl}?${params.toString()}`;
+  const result = await fetchJSON(url);
+
+  if (result.error) throw new Error(`ArcGIS error: ${result.error.message || JSON.stringify(result.error)}`);
+  return (result.features || []).map(f => ({
+    ...f.attributes,
+    _lon: f.geometry?.x ?? null,
+    _lat: f.geometry?.y ?? null,
+  }));
+}
+
+// ── Normalize property record ──
+function normalize(county, attrs) {
+  const f = COUNTIES[county].fields;
+  const get = (key) => attrs[f[key]] ?? attrs[key] ?? null;
+  const num = (key) => { const v = get(key); return v != null && v !== '' ? Number(v) : null; };
+  const str = (key) => { const v = get(key); return v != null && v !== '' ? String(v).trim() : null; };
+
+  const sales = [];
+  for (let i = 1; i <= 3; i++) {
+    const dateRaw = str(`saleDate${i}`);
+    const price = num(`salePrice${i}`);
+    if (dateRaw && price && price > 100) {
+      // Format date: "20211119" -> "2021-11-19"
+      const date = dateRaw.length === 8
+        ? `${dateRaw.slice(0,4)}-${dateRaw.slice(4,6)}-${dateRaw.slice(6,8)}`
+        : dateRaw;
+      sales.push({ date, price });
+    }
+  }
+
+  const sqft = num('sqft') || 0;
+  const lastSalePrice = sales.length > 0 ? sales[0].price : null;
+
+  // Clean ZIP: "33139-0000" -> "33139"
+  const rawZip = str('zip');
+  const zip = rawZip ? rawZip.split('-')[0] : null;
+
+  return {
+    folio: str('folio'),
+    address: str('address'),
+    city: str('city'),
+    zip,
+    owner: str('owner'),
+    owner2: str('owner2'),
+    beds: num('beds'),
+    baths: num('baths'),
+    halfBaths: num('halfBaths'),
+    sqft,
+    grossSqft: num('grossSqft'),
+    lotSqft: num('lotSqft'),
+    yearBuilt: num('yearBuilt'),
+    stories: num('stories'),
+    units: num('units'),
+    buildingCount: num('buildingCount'),
+    zoning: str('zoning'),
+    landUse: str('landUse'),
+    landUseDesc: str('landUseDesc') || str('landUse'),
+    landValue: num('landValue'),
+    buildingValue: num('buildingValue'),
+    totalValue: num('totalValue'),
+    assessedValue: num('assessedValue'),
+    landValuePrior: num('landValuePrior'),
+    buildingValuePrior: num('buildingValuePrior'),
+    totalValuePrior: num('totalValuePrior'),
+    assessedValuePrior: num('assessedValuePrior'),
+    taxableCounty: num('taxableCounty'),
+    taxableSchool: num('taxableSchool'),
+    homesteadExemption: num('homestead'),
+    sales,
+    lastSalePrice,
+    lastSaleDate: sales.length > 0 ? sales[0].date : null,
+    saleQual: str('saleQual1'),
+    pricePerSqft: sqft > 0 && lastSalePrice ? Math.round(lastSalePrice / sqft) : null,
+    lat: attrs._lat,
+    lon: attrs._lon,
+  };
+}
+
+// ── Format helpers ──
+function $(n) { return n != null ? '$' + Number(n).toLocaleString() : '—'; }
+function pct(a, b) { return b ? ((a - b) / b * 100).toFixed(1) + '%' : '—'; }
+
+function formatTable(props) {
+  if (!props.length) { console.log('No results found.'); return; }
+  for (const p of props) {
+    console.log('─'.repeat(70));
+    console.log(`  ${p.address || 'N/A'}${p.city ? ', ' + p.city : ''}${p.zip ? ' ' + p.zip : ''}`);
+    console.log(`  Folio: ${p.folio || 'N/A'}  |  Owner: ${p.owner || 'N/A'}`);
+    console.log(`  ${p.beds || '?'}bd / ${p.baths || '?'}ba${p.halfBaths ? ' / ' + p.halfBaths + 'hba' : ''}  |  ${(p.sqft || 0).toLocaleString()} sqft  |  Lot: ${(p.lotSqft || 0).toLocaleString()} sqft  |  Built: ${p.yearBuilt || '?'}`);
+    console.log(`  Use: ${p.landUseDesc || '?'}  |  Zoning: ${p.zoning || '?'}${p.stories ? '  |  Stories: ' + p.stories : ''}${p.units && p.units > 1 ? '  |  Units: ' + p.units : ''}`);
+    console.log(`  Values — Land: ${$(p.landValue)}  Bldg: ${$(p.buildingValue)}  Total: ${$(p.totalValue)}  Assessed: ${$(p.assessedValue)}`);
+    if (p.totalValuePrior) {
+      console.log(`  Prior  — Land: ${$(p.landValuePrior)}  Bldg: ${$(p.buildingValuePrior)}  Total: ${$(p.totalValuePrior)}  (${pct(p.totalValue, p.totalValuePrior)} YoY)`);
+    }
+    if (p.homesteadExemption) console.log(`  Homestead Exemption: ${$(p.homesteadExemption)}`);
+    if (p.sales.length) {
+      console.log(`  Sales:`);
+      for (const s of p.sales) {
+        console.log(`    ${s.date}  ${$(s.price)}${p.sqft > 0 ? '  ($' + Math.round(s.price / p.sqft) + '/sqft)' : ''}`);
+      }
+    }
+    if (p.pricePerSqft) console.log(`  Last Sale $/sqft: $${p.pricePerSqft}`);
+  }
+  console.log('─'.repeat(70));
+  console.log(`${props.length} result(s)`);
+}
+
+function formatCompsTable(comps, subject) {
+  if (subject) {
+    console.log('═'.repeat(70));
+    console.log(`SUBJECT PROPERTY: ${subject.address || 'N/A'}`);
+    console.log(`  ${subject.beds || '?'}bd/${subject.baths || '?'}ba  |  ${(subject.sqft || 0).toLocaleString()} sqft  |  Built ${subject.yearBuilt || '?'}  |  Assessed: ${$(subject.assessedValue)}`);
+    console.log('═'.repeat(70));
+  }
+  if (!comps.length) { console.log('No comparable sales found.'); return; }
+
+  console.log(`\nCOMPARABLE SALES (${comps.length}):\n`);
+  console.log('  #  Address                          Sale Date    Price        $/sqft   Bed/Ba  Sqft     Dist');
+  console.log('  ' + '─'.repeat(95));
+  comps.forEach((c, i) => {
+    const addr = (c.address || '').substring(0, 32).padEnd(32);
+    const date = (c.lastSaleDate || '—').padEnd(12);
+    const price = ($(c.lastSalePrice) || '—').padEnd(12);
+    const ppsf = c.pricePerSqft ? ('$' + c.pricePerSqft).padEnd(8) : '—'.padEnd(8);
+    const bb = `${c.beds || '?'}/${c.baths || '?'}`.padEnd(7);
+    const sf = String(c.sqft || 0).padEnd(8);
+    const dist = c._distMiles != null ? c._distMiles.toFixed(2) + 'mi' : '—';
+    console.log(`  ${String(i + 1).padStart(2)}  ${addr} ${date} ${price} ${ppsf} ${bb} ${sf} ${dist}`);
+  });
+
+  const prices = comps.filter(c => c.lastSalePrice).map(c => c.lastSalePrice);
+  const ppsfs = comps.filter(c => c.pricePerSqft).map(c => c.pricePerSqft);
+  if (prices.length) {
+    prices.sort((a, b) => a - b);
+    ppsfs.sort((a, b) => a - b);
+    const median = arr => arr[Math.floor(arr.length / 2)];
+    const avg = arr => Math.round(arr.reduce((s, v) => s + v, 0) / arr.length);
+    console.log('\n  COMP SUMMARY:');
+    console.log(`    Sale Price — Low: ${$(prices[0])}  Median: ${$(median(prices))}  High: ${$(prices[prices.length - 1])}  Avg: ${$(avg(prices))}`);
+    if (ppsfs.length) {
+      console.log(`    $/sqft     — Low: $${ppsfs[0]}  Median: $${median(ppsfs)}  High: $${ppsfs[ppsfs.length - 1]}  Avg: $${avg(ppsfs)}`);
+      if (subject && subject.sqft > 0) {
+        const arvLow = subject.sqft * ppsfs[0];
+        const arvMid = subject.sqft * median(ppsfs);
+        const arvHigh = subject.sqft * ppsfs[ppsfs.length - 1];
+        console.log(`    ARV Est    — Low: ${$(arvLow)}  Mid: ${$(arvMid)}  High: ${$(arvHigh)}  (based on subject ${subject.sqft.toLocaleString()} sqft)`);
+      }
+    }
+  }
+}
+
+// ── Build WHERE clause helpers ──
+function buildZipWhere(config, zip) {
+  const f = config.fields;
+  if (!f.zip) throw new Error(`ZIP search not supported for ${config.name}`);
+  if (config.zipFormat === 'suffixed') {
+    return `${f.zip} LIKE '${zip}%'`;
+  }
+  return `${f.zip}='${zip}'`;
+}
+
+function buildResidentialFilter(config) {
+  const f = config.fields;
+  if (!f.landUse) return '';
+  if (config.dorFormat === '4digit') {
+    // 4-digit codes: "0101", "0201", etc. Residential = starts with 01-08
+    return ` AND (${f.landUse} LIKE '01%' OR ${f.landUse} LIKE '02%' OR ${f.landUse} LIKE '03%' OR ${f.landUse} LIKE '04%' OR ${f.landUse} LIKE '05%' OR ${f.landUse} LIKE '06%' OR ${f.landUse} LIKE '07%' OR ${f.landUse} LIKE '08%')`;
+  }
+  return ` AND ${f.landUse} IN ('01','02','03','04','05','06','07','08')`;
+}
+
+// ── Search command ──
+async function cmdSearch(args) {
+  const county = args.county;
+  const config = COUNTIES[county];
+  const f = config.fields;
+  let where = '1=1';
+
+  if (args.folio) {
+    where = `${f.folio}='${args.folio.replace(/'/g, "''")}'`;
+  } else if (args.address) {
+    const addr = args.address.replace(/'/g, "''").toUpperCase();
+    where = `UPPER(${f.address}) LIKE '%${addr}%'`;
+  } else if (args.zip) {
+    where = buildZipWhere(config, args.zip);
+  } else {
+    throw new Error('Must specify --folio, --address, or --zip');
+  }
+
+  // Filter to residential by default (unless searching by folio or --commercial)
+  if (!args.folio && !args.commercial) {
+    where = `(${where})${buildResidentialFilter(config)}`;
+  }
+
+  const records = await queryArcGIS(county, where, { limit: args.limit || 10 });
+  const props = records.map(r => normalize(county, r));
+
+  if (args.format === 'json') {
+    console.log(JSON.stringify(props, null, 2));
+  } else {
+    formatTable(props);
+  }
+}
+
+// ── Comps command ──
+async function cmdComps(args) {
+  const county = args.county;
+  const config = COUNTIES[county];
+  const f = config.fields;
+
+  // Step 1: Find the subject property
+  let subjectWhere;
+  if (args.folio) {
+    subjectWhere = `${f.folio}='${args.folio.replace(/'/g, "''")}'`;
+  } else if (args.address) {
+    const addr = args.address.replace(/'/g, "''").toUpperCase();
+    subjectWhere = `UPPER(${f.address}) LIKE '%${addr}%'`;
+  } else {
+    throw new Error('Must specify --folio or --address for subject property');
+  }
+
+  const subjectRecords = await queryArcGIS(county, subjectWhere, { limit: 1 });
+  if (!subjectRecords.length) throw new Error('Subject property not found');
+  const subject = normalize(county, subjectRecords[0]);
+
+  if (!subject.lat || !subject.lon) {
+    // Fallback: use ZIP-based comp search
+    console.log('Warning: No coordinates for subject property. Using ZIP-based comp search.');
+    const zipWhere = subject.zip ? buildZipWhere(config, subject.zip) : '1=1';
+    const fullWhere = `${zipWhere} AND ${f.salePrice1 || 'PRICE_1'} > 100`;
+    const compRecords = await queryArcGIS(county, fullWhere, { limit: args.limit || 10 });
+    const comps = compRecords.map(r => normalize(county, r)).filter(c => c.folio !== subject.folio);
+    if (args.format === 'json') {
+      console.log(JSON.stringify({ subject, comps }, null, 2));
+    } else {
+      formatCompsTable(comps, subject);
+    }
+    return;
+  }
+
+  // Step 2: Build spatial comp query using bounding box on lat/lon
+  const radiusMiles = args.radius || 0.5;
+  const monthsBack = args.months || 6;
+  const cutoffDate = new Date();
+  cutoffDate.setMonth(cutoffDate.getMonth() - monthsBack);
+  const cutoffStr = `${cutoffDate.getFullYear()}${String(cutoffDate.getMonth() + 1).padStart(2, '0')}${String(cutoffDate.getDate()).padStart(2, '0')}`;
+
+  // Bounding box in degrees
+  const latDelta = radiusMiles / 69.0;
+  const lonDelta = radiusMiles / (69.0 * Math.cos(subject.lat * Math.PI / 180));
+
+  // Use X_COORD/Y_COORD in native SRID for spatial filter (more reliable than reprojected)
+  // But since we don't know the native coords, use the reprojected geometry approach
+  // ArcGIS supports geometry envelope filter
+  const envelope = {
+    xmin: subject.lon - lonDelta,
+    ymin: subject.lat - latDelta,
+    xmax: subject.lon + lonDelta,
+    ymax: subject.lat + latDelta,
+    spatialReference: { wkid: 4326 },
+  };
+
+  const limit = Math.min(args.limit || 20, config.maxRecords);
+  const params = new URLSearchParams({
+    where: `${f.salePrice1 || 'PRICE_1'} > 100 AND ${f.saleDate1 || 'DOS_1'} >= '${cutoffStr}' AND ${f.folio} <> '${subject.folio}'`,
+    geometry: JSON.stringify(envelope),
+    geometryType: 'esriGeometryEnvelope',
+    spatialRel: 'esriSpatialRelIntersects',
+    inSR: '4326',
+    outSR: '4326',
+    outFields: '*',
+    returnGeometry: 'true',
+    resultRecordCount: String(limit),
+    f: 'json',
+  });
+
+  // Match property type
+  if (f.landUse && subject.landUse) {
+    const existingWhere = params.get('where');
+    if (config.dorFormat === '4digit') {
+      // Match first 2 digits (e.g. "01" for single family)
+      const prefix = subject.landUse.substring(0, 2);
+      params.set('where', `${existingWhere} AND ${f.landUse} LIKE '${prefix}%'`);
+    } else {
+      params.set('where', `${existingWhere} AND ${f.landUse} = '${subject.landUse}'`);
+    }
+  }
+
+  // Bedroom filter
+  if (f.beds) {
+    const existingWhere = params.get('where');
+    if (args.beds) {
+      params.set('where', `${existingWhere} AND ${f.beds} = ${args.beds}`);
+    } else if (subject.beds) {
+      params.set('where', `${existingWhere} AND ${f.beds} >= ${Math.max(1, subject.beds - 1)} AND ${f.beds} <= ${subject.beds + 1}`);
+    }
+  }
+
+  // Sqft filter
+  if (f.sqft) {
+    const existingWhere = params.get('where');
+    if (args.minSqft || args.maxSqft) {
+      let sqftFilter = '';
+      if (args.minSqft) sqftFilter += ` AND ${f.sqft} >= ${args.minSqft}`;
+      if (args.maxSqft) sqftFilter += ` AND ${f.sqft} <= ${args.maxSqft}`;
+      params.set('where', `${existingWhere}${sqftFilter}`);
+    } else if (subject.sqft > 0) {
+      params.set('where', `${existingWhere} AND ${f.sqft} >= ${Math.round(subject.sqft * 0.75)} AND ${f.sqft} <= ${Math.round(subject.sqft * 1.25)}`);
+    }
+  }
+
+  // Order by most recent sale
+  if (f.saleDate1) params.set('orderByFields', `${f.saleDate1} DESC`);
+
+  const url = `${config.baseUrl}?${params.toString()}`;
+  const result = await fetchJSON(url);
+  if (result.error) throw new Error(`ArcGIS error: ${result.error.message || JSON.stringify(result.error)}`);
+
+  const comps = (result.features || []).map(feat => {
+    const c = normalize(county, { ...feat.attributes, _lon: feat.geometry?.x, _lat: feat.geometry?.y });
+    if (c.lat && c.lon) {
+      const dLat = (c.lat - subject.lat) * 69.0;
+      const dLon = (c.lon - subject.lon) * 69.0 * Math.cos(subject.lat * Math.PI / 180);
+      c._distMiles = Math.sqrt(dLat * dLat + dLon * dLon);
+    }
+    return c;
+  });
+
+  comps.sort((a, b) => (a._distMiles || 999) - (b._distMiles || 999));
+
+  if (args.format === 'json') {
+    console.log(JSON.stringify({ subject, comps, query: { radius: radiusMiles, monthsBack, totalComps: comps.length } }, null, 2));
+  } else {
+    formatCompsTable(comps, subject);
+  }
+}
+
+// ── Market command ──
+async function cmdMarket(args) {
+  const county = args.county;
+  const config = COUNTIES[county];
+  const f = config.fields;
+
+  if (!args.zip) throw new Error('Must specify --zip for market stats');
+
+  const zipWhere = buildZipWhere(config, args.zip);
+  const where = `${zipWhere} AND ${f.salePrice1 || 'PRICE_1'} > 100`;
+  const records = await queryArcGIS(county, where, { limit: 500, withCoords: false });
+  const props = records.map(r => normalize(county, r));
+
+  const withSales = props.filter(p => p.lastSalePrice && p.lastSalePrice > 100);
+
+  if (!withSales.length) {
+    console.log(`No sales data found for ZIP ${args.zip} in ${config.name}`);
+    return;
+  }
+
+  const prices = withSales.map(p => p.lastSalePrice).sort((a, b) => a - b);
+  const ppsfs = withSales.filter(p => p.pricePerSqft).map(p => p.pricePerSqft).sort((a, b) => a - b);
+  const sqfts = withSales.filter(p => p.sqft > 0).map(p => p.sqft).sort((a, b) => a - b);
+  const values = props.filter(p => p.assessedValue > 0).map(p => p.assessedValue).sort((a, b) => a - b);
+  const median = arr => arr.length ? arr[Math.floor(arr.length / 2)] : 0;
+  const avg = arr => arr.length ? Math.round(arr.reduce((s, v) => s + v, 0) / arr.length) : 0;
+
+  const types = {};
+  props.forEach(p => {
+    const desc = p.landUseDesc || 'Other';
+    types[desc] = (types[desc] || 0) + 1;
+  });
+
+  const homesteadCount = props.filter(p => p.homesteadExemption && p.homesteadExemption > 0).length;
+
+  if (args.format === 'json') {
+    console.log(JSON.stringify({
+      zip: args.zip, county: config.name, totalProperties: props.length, propertiesWithSales: withSales.length,
+      medianPrice: median(prices), avgPrice: avg(prices), lowPrice: prices[0], highPrice: prices[prices.length - 1],
+      medianPpsf: ppsfs.length ? median(ppsfs) : null, avgPpsf: ppsfs.length ? avg(ppsfs) : null,
+      medianSqft: sqfts.length ? median(sqfts) : null, medianAssessed: values.length ? median(values) : null,
+      homesteadRate: props.length ? (homesteadCount / props.length * 100).toFixed(1) + '%' : '—',
+      propertyTypes: types,
+    }, null, 2));
+  } else {
+    console.log('═'.repeat(70));
+    console.log(`MARKET STATS: ZIP ${args.zip} — ${config.name} County`);
+    console.log('═'.repeat(70));
+    console.log(`\n  Properties in sample: ${props.length} (${withSales.length} with sales data)\n`);
+    console.log('  SALE PRICES:');
+    console.log(`    Median: ${$(median(prices))}   Avg: ${$(avg(prices))}`);
+    console.log(`    Low: ${$(prices[0])}   High: ${$(prices[prices.length - 1])}`);
+    if (ppsfs.length) {
+      console.log(`\n  PRICE PER SQFT:`);
+      console.log(`    Median: $${median(ppsfs)}/sqft   Avg: $${avg(ppsfs)}/sqft`);
+    }
+    console.log(`\n  PROPERTY CHARACTERISTICS:`);
+    if (sqfts.length) console.log(`    Median Size: ${median(sqfts).toLocaleString()} sqft`);
+    if (values.length) console.log(`    Median Assessed Value: ${$(median(values))}`);
+    console.log(`    Homestead Rate: ${props.length ? (homesteadCount / props.length * 100).toFixed(1) : 0}%`);
+    console.log(`\n  PROPERTY TYPES:`);
+    Object.entries(types).sort((a, b) => b[1] - a[1]).forEach(([type, count]) => {
+      console.log(`    ${type}: ${count} (${(count / props.length * 100).toFixed(0)}%)`);
+    });
+    console.log('─'.repeat(70));
+  }
+}
+
+// ── CLI Argument Parser ──
+function parseArgs(argv) {
+  const args = { _cmd: argv[0] };
+  for (let i = 1; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg.startsWith('--')) {
+      const key = arg.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      const next = argv[i + 1];
+      if (next && !next.startsWith('--')) {
+        args[key] = isNaN(next) ? next : Number(next);
+        i++;
+      } else {
+        args[key] = true;
+      }
+    }
+  }
+  return args;
+}
+
+// ── Main ──
+async function main() {
+  const argv = process.argv.slice(2);
+  if (!argv.length || argv[0] === '--help' || argv[0] === '-h') {
+    console.log(`Usage: property-lookup <command> --county <id> [options]
+
+Commands:
+  search   Look up properties by folio, address, or ZIP
+  comps    Find comparable sales near a property
+  market   Get market statistics for a ZIP code
+
+Counties: ${Object.keys(COUNTIES).join(', ')}
+
+Examples:
+  property-lookup search --county miami-dade --address "831 N VENETIAN"
+  property-lookup search --county miami-dade --zip 33139 --limit 20
+  property-lookup comps --county miami-dade --address "831 N VENETIAN" --radius 0.5 --months 12
+  property-lookup market --county miami-dade --zip 33139`);
+    process.exit(0);
+  }
+
+  const args = parseArgs(argv);
+  if (!args.county) {
+    console.error('Error: --county is required. Supported: ' + Object.keys(COUNTIES).join(', '));
+    process.exit(1);
+  }
+  if (!COUNTIES[args.county]) {
+    console.error(`Error: Unknown county "${args.county}". Supported: ${Object.keys(COUNTIES).join(', ')}`);
+    process.exit(1);
+  }
+
+  try {
+    switch (args._cmd) {
+      case 'search': await cmdSearch(args); break;
+      case 'comps': await cmdComps(args); break;
+      case 'market': await cmdMarket(args); break;
+      default:
+        console.error(`Unknown command: ${args._cmd}. Use: search, comps, market`);
+        process.exit(1);
+    }
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+  }
+}
+
+main();
