@@ -21,6 +21,7 @@ permissions:
 jobs:
   # ── Step 1: Check all skills against current main ─────────────────────
   validate:
+    if: github.repository == 'qwibitai/nanoclaw'
     runs-on: ubuntu-latest
     outputs:
       drifted: ${{ steps.check.outputs.drifted }}
