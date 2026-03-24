@@ -1094,6 +1094,7 @@
       <div class="nav-section-label">Ventures</div>
       <div class="nav-item" data-view="ventures"><span class="icon">&#9670;</span> Pipeline <span class="count" id="navVentureCount"></span></div>
       <div class="nav-item" data-view="venture-kalshi"><span class="icon">&#9878;</span> Kalshi</div>
+      <div class="nav-item" data-view="venture-ibkr"><span class="icon">&#9776;</span> IBKR Trading</div>
       <div class="nav-item" data-view="venture-gsa"><span class="icon">&#9733;</span> GSA Auctions</div>
       <div class="nav-item" data-view="venture-smb"><span class="icon">&#9670;</span> SMB Acquisition</div>
       <div class="nav-item" data-view="venture-grants"><span class="icon">&#9830;</span> Gov Grants</div>
@@ -1194,12 +1195,12 @@ function hideLoginScreen() {
 }
 
 async function api(path, opts) {
-  const r = await fetch(path, opts);
+  const r = await fetch(path, { credentials: 'same-origin', ...opts });
   if (r.status === 401) { showLoginScreen(); throw new Error('Unauthorized'); }
   return r.json();
 }
 async function post(path, body) {
-  const r = await fetch(path, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  const r = await fetch(path, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), credentials: 'same-origin' });
   if (r.status === 401) { showLoginScreen(); throw new Error('Unauthorized'); }
   return r.json();
 }
@@ -1207,7 +1208,7 @@ async function post(path, body) {
 // --- Auth functions ---
 async function checkAuth() {
   try {
-    const res = await fetch('/api/auth/check');
+    const res = await fetch('/api/auth/check', { credentials: 'same-origin' });
     const data = await res.json();
     if (data.authenticated) {
       hideLoginScreen();
@@ -1231,9 +1232,10 @@ async function submitLogin() {
     const res = await fetch('/api/auth/login', {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ token }),
+      credentials: 'same-origin',
     });
     const data = await res.json();
-    if (data.ok) { errEl.textContent = ''; input.value = ''; hideLoginScreen(); startPolling(); }
+    if (data.ok) { errEl.textContent = ''; input.value = ''; hideLoginScreen(); await new Promise(r => setTimeout(r, 100)); startPolling(); }
     else { errEl.textContent = data.error || 'Invalid token'; }
   } catch (e) { errEl.textContent = 'Connection error'; }
 }
@@ -1344,7 +1346,7 @@ const GROUP_COLORS = {
   'real-estate': 'var(--grp-realestate)',
 };
 function switchView(v, pushState = true) {
-  const viewTitles = {'venture-kalshi':'Kalshi','venture-gsa':'GSA Auctions','venture-smb':'SMB Acquisition','venture-grants':'Government Grants','venture-tradeschool':'Trade School','venture-realestate':'Real Estate'};
+  const viewTitles = {'venture-kalshi':'Kalshi','venture-ibkr':'IBKR Trading','venture-gsa':'GSA Auctions','venture-smb':'SMB Acquisition','venture-grants':'Government Grants','venture-tradeschool':'Trade School','venture-realestate':'Real Estate'};
   currentView = v;
   $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
   $('#viewTitle').textContent = viewTitles[v] || v.charAt(0).toUpperCase() + v.slice(1);
@@ -2504,8 +2506,12 @@ window.toggleOrgAgent = (folder) => {
 
 let _taskViewMode = 'kanban'; // 'kanban' or 'list'
 let _taskDetailId = null; // when set, show task detail view
-let _taskSort = 'newest'; // 'newest', 'oldest', 'name', 'next-run'
-let _taskFilter = 'all'; // 'all', 'active', 'paused', 'cron', 'one-off'
+let _taskSort = 'next-run'; // 'newest', 'oldest', 'name', 'next-run', 'failures'
+let _taskFilter = 'all'; // 'all', 'active', 'disabled', 'overdue', 'paused', 'cron', 'one-off'
+let _taskGroupFilter = ''; // '' = all groups
+let _taskCategoryFilter = ''; // '' = all categories
+let _taskSearch = '';
+let _taskHealthCache = null;
 
 function showNewTaskModal() {
   const container = document.getElementById('modalContainer') || (() => {
@@ -2553,10 +2559,19 @@ async function createNewTask() {
 
 function applyTaskFilters(tasks) {
   let filtered = tasks;
+  const now = new Date().toISOString();
   if (_taskFilter === 'active') filtered = tasks.filter(t => t.status === 'active');
+  else if (_taskFilter === 'disabled') filtered = tasks.filter(t => t.status === 'disabled');
+  else if (_taskFilter === 'overdue') filtered = tasks.filter(t => t.status === 'active' && t.next_run && t.next_run < new Date(Date.now() - 300000).toISOString());
   else if (_taskFilter === 'paused') filtered = tasks.filter(t => t.status === 'paused');
   else if (_taskFilter === 'cron') filtered = tasks.filter(t => t.schedule_type === 'cron');
   else if (_taskFilter === 'one-off') filtered = tasks.filter(t => t.schedule_type !== 'cron');
+  if (_taskGroupFilter) filtered = filtered.filter(t => t.group_folder === _taskGroupFilter);
+  if (_taskCategoryFilter) filtered = filtered.filter(t => t.category === _taskCategoryFilter);
+  if (_taskSearch) {
+    const q = _taskSearch.toLowerCase();
+    filtered = filtered.filter(t => (t.name || '').toLowerCase().includes(q) || t.prompt.toLowerCase().includes(q));
+  }
   return filtered;
 }
 
@@ -2564,8 +2579,9 @@ function applyTaskSort(tasks) {
   const sorted = [...tasks];
   if (_taskSort === 'newest') sorted.sort((a,b) => (b.created_at||'').localeCompare(a.created_at||''));
   else if (_taskSort === 'oldest') sorted.sort((a,b) => (a.created_at||'').localeCompare(b.created_at||''));
-  else if (_taskSort === 'name') sorted.sort((a,b) => (a.prompt||'').localeCompare(b.prompt||''));
+  else if (_taskSort === 'name') sorted.sort((a,b) => (a.name||a.prompt||'').localeCompare(b.name||b.prompt||''));
   else if (_taskSort === 'next-run') sorted.sort((a,b) => (a.next_run||'z').localeCompare(b.next_run||'z'));
+  else if (_taskSort === 'failures') sorted.sort((a,b) => (b.consecutive_failures||0) - (a.consecutive_failures||0) || (a.name||a.prompt||'').localeCompare(b.name||b.prompt||''));
   return sorted;
 }
 
@@ -2573,7 +2589,8 @@ views.tasks = async () => {
   // Task detail view (HubSpot-style record page)
   if (_taskDetailId) return await renderTaskDetail(_taskDetailId);
 
-  const d = await api('/api/tasks');
+  const [d, health] = await Promise.all([api('/api/tasks'), api('/api/task/health')]);
+  _taskHealthCache = health;
   const activeCount = d.tasks.filter(t=>t.status==='active').length;
   const totalUnread = d.tasks.reduce((sum, t) => sum + (t.unread || 0), 0);
   const navEl = $('#navTaskCount');
@@ -2582,41 +2599,75 @@ views.tasks = async () => {
     navEl.innerHTML = activeCount + ' <span class="unread-badge small" style="margin-left:4px">' + totalUnread + '</span>';
   }
 
+  // Health summary tile
+  const h = health;
+  const srColor = h.successRate24h >= 90 ? 'var(--green)' : h.successRate24h >= 70 ? 'var(--yellow)' : 'var(--red)';
+  const healthTile = `<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px">
+    <div class="card" style="padding:12px;text-align:center">
+      <div style="font-size:24px;font-weight:700;color:var(--text-primary)">${h.active}<span style="font-size:14px;color:var(--text-tertiary);font-weight:400"> / ${h.total}</span></div>
+      <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px">Active / Total</div>
+    </div>
+    <div class="card" style="padding:12px;text-align:center">
+      <div style="font-size:24px;font-weight:700;color:${srColor}">${h.successRate24h}%</div>
+      <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px">24h Success Rate (${h.runs24h} runs)</div>
+    </div>
+    <div class="card" style="padding:12px;text-align:center">
+      <div style="font-size:24px;font-weight:700;color:var(--yellow)">$${h.cost24h.toFixed(2)}</div>
+      <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px">24h Cost</div>
+    </div>
+    <div class="card" style="padding:12px;text-align:center">
+      <div style="font-size:24px;font-weight:700;color:${h.overdue > 0 ? 'var(--red)' : 'var(--text-tertiary)'}">${h.overdue}</div>
+      <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px">Overdue</div>
+    </div>
+    <div class="card" style="padding:12px;text-align:center">
+      <div style="font-size:24px;font-weight:700;color:${h.disabled > 0 ? 'var(--yellow)' : 'var(--text-tertiary)'}">${h.disabled}</div>
+      <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px">Disabled</div>
+    </div>
+  </div>`;
+
+  // Get unique groups and categories for filter dropdowns
+  const groups = [...new Set(d.tasks.map(t => t.group_folder))].sort();
+  const categories = [...new Set(d.tasks.map(t => t.category).filter(Boolean))].sort();
+
   const filteredCount = applyTaskFilters(d.tasks).length;
+  const selStyle = 'appearance:none;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);font-size:11px;padding:4px 8px;cursor:pointer;font-family:var(--font)';
   const toolbar = `<div class="kanban-toolbar">
     <div class="view-toggle">
       <button class="btn${_taskViewMode==='kanban'?' active':''}" onclick="_taskViewMode='kanban';renderView()">Board</button>
       <button class="btn${_taskViewMode==='list'?' active':''}" onclick="_taskViewMode='list';renderView()">List</button>
     </div>
-    <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
-      <div style="position:relative;display:inline-flex;align-items:center">
-        <span style="font-size:13px;position:absolute;left:6px;pointer-events:none;opacity:0.5">⏷</span>
-        <select style="appearance:none;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);font-size:11px;padding:4px 8px 4px 22px;cursor:pointer;font-family:var(--font)" onchange="_taskFilter=this.value;renderView()" title="Filter tasks">
-          <option value="all"${_taskFilter==='all'?' selected':''}>All Tasks</option>
-          <option value="active"${_taskFilter==='active'?' selected':''}>Active</option>
-          <option value="paused"${_taskFilter==='paused'?' selected':''}>Paused</option>
-          <option value="cron"${_taskFilter==='cron'?' selected':''}>Recurring</option>
-          <option value="one-off"${_taskFilter==='one-off'?' selected':''}>One-off</option>
-        </select>
-      </div>
-      <div style="position:relative;display:inline-flex;align-items:center">
-        <span style="font-size:13px;position:absolute;left:6px;pointer-events:none;opacity:0.5">↕</span>
-        <select style="appearance:none;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);font-size:11px;padding:4px 8px 4px 22px;cursor:pointer;font-family:var(--font)" onchange="_taskSort=this.value;renderView()" title="Sort tasks">
-          <option value="newest"${_taskSort==='newest'?' selected':''}>Newest</option>
-          <option value="oldest"${_taskSort==='oldest'?' selected':''}>Oldest</option>
-          <option value="name"${_taskSort==='name'?' selected':''}>Name</option>
-          <option value="next-run"${_taskSort==='next-run'?' selected':''}>Next Run</option>
-        </select>
-      </div>
+    <div style="display:flex;align-items:center;gap:6px;margin-left:auto;flex-wrap:wrap">
+      <input type="text" placeholder="Search tasks..." value="${esc(_taskSearch)}" oninput="_taskSearch=this.value;renderView()" style="background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);font-size:11px;padding:4px 8px;width:130px;font-family:var(--font)">
+      <select style="${selStyle}" onchange="_taskFilter=this.value;renderView()">
+        <option value="all"${_taskFilter==='all'?' selected':''}>All</option>
+        <option value="active"${_taskFilter==='active'?' selected':''}>Active</option>
+        <option value="disabled"${_taskFilter==='disabled'?' selected':''}>Disabled</option>
+        <option value="overdue"${_taskFilter==='overdue'?' selected':''}>Overdue</option>
+        <option value="paused"${_taskFilter==='paused'?' selected':''}>Paused</option>
+        <option value="cron"${_taskFilter==='cron'?' selected':''}>Recurring</option>
+        <option value="one-off"${_taskFilter==='one-off'?' selected':''}>One-off</option>
+      </select>
+      <select style="${selStyle}" onchange="_taskGroupFilter=this.value;renderView()">
+        <option value=""${!_taskGroupFilter?' selected':''}>All Groups</option>
+        ${groups.map(g => `<option value="${g}"${_taskGroupFilter===g?' selected':''}>${g}</option>`).join('')}
+      </select>
+      <select style="${selStyle}" onchange="_taskCategoryFilter=this.value;renderView()">
+        <option value=""${!_taskCategoryFilter?' selected':''}>All Categories</option>
+        ${categories.map(c => `<option value="${c}"${_taskCategoryFilter===c?' selected':''}>${c}</option>`).join('')}
+      </select>
+      <select style="${selStyle}" onchange="_taskSort=this.value;renderView()">
+        <option value="next-run"${_taskSort==='next-run'?' selected':''}>Next Run</option>
+        <option value="failures"${_taskSort==='failures'?' selected':''}>Failures</option>
+        <option value="name"${_taskSort==='name'?' selected':''}>Name</option>
+        <option value="newest"${_taskSort==='newest'?' selected':''}>Newest</option>
+      </select>
     </div>
-    <span class="text-dim" style="font-size:11px;white-space:nowrap">${filteredCount} of ${d.tasks.length} · ${d.recentRuns.length} runs</span>
-    <button class="btn" onclick="exportData('tasks','csv')">Export CSV</button>
-    <button class="btn" onclick="exportData('tasks','json')">Export JSON</button>
+    <span class="text-dim" style="font-size:11px;white-space:nowrap">${filteredCount} of ${d.tasks.length}</span>
     <button class="btn btn-green" onclick="showNewTaskModal()">+ New Task</button>
   </div>`;
 
-  if (_taskViewMode === 'list') return toolbar + renderTaskList(d);
-  return toolbar + renderKanban(d);
+  if (_taskViewMode === 'list') return healthTile + toolbar + renderTaskList(d);
+  return healthTile + toolbar + renderKanban(d);
 };
 
 function renderKanban(d) {
@@ -2780,60 +2831,92 @@ function renderKanban(d) {
   return kanban;
 }
 
+function renderRunDots(recentRuns, taskId) {
+  // Get last 5 runs for this task from the recentRuns array
+  const taskRuns = recentRuns.filter(r => r.task_id === taskId).slice(0, 5);
+  while (taskRuns.length < 5) taskRuns.push(null);
+  return taskRuns.map(r => {
+    if (!r) return '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--border);margin:0 1px" title="No data"></span>';
+    const color = r.status === 'success' ? 'var(--green)' : 'var(--red)';
+    const tip = `${r.status} - ${r.run_at ? new Date(r.run_at).toLocaleString() : ''}`;
+    return `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin:0 1px" title="${esc(tip)}"></span>`;
+  }).join('');
+}
+
 function renderTaskList(d) {
   const filtered = applyTaskSort(applyTaskFilters(d.tasks));
   const activeTasks = filtered.filter(t => t.status !== 'completed');
   const completedTasks = filtered.filter(t => t.status === 'completed').slice(0, 20);
+
+  const statusBadge = (t) => {
+    const colors = { active: 'green', paused: 'yellow', disabled: 'red', completed: 'muted' };
+    let b = badge(t.status, colors[t.status] || 'muted');
+    if (t.consecutive_failures > 0 && t.status === 'active') {
+      b += ` <span style="color:var(--red);font-size:9px;font-weight:600">${t.consecutive_failures}x</span>`;
+    }
+    return b;
+  };
+
+  const scheduleLabel = (t) => {
+    if (t.schedule_type !== 'cron') return 'one-time';
+    const v = t.schedule_value;
+    if (v.startsWith('*/')) return `Every ${v.split(' ')[0].slice(2)}${v.includes('* * *') ? 'min' : 'h'}`;
+    const parts = v.split(' ');
+    if (parts[1] === '*') return 'Hourly';
+    return `${parts[1]}:${parts[0].padStart(2,'0')}`;
+  };
+
   return `
     <div class="card" style="padding:0;overflow:hidden">
       <table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead><tr style="background:var(--bg-secondary);text-align:left">
-          <th style="padding:10px">Task</th>
-          <th style="padding:10px">Group</th>
-          <th style="padding:10px">Project</th>
-          <th style="padding:10px">Type</th>
-          <th style="padding:10px">Status</th>
-          <th style="padding:10px">Next / Last</th>
-          <th style="padding:10px">Cost</th>
-          <th style="padding:10px;width:120px">Actions</th>
+          <th style="padding:8px 10px">Name</th>
+          <th style="padding:8px">Group</th>
+          <th style="padding:8px">Venture</th>
+          <th style="padding:8px">Schedule</th>
+          <th style="padding:8px">Last Run</th>
+          <th style="padding:8px">Next Run</th>
+          <th style="padding:8px">Status</th>
+          <th style="padding:8px;text-align:center">Runs</th>
+          <th style="padding:8px;text-align:right">Cost 24h</th>
+          <th style="padding:8px;width:100px">Actions</th>
         </tr></thead>
         <tbody>${(activeTasks.length ? activeTasks : [{id:'none'}]).map(t => {
-          if (t.id === 'none') return '<tr><td colspan="8" style="padding:16px;text-align:center;color:var(--text-tertiary)">No active tasks</td></tr>';
-          const title = taskTitle(t.prompt);
+          if (t.id === 'none') return '<tr><td colspan="10" style="padding:16px;text-align:center;color:var(--text-tertiary)">No tasks match filters</td></tr>';
+          const title = t.name || taskTitle(t.prompt);
           const grpColor = GROUP_COLORS[t.group_folder] || 'var(--text-tertiary)';
-          const hasReview = t.reviews?.some(r => r.action === 'needs_review');
-          return `<tr style="border-bottom:1px solid var(--border-light)" id="task-${t.id}">
-            <td style="padding:8px 10px">
-              <div style="font-weight:500;color:var(--text-primary);margin-bottom:2px;cursor:pointer" onclick="_taskDetailId='${t.id}';renderView()">${esc(title)}</div>
-              ${t.project ? `<div style="font-size:9px;color:var(--accent)">${esc(t.project)}</div>` : ''}
+          const isOverdue = t.status === 'active' && t.next_run && t.next_run < new Date(Date.now() - 300000).toISOString();
+          return `<tr style="border-bottom:1px solid var(--border-light)${isOverdue ? ';background:rgba(245,101,101,0.05)' : ''}" id="task-${t.id}">
+            <td style="padding:6px 10px">
+              <div style="font-weight:500;color:var(--text-primary);cursor:pointer;font-size:12px" onclick="_taskDetailId='${t.id}';renderView()">${esc(title)}</div>
+              ${t.category ? `<span style="font-size:9px;color:var(--text-tertiary)">${t.category}</span>` : ''}
             </td>
-            <td style="padding:8px"><span class="badge" style="background:${grpColor}22;color:${grpColor};font-size:9px;padding:1px 5px">${esc(t.group_folder)}</span></td>
-            <td style="padding:8px;font-size:10px;color:var(--accent)">${esc(t.project || '-')}</td>
-            <td style="padding:8px">${badge(t.schedule_type === 'cron' ? 'recurring' : 'one-time', t.schedule_type === 'cron' ? 'accent' : 'yellow')}</td>
-            <td style="padding:8px">${badge(t.status, t.status==='active'?'green':t.status==='paused'?'yellow':'muted')} ${hasReview ? badge('review','purple') : ''}</td>
-            <td style="padding:8px;font-size:10px;color:var(--text-tertiary)">${t.next_run ? timeAgo(t.next_run) : t.last_run ? timeAgo(t.last_run) : '-'}</td>
-            <td style="padding:8px;font-family:var(--mono);font-size:10px;color:var(--yellow)">${t.lastRunCost > 0 ? '$'+t.lastRunCost.toFixed(2) : '-'}</td>
-            <td style="padding:8px">
+            <td style="padding:6px"><span class="badge" style="background:${grpColor}22;color:${grpColor};font-size:9px;padding:1px 5px">${esc(t.group_folder)}</span></td>
+            <td style="padding:6px;font-size:10px">${t.venture_file ? `<span style="color:var(--accent);cursor:pointer" onclick="window._ventureFile='${esc(t.venture_file)}';switchView('ventures')">${esc(t.venture_file.replace('.md','').replace(/-/g,' '))}</span>` : '<span style="color:var(--text-tertiary)">-</span>'}</td>
+            <td style="padding:6px;font-family:var(--mono);font-size:10px;color:var(--text-secondary)">${scheduleLabel(t)}</td>
+            <td style="padding:6px;font-size:10px;color:var(--text-tertiary)">${t.last_run ? timeAgo(t.last_run) : '-'}</td>
+            <td style="padding:6px;font-size:10px;color:${isOverdue ? 'var(--red);font-weight:600' : 'var(--text-tertiary)'}">${t.next_run ? timeAgo(t.next_run) : '-'}${isOverdue ? ' OVERDUE' : ''}</td>
+            <td style="padding:6px">${statusBadge(t)}</td>
+            <td style="padding:6px;text-align:center">${renderRunDots(d.recentRuns, t.id)}</td>
+            <td style="padding:6px;text-align:right;font-family:var(--mono);font-size:10px;color:var(--yellow)">${t.lastRunCost > 0 ? '$'+t.lastRunCost.toFixed(2) : '-'}</td>
+            <td style="padding:6px">
               <div style="display:flex;gap:3px">
-                <button class="btn btn-green" style="font-size:9px;padding:2px 5px" onclick="moveTask('${t.id}','done')">Done</button>
-                <button class="btn btn-purple" style="font-size:9px;padding:2px 5px" onclick="moveTask('${t.id}','review')">Review</button>
-                <button class="btn" style="font-size:9px;padding:2px 5px" onclick="toggleComment('${t.id}')">💬</button>
-              </div>
-              <div id="comment-${t.id}" style="display:none;margin-top:4px">
-                <textarea id="ct-${t.id}" placeholder="Comment..." style="font-size:10px;min-height:28px"></textarea>
-                <button class="btn btn-green" style="font-size:9px;margin-top:2px" onclick="submitComment('${t.id}')">Send</button>
+                ${t.status === 'active' ? `<button class="btn btn-yellow" style="font-size:9px;padding:2px 5px" onclick="post('/api/task/status',{taskId:'${t.id}',status:'paused'}).then(()=>renderView())">Pause</button>` : ''}
+                ${t.status === 'paused' || t.status === 'disabled' ? `<button class="btn btn-green" style="font-size:9px;padding:2px 5px" onclick="post('/api/task/status',{taskId:'${t.id}',status:'active'}).then(()=>renderView())">Resume</button>` : ''}
+                <button class="btn" style="font-size:9px;padding:2px 5px" onclick="post('/api/task/run-now',{taskId:'${t.id}'}).then(()=>renderView())">Run</button>
+                <button class="btn" style="font-size:9px;padding:2px 5px;color:var(--red)" onclick="if(confirm('Delete this task?'))post('/api/task/delete',{taskId:'${t.id}'}).then(()=>renderView())">X</button>
               </div>
             </td>
           </tr>`;
         }).join('')}</tbody>
       </table>
     </div>
-    ${completedTasks.length ? `<div style="margin-top:16px">
-      <div class="section-title">Recently Completed <span class="count">${completedTasks.length}</span></div>
-      <div class="card" style="padding:0;overflow:hidden;max-height:200px;overflow-y:auto">
+    ${completedTasks.length ? `<details style="margin-top:16px">
+      <summary class="section-title" style="cursor:pointer">Recently Completed <span class="count">${completedTasks.length}</span></summary>
+      <div class="card" style="padding:0;overflow:hidden;max-height:200px;overflow-y:auto;margin-top:8px">
         <table style="width:100%;border-collapse:collapse;font-size:11px">
           <tbody>${completedTasks.map(t => {
-            const title = taskTitle(t.prompt);
+            const title = t.name || taskTitle(t.prompt);
             const grpColor = GROUP_COLORS[t.group_folder] || 'var(--text-tertiary)';
             return `<tr style="border-bottom:1px solid var(--border-light);opacity:0.7">
               <td style="padding:5px 10px;font-weight:500">${esc(title)}</td>
@@ -2843,7 +2926,7 @@ function renderTaskList(d) {
           }).join('')}</tbody>
         </table>
       </div>
-    </div>` : ''}`;
+    </details>` : ''}`;
 }
 
 window.moveTask = async (id, target) => {
@@ -2873,8 +2956,8 @@ window.moveTask = async (id, target) => {
       }
     }
   } else if (target === 'review') {
-    // Reactivate if completed, then flag for review
-    await post('/api/task/status', {taskId:id, status:'needs_review'});
+    // Flag for review via comment instead of status change
+    await post('/api/task/comment', {taskId:id, message:'Flagged for review', severity:'question'});
     await post('/api/review', {taskId:id, action:'needs_review'});
   } else if (target === 'doing') {
     // Reactivate and reschedule to run now
@@ -3851,6 +3934,7 @@ window.updateVenture = async (file, field, value) => {
 };
 const VENTURE_DASHBOARDS = {
   'Kalshi-Prediction-Markets.md': 'venture-kalshi',
+  'IBKR-Automated-Trading.md': 'venture-ibkr',
   'GSA-Auction-Arbitrage.md': 'venture-gsa',
   'SMB-Acquisition-Pipeline.md': 'venture-smb',
   'Government-Grants.md': 'venture-grants',
@@ -4294,6 +4378,1035 @@ views['venture-kalshi'] = async () => {
 // ── GSA AUCTIONS DASHBOARD ──
 let _gsaSort = 'fba'; // 'fba' | 'margin' | 'score' | 'ending'
 let _gsaPage = 1;
+// ── IBKR TRADING DASHBOARD ──
+views['venture-ibkr'] = async () => {
+  const d = await api('/api/venture/ibkr');
+  const acct = d.account || {};
+  const positions = d.positions || [];
+  const trades = d.trades || [];
+  const perf = d.performance || {};
+  const summary = d.tradeSummary || {};
+  const greeks = d.greeks || {};
+  const risk = d.risk || {};
+  const snapshots = d.snapshots || [];
+  const stratPerf = d.strategyPerf || {};
+  const dailyPnl = d.dailyPnl || {};
+  const scan = d.todayScan;
+  const seasonal = d.seasonalCalendar || {};
+
+  // Core date constant — declared FIRST, used by stale warning, calendar, income tracker, etc.
+  const now = new Date();
+
+  const isConnected = acct.status !== 'awaiting_connection';
+  const hasValidNlv = Number(acct.netLiquidation) > 0;
+  const pnlColor = (v) => v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--text-tertiary)';
+  const fmtPnl = (v) => v >= 0 ? '+$' + v.toFixed(2) : '-$' + Math.abs(v).toFixed(2);
+  const fmtPct = (v) => (v >= 0 ? '+' : '') + v.toFixed(1) + '%';
+
+  // Beta-weighted delta and SPY approximation (used by Greeks strip AND stress test)
+  const spyApprox = 560;
+  const gP = greeks.portfolio || {};
+  const bwDelta = (gP.netDelta || 0) * 50;
+
+  // Strategy color map
+  const stratColors = {
+    'LT112': '#f97316', 'STRANGLE': '#3b82f6', 'NAKED_PUT': '#22c55e', '1X3_RATIO': '#a855f7',
+    'WHEEL_CSP': '#06b6d4', 'WHEEL_CC': '#06b6d4', '221': '#eab308', '1_2_0': '#ec4899',
+    'PMCC': '#6b7280', 'LONG_LEAPS': '#6b7280',
+  };
+
+  // Tier 1: Buffer to Margin Call + Theta/Margin Efficiency
+  const marginBuffer = isConnected ? (acct.netLiquidation || 0) - (acct.maintenanceMargin || 0) : 0;
+  const marginBufferPct = acct.netLiquidation > 0 ? (marginBuffer / acct.netLiquidation * 100) : 100;
+  const bufferColor = marginBufferPct > 80 ? 'var(--green)' : marginBufferPct > 50 ? 'var(--yellow)' : 'var(--red)';
+  const portfolioTheta = (greeks.portfolio || {}).netTheta || 0;
+  const _thetaEff = (acct.maintenanceMargin || 0) > 0 ? portfolioTheta / (acct.maintenanceMargin / 1000) : null;
+  const thetaEfficiency = _thetaEff !== null ? _thetaEff.toFixed(2) : '-';
+
+  // Stale data warning (market-calendar aware)
+  const _ts = acct.timestamp ? new Date(acct.timestamp).getTime() : NaN;
+  const dataAge = Number.isFinite(_ts) ? Math.round((Date.now() - _ts) / 60000) : null;
+  const _dow = now.getDay();
+  const _isWeekend = _dow === 0 || _dow === 6;
+  const _hr = now.getHours();
+  const _isFuturesBreak = _hr === 17; // 5-6 PM ET daily break
+  const staleThreshold = (_isWeekend || _isFuturesBreak) ? 120 : 5; // 2hr tolerance on weekends/breaks
+  const staleWarning = dataAge === null ? `<div style="font-size:9px;color:var(--yellow);text-align:right;margin-bottom:4px">Timestamp unavailable</div>` : dataAge > staleThreshold ? `<div style="font-size:9px;color:var(--red);text-align:right;margin-bottom:4px">Data is ${dataAge} min old${_isWeekend ? ' (weekend)' : _isFuturesBreak ? ' (futures break)' : ' — may be stale'}</div>` : `<div style="font-size:9px;color:var(--text-tertiary);text-align:right;margin-bottom:4px">Updated ${dataAge} min ago${_isWeekend ? ' (weekend)' : ''}</div>`;
+
+  // KPI Tiles (expanded to 6 with margin buffer)
+  const kpi = `${staleWarning}<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:16px">
+    <div class="card" style="padding:12px;text-align:center">
+      <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:3px">Net Liquidation</div>
+      <div style="font-size:20px;font-weight:700;color:var(--text-primary)">${isConnected ? '$' + Math.round(acct.netLiquidation).toLocaleString() : '--'}</div>
+    </div>
+    <div class="card" style="padding:12px;text-align:center">
+      <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:3px">Day P&L</div>
+      <div style="font-size:20px;font-weight:700;color:${pnlColor(acct.dayPnl || 0)}">${isConnected ? fmtPnl(acct.dayPnl || 0) : '--'}</div>
+    </div>
+    <div class="card" style="padding:12px;text-align:center">
+      <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:3px">Open P&L</div>
+      <div style="font-size:20px;font-weight:700;color:${pnlColor(acct.unrealizedPnl || 0)}">${isConnected ? fmtPnl(acct.unrealizedPnl || 0) : '--'}</div>
+    </div>
+    <div class="card" style="padding:12px;text-align:center">
+      <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:3px">Buying Power</div>
+      <div style="font-size:20px;font-weight:700;color:var(--text-primary)">${isConnected ? '$' + Math.round(acct.buyingPower || 0).toLocaleString() : '--'}</div>
+    </div>
+    <div class="card" style="padding:12px;text-align:center">
+      <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:3px">Margin Buffer</div>
+      <div style="font-size:20px;font-weight:700;color:${bufferColor}">${isConnected ? '$' + Math.round(marginBuffer).toLocaleString() : '--'}</div>
+      <div style="font-size:9px;color:${bufferColor};margin-top:2px">${isConnected ? marginBufferPct.toFixed(0) + '% of NLV before liquidation' : ''}</div>
+    </div>
+    <div class="card" style="padding:12px;text-align:center">
+      <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:3px">Theta / $1K Margin</div>
+      <div style="font-size:20px;font-weight:700;color:${portfolioTheta > 0 ? 'var(--green)' : 'var(--text-tertiary)'}">${isConnected ? '$' + thetaEfficiency : '--'}</div>
+      <div style="font-size:9px;color:var(--text-tertiary);margin-top:2px">${isConnected && portfolioTheta ? 'Daily: $' + portfolioTheta.toFixed(0) + ' theta' : ''}</div>
+    </div>
+  </div>`;
+
+  // Connection status banner
+  const statusBanner = !isConnected ? `<div class="card" style="padding:12px;background:rgba(245,158,11,0.1);border:1px solid var(--yellow);margin-bottom:16px;text-align:center;color:var(--yellow)">
+    IB Gateway not connected. Set up gateway service and provide credentials to start paper trading.
+  </div>` : !hasValidNlv ? `<div class="card" style="padding:12px;background:rgba(245,158,11,0.1);border:1px solid var(--yellow);margin-bottom:16px;text-align:center;color:var(--yellow)">
+    Connected but NLV is zero — account data may be loading.
+  </div>` : '';
+
+  // Cumulative P&L Chart
+  const pnlDays = Object.entries(dailyPnl).sort(([a],[b]) => a.localeCompare(b));
+  let cumPnl = 0;
+  const cumData = pnlDays.map(([date, v]) => { cumPnl += v.pnl; return { date, value: cumPnl }; });
+  const pnlChart = cumData.length > 1 ? `<div class="card" style="padding:16px;margin-bottom:16px">
+    <div style="font-weight:600;margin-bottom:8px;font-size:13px">Cumulative P&L</div>
+    ${svgLineChart(cumData.map(d => d.value), { height: 160, labels: cumData.map(d => d.date.slice(5)), color: cumPnl >= 0 ? 'var(--green)' : 'var(--red)' })}
+  </div>` : '';
+
+  // Group positions by strategy for collapsible display
+  // Persist collapsed state across re-renders in a global
+  if (!window._ibkrCollapsed) window._ibkrCollapsed = {};
+  if (!window._ibkrTab) window._ibkrTab = 'portfolio';
+
+  const posGroups = {};
+  positions.forEach(p => {
+    const s = p.strategy || 'OTHER';
+    if (!posGroups[s]) posGroups[s] = {
+      positions: [],
+      totalPnl: 0,
+      totalMktValue: 0,
+      totalAvgCost: 0,
+      totalDelta: 0,
+      totalTheta: 0,
+      totalVega: 0,
+      totalGamma: 0,
+      totalMargin: 0,
+    };
+    posGroups[s].positions.push(p);
+    posGroups[s].totalPnl += (p.unrealizedPnl || 0);
+    posGroups[s].totalMktValue += (p.marketValue || 0);
+    posGroups[s].totalAvgCost += (p.avgCost || 0) * Math.abs(p.quantity || 0);
+    // Position Greeks: multiply by quantity (sign matters)
+    // Long 1 put at -0.25 delta = position delta -0.25
+    // Short 2 puts at -0.05 delta = position delta +0.10 (selling negative = positive)
+    const qty = p.quantity || 0;
+    posGroups[s].totalDelta += (p.delta || 0) * qty;
+    posGroups[s].totalTheta += (p.theta || 0) * qty;
+    posGroups[s].totalVega += (p.vega || 0) * qty;
+    posGroups[s].totalGamma += (p.gamma || 0) * qty;
+    posGroups[s].totalMargin += (p.marginReq || 0);
+  });
+
+  // Active Positions Table (grouped by strategy)
+  const posTable = `<div class="card" style="padding:0;overflow:hidden">
+    <div style="padding:10px 12px;font-weight:600;font-size:13px;border-bottom:1px solid var(--border)">Active Positions (${positions.length} legs, ${Object.keys(posGroups).length} strategies)</div>
+    ${positions.length ? `<table style="width:100%;border-collapse:collapse;font-size:11px">
+      <thead><tr style="background:var(--bg-secondary)">
+        <th style="padding:6px 8px;text-align:left">Symbol</th>
+        <th style="padding:6px 8px;text-align:center">Side</th>
+        <th style="padding:6px 8px;text-align:center">Expiry</th>
+        <th style="padding:6px 8px;text-align:right">Qty</th>
+        <th style="padding:6px 8px;text-align:right">Cost</th>
+        <th style="padding:6px 8px;text-align:right">Value</th>
+        <th style="padding:6px 8px;text-align:right">P&L</th>
+        <th style="padding:6px 8px;text-align:right">Delta</th>
+        <th style="padding:6px 8px;text-align:right">Theta</th>
+        <th style="padding:6px 8px;text-align:right">DTE</th>
+        <th style="padding:6px 8px;text-align:right">DIT</th>
+        <th style="padding:6px 8px;text-align:right">IV</th>
+      </tr></thead>
+      <tbody>${Object.entries(posGroups).map(([strat, group], gi) => {
+        const sc = stratColors[strat] || '#666';
+        const gid = 'pg-' + strat.replace(/[^a-zA-Z0-9]/g, '');
+        const isCollapsed = window._ibkrCollapsed[gid] || false;
+        const arrow = isCollapsed ? '&#9654;' : '&#9660;';
+        const legDisplay = isCollapsed ? 'none' : '';
+        // Strategy-level aggregate metrics
+        const gDelta = group.totalDelta;
+        const gTheta = group.totalTheta;
+        const gVega = group.totalVega;
+        const gPnl = group.totalPnl;
+        const gMktVal = group.totalMktValue;
+        const gAvgCost = group.totalAvgCost;
+        const gQty = group.positions.reduce((s, p) => s + Math.abs(p.quantity || 0), 0);
+        const dtes = group.positions.map(p => p.dte).filter(d => d != null && d > 0);
+        const gDte = dtes.length ? Math.min(...dtes) : '-';
+        const expiries = [...new Set(group.positions.map(p => p.expiry).filter(Boolean))];
+        const gExpiry = expiries.length === 1 ? expiries[0].slice(4,6) + '/' + expiries[0].slice(6) : expiries.length > 1 ? 'Mixed' : '';
+        const hSt = 'padding:6px 8px;font-family:var(--mono);font-size:11px;font-weight:600';
+        const groupHeader = `<tr style="background:${sc}0c;border-bottom:1px solid var(--border);cursor:pointer" onclick="window._ibkrCollapsed['${gid}']=!window._ibkrCollapsed['${gid}'];document.querySelectorAll('.${gid}').forEach(r=>r.style.display=window._ibkrCollapsed['${gid}']?'none':'');this.querySelector('.pg-arrow').innerHTML=window._ibkrCollapsed['${gid}']?'&#9654;':'&#9660;'">
+          <td style="padding:6px 8px;white-space:nowrap">
+            <span class="pg-arrow" style="font-size:10px;color:var(--text-tertiary);display:inline-block;width:12px">${arrow}</span>
+            <span class="badge" style="background:${sc}22;color:${sc};font-size:9px">${esc(strat)}</span>
+            <span style="font-size:10px;color:var(--text-tertiary);margin-left:4px">${group.positions.length} legs</span>
+          </td>
+          <td style="${hSt};text-align:center;color:var(--text-tertiary);font-size:9px">--</td>
+          <td style="${hSt};text-align:center;color:var(--text-tertiary);font-size:10px">${gExpiry}</td>
+          <td style="${hSt};text-align:right;color:var(--text-tertiary)">${gQty}</td>
+          <td style="${hSt};text-align:right;color:var(--text-tertiary)">$${gAvgCost.toFixed(0)}</td>
+          <td style="${hSt};text-align:right;color:${pnlColor(gMktVal)}">$${gMktVal.toFixed(0)}</td>
+          <td style="${hSt};text-align:right;color:${pnlColor(gPnl)}">${fmtPnl(gPnl)}</td>
+          <td style="${hSt};text-align:right">${gDelta >= 0 ? '+' : ''}${gDelta.toFixed(3)}</td>
+          <td style="${hSt};text-align:right;color:${gTheta >= 0 ? 'var(--green)' : 'var(--red)'}">${gTheta >= 0 ? '+' : ''}${gTheta.toFixed(3)}</td>
+          <td style="${hSt};text-align:right;color:${(gDte||0) <= 7 ? 'var(--red)' : (gDte||0) <= 21 ? 'var(--yellow)' : 'var(--text-secondary)'}">${gDte || '-'}</td>
+          <td style="${hSt};text-align:right;color:var(--text-tertiary);font-size:10px">--</td>
+          <td style="${hSt};text-align:right;color:var(--text-tertiary);font-size:10px">--</td>
+        </tr>`;
+        const legs = group.positions.map(p => {
+          const dit = p.entryDate ? Math.round((Date.now() - new Date(p.entryDate).getTime()) / 86400000) : (p.dte ? Math.max(0, 90 - (p.dte || 0)) : '-');
+          // Position-level Greeks: raw per-contract × quantity
+          // Short put: negative delta × negative qty = positive (bullish)
+          // Short put: negative theta × negative qty = positive (collecting decay)
+          const qty = p.quantity || 0;
+          const posDelta = (p.delta || 0) * qty;
+          const posTheta = (p.theta || 0) * qty;
+          return `<tr class="${gid}" style="border-bottom:1px solid var(--border-light);display:${legDisplay}">
+          <td style="padding:4px 8px 4px 28px;font-weight:500;font-size:11px">${esc(p.symbol)}${p.right ? ' ' + p.right : ''}${p.strike ? ' ' + p.strike : ''}</td>
+          <td style="padding:4px 8px;text-align:center;font-size:9px;color:${p.quantity > 0 ? 'var(--green)' : 'var(--red)'}">${p.quantity > 0 ? 'LONG' : 'SHORT'}</td>
+          <td style="padding:4px 8px;text-align:center;font-size:10px;color:var(--text-tertiary)">${p.expiry ? p.expiry.slice(4,6) + '/' + p.expiry.slice(6) : ''}</td>
+          <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">${p.quantity}</td>
+          <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">$${(p.avgCost || 0).toFixed(2)}</td>
+          <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">$${(p.marketPrice || 0).toFixed(2)}</td>
+          <td style="padding:4px 8px;text-align:right;font-family:var(--mono);color:${pnlColor(p.unrealizedPnl || 0)}">${fmtPnl(p.unrealizedPnl || 0)}</td>
+          <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">${posDelta >= 0 ? '+' : ''}${posDelta.toFixed(3)}</td>
+          <td style="padding:4px 8px;text-align:right;font-family:var(--mono);color:${posTheta >= 0 ? 'var(--green)' : 'var(--red)'}">${posTheta >= 0 ? '+' : ''}${posTheta.toFixed(3)}</td>
+          <td style="padding:4px 8px;text-align:right;color:${(p.dte||0) <= 7 ? 'var(--red)' : (p.dte||0) <= 21 ? 'var(--yellow)' : 'var(--text-secondary)'}">${p.dte || '-'}</td>
+          <td style="padding:4px 8px;text-align:right;font-size:10px;color:var(--text-tertiary)">${dit}d</td>
+          <td style="padding:4px 8px;text-align:right;font-family:var(--mono);font-size:10px;color:var(--text-tertiary)">${p.iv ? (p.iv * 100).toFixed(0) + '%' : '-'}</td>
+        </tr>`;
+        }).join('');
+        return groupHeader + legs;
+      }).join('')}${(() => {
+        // Grand total row
+        const tPnl = Object.values(posGroups).reduce((s, g) => s + g.totalPnl, 0);
+        const tDelta = Object.values(posGroups).reduce((s, g) => s + g.totalDelta, 0);
+        const tTheta = Object.values(posGroups).reduce((s, g) => s + g.totalTheta, 0);
+        const tVega = Object.values(posGroups).reduce((s, g) => s + g.totalVega, 0);
+        const tMktVal = Object.values(posGroups).reduce((s, g) => s + g.totalMktValue, 0);
+        const tAvgCost = Object.values(posGroups).reduce((s, g) => s + g.totalAvgCost, 0);
+        const tQty = positions.reduce((s, p) => s + Math.abs(p.quantity || 0), 0);
+        const allDtes = positions.map(p => p.dte).filter(d => d != null && d > 0);
+        const tDte = allDtes.length ? Math.min(...allDtes) : '-';
+        const tSt = 'padding:7px 8px;font-family:var(--mono);font-size:11px;font-weight:700';
+        return `<tr style="background:var(--bg-secondary);border-top:2px solid var(--border)">
+          <td style="${tSt};color:var(--text-primary)">TOTAL (${positions.length} legs)</td>
+          <td style="${tSt};text-align:center;color:var(--text-tertiary);font-size:9px">--</td>
+          <td style="${tSt};text-align:center;color:var(--text-tertiary)">--</td>
+          <td style="${tSt};text-align:right">${tQty}</td>
+          <td style="${tSt};text-align:right">$${tAvgCost.toFixed(0)}</td>
+          <td style="${tSt};text-align:right;color:${pnlColor(tMktVal)}">$${tMktVal.toFixed(0)}</td>
+          <td style="${tSt};text-align:right;color:${pnlColor(tPnl)}">${fmtPnl(tPnl)}</td>
+          <td style="${tSt};text-align:right">${tDelta >= 0 ? '+' : ''}${tDelta.toFixed(3)}</td>
+          <td style="${tSt};text-align:right;color:${tTheta >= 0 ? 'var(--green)' : 'var(--red)'}">${tTheta >= 0 ? '+' : ''}${tTheta.toFixed(3)}</td>
+          <td style="${tSt};text-align:right;color:${(tDte||0) <= 7 ? 'var(--red)' : (tDte||0) <= 21 ? 'var(--yellow)' : 'var(--text-secondary)'}">${tDte}</td>
+          <td style="${tSt};text-align:right;color:var(--text-tertiary)">--</td>
+          <td style="${tSt};text-align:right;color:var(--text-tertiary)">--</td>
+        </tr>`;
+      })()}</tbody>
+    </table>` : '<div style="padding:24px;text-align:center;color:var(--text-tertiary)">No open positions</div>'}
+  </div>`;
+
+  // Strategy Performance Table with P&L Attribution (Tier 2)
+  const stratEntries = Object.entries(stratPerf);
+  const stratTable = `<div class="card" style="padding:0;overflow:hidden">
+    <div style="padding:10px 12px;font-weight:600;font-size:13px;border-bottom:1px solid var(--border)">Strategy Performance</div>
+    ${stratEntries.length ? `<table style="width:100%;border-collapse:collapse;font-size:11px">
+      <thead><tr style="background:var(--bg-secondary)">
+        <th style="padding:6px 8px;text-align:left">Strategy</th>
+        <th style="padding:6px 8px;text-align:right">Trades</th>
+        <th style="padding:6px 8px;text-align:right">Win %</th>
+        <th style="padding:6px 8px;text-align:right">P&L</th>
+        <th style="padding:6px 8px;text-align:right">Avg Hold</th>
+      </tr></thead>
+      <tbody>${stratEntries.map(([name, s]) => `<tr style="border-bottom:1px solid var(--border-light)">
+        <td style="padding:5px 8px"><span class="badge" style="background:${(stratColors[name]||'#666')}22;color:${stratColors[name]||'#666'};font-size:9px">${esc(name)}</span></td>
+        <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${s.trades}</td>
+        <td style="padding:5px 8px;text-align:right;font-family:var(--mono);color:${s.winRate >= 60 ? 'var(--green)' : s.winRate >= 40 ? 'var(--yellow)' : 'var(--red)'}">${s.winRate}%</td>
+        <td style="padding:5px 8px;text-align:right;font-family:var(--mono);color:${pnlColor(s.pnl)}">${fmtPnl(s.pnl)}</td>
+        <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${s.avgHold}d</td>
+      </tr>`).join('')}</tbody>
+    </table>` : '<div style="padding:24px;text-align:center;color:var(--text-tertiary)">No closed trades yet</div>'}
+  </div>`;
+
+  // Greeks Exposure Table
+  const gPortfolio = greeks.portfolio || {};
+  const gByExpiry = greeks.byExpiry || {};
+  const expiryKeys = Object.keys(gByExpiry).sort();
+  const greeksTable = `<div class="card" style="padding:0;overflow:hidden">
+    <div style="padding:10px 12px;font-weight:600;font-size:13px;border-bottom:1px solid var(--border)">Greeks Exposure</div>
+    <table style="width:100%;border-collapse:collapse;font-size:11px">
+      <thead><tr style="background:var(--bg-secondary)">
+        <th style="padding:6px 8px;text-align:left">Expiry</th>
+        <th style="padding:6px 8px;text-align:right">Delta</th>
+        <th style="padding:6px 8px;text-align:right">Gamma</th>
+        <th style="padding:6px 8px;text-align:right">Theta</th>
+        <th style="padding:6px 8px;text-align:right">Vega</th>
+      </tr></thead>
+      <tbody>${expiryKeys.map(exp => {
+        const g = gByExpiry[exp];
+        return `<tr style="border-bottom:1px solid var(--border-light)">
+          <td style="padding:5px 8px;font-family:var(--mono)">${exp.slice(4,6)}/${exp.slice(6,8)}/${exp.slice(0,4)}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${(g.delta||0).toFixed(1)}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${(g.gamma||0).toFixed(2)}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:var(--mono);color:${(g.theta||0) > 0 ? 'var(--green)' : 'var(--red)'}">${(g.theta||0).toFixed(1)}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${(g.vega||0).toFixed(1)}</td>
+        </tr>`;
+      }).join('')}
+      <tr style="background:var(--bg-secondary);font-weight:600">
+        <td style="padding:5px 8px">Portfolio Total</td>
+        <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${(gPortfolio.netDelta||0).toFixed(1)}</td>
+        <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${(gPortfolio.netGamma||0).toFixed(2)}</td>
+        <td style="padding:5px 8px;text-align:right;font-family:var(--mono);color:${(gPortfolio.netTheta||0) > 0 ? 'var(--green)' : 'var(--red)'}">${(gPortfolio.netTheta||0).toFixed(1)}</td>
+        <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${(gPortfolio.netVega||0).toFixed(1)}</td>
+      </tr></tbody>
+    </table>
+  </div>`;
+
+  // Risk Dashboard
+  const bpPct = risk.buyingPowerUsedPct || 0;
+  const bpColor = bpPct > 60 ? 'var(--red)' : bpPct > 30 ? 'var(--yellow)' : 'var(--green)';
+  const scenarios = risk.maxLossScenarios || {};
+  const concentration = risk.positionConcentration || [];
+  const riskPanel = `<div class="card" style="padding:14px">
+    <div style="font-weight:600;font-size:13px;margin-bottom:12px">Risk Dashboard</div>
+    <div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px"><span>Buying Power Used</span><span style="color:${bpColor};font-weight:600">${bpPct.toFixed(1)}% / 50%</span></div>
+      <div style="height:8px;background:var(--bg-tertiary);border-radius:4px;overflow:hidden"><div style="height:100%;width:${Math.min(bpPct/50*100,100)}%;background:${bpColor};border-radius:4px"></div></div>
+    </div>
+    ${Object.keys(scenarios).length ? `<div style="margin-bottom:12px">
+      <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:6px">Max Loss Scenarios</div>
+      ${Object.entries(scenarios).map(([k,v]) => `<div style="display:flex;justify-content:space-between;font-size:11px;padding:3px 0"><span>${esc(k)}</span><span style="color:var(--red);font-family:var(--mono)">$${Math.abs(Number(v)).toLocaleString()}</span></div>`).join('')}
+    </div>` : ''}
+    ${concentration.length ? `<div style="margin-bottom:12px">
+      <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:6px">Position Concentration</div>
+      ${concentration.slice(0,5).map(c => `<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+        <span style="font-size:11px;width:40px;font-weight:500">${esc(c.symbol)}</span>
+        <div style="flex:1;height:6px;background:var(--bg-tertiary);border-radius:3px"><div style="height:100%;width:${c.pctOfPortfolio}%;background:var(--accent);border-radius:3px"></div></div>
+        <span style="font-size:10px;color:var(--text-tertiary);width:35px;text-align:right">${c.pctOfPortfolio}%</span>
+      </div>`).join('')}
+    </div>` : ''}
+    <div>
+      <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:6px">Stress Test (using BW-Delta)</div>
+      ${[[-5, 'var(--yellow)'], [-10, 'var(--red)'], [-20, 'var(--red)']].map(([pct, c]) => {
+        const impact = bwDelta * (pct / 100) * spyApprox;
+        return `<div style="display:flex;justify-content:space-between;font-size:11px;padding:3px 0">
+          <span>SPX ${pct}%</span>
+          <span style="color:${c};font-family:var(--mono)">${impact >= 0 ? '+' : ''}$${Math.round(impact).toLocaleString()}</span>
+        </div>`;
+      }).join('')}
+    </div>
+  </div>`;
+
+  // Daily P&L Bar Chart
+  const pnlBarData = pnlDays.map(([d, v]) => v.pnl);
+  const pnlBarLabels = pnlDays.map(([d]) => d.slice(5));
+  const dailyChart = pnlBarData.length > 1 ? `<div class="card" style="padding:16px;margin-top:16px">
+    <div style="font-weight:600;margin-bottom:8px;font-size:13px">Daily P&L</div>
+    ${svgBarChart(pnlBarData, { height: 120, labels: pnlBarLabels })}
+  </div>` : '';
+
+  // Seasonal Futures Calendar
+  const seasons = ['winter', 'spring', 'summer', 'autumn'];
+  const seasonLabels = { winter: 'Winter (Dec-Feb)', spring: 'Spring (Mar-May)', summer: 'Summer (Jun-Aug)', autumn: 'Autumn (Sep-Nov)' };
+  const currentMonth = new Date().getMonth(); // 0-11
+  const currentSeason = currentMonth <= 1 || currentMonth === 11 ? 'winter' : currentMonth <= 4 ? 'spring' : currentMonth <= 7 ? 'summer' : 'autumn';
+  const calendarHtml = seasonal && Object.keys(seasonal).length ? `<div class="card" style="padding:16px;margin-top:16px">
+    <div style="font-weight:600;margin-bottom:12px;font-size:13px">Seasonal Futures Calendar</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+      ${seasons.map(s => `<div style="padding:10px;border-radius:var(--radius-sm);background:${s === currentSeason ? 'rgba(99,179,237,0.08)' : 'var(--bg-secondary)'};border:${s === currentSeason ? '1px solid var(--accent)' : '1px solid var(--border)'}">
+        <div style="font-weight:600;font-size:11px;margin-bottom:8px;color:${s === currentSeason ? 'var(--accent)' : 'var(--text-secondary)'}">${seasonLabels[s]}${s === currentSeason ? ' (NOW)' : ''}</div>
+        ${(seasonal[s] || []).map(e => `<div style="margin-bottom:6px;font-size:10px">
+          <span style="font-weight:600;color:var(--text-primary)">${esc(e.symbol)}</span> <span style="color:var(--text-tertiary)">${esc(e.asset)}</span><br>
+          <span style="color:var(--accent)">${esc(e.strategy)}</span>
+        </div>`).join('')}
+      </div>`).join('')}
+    </div>
+  </div>` : '';
+
+  // Trade Journal — grouped by trade number with strategy classification
+  // Group trades by tradeNum for summary rows
+  const tradeGroups = {};
+  trades.forEach(t => {
+    const tn = t.tradeNum || 0;
+    if (!tradeGroups[tn]) tradeGroups[tn] = { legs: [], strategy: t.strategy || 'OTHER', netCost: t.tradeNetCost || 0, totalComm: t.tradeCommission || 0, totalFees: t.tradeFees || 0 };
+    tradeGroups[tn].legs.push(t);
+  });
+  const tradeNums = Object.keys(tradeGroups).sort((a,b) => Number(a) - Number(b));
+
+  if (!window._journalCollapsed) window._journalCollapsed = {};
+
+  const journal = trades.length ? `<div class="card" style="padding:0;overflow:hidden;margin-top:16px">
+    <div style="padding:10px 12px;font-weight:600;font-size:13px;border-bottom:1px solid var(--border)">Trade Journal (${trades.length} legs in ${tradeNums.length} trades)</div>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:11px;min-width:1100px">
+        <thead><tr style="background:var(--bg-secondary);position:sticky;top:0;z-index:1">
+          <th style="padding:6px 6px;text-align:left;min-width:40px">Trade</th>
+          <th style="padding:6px 6px;text-align:center">Strategy</th>
+          <th style="padding:6px 6px;text-align:center">Side</th>
+          <th style="padding:6px 6px;text-align:left">Symbol</th>
+          <th style="padding:6px 6px;text-align:right">Strike</th>
+          <th style="padding:6px 6px;text-align:center">R</th>
+          <th style="padding:6px 6px;text-align:center">Expiry</th>
+          <th style="padding:6px 6px;text-align:right">Qty</th>
+          <th style="padding:6px 6px;text-align:right">Fill Price</th>
+          <th style="padding:6px 6px;text-align:right">Unit Cost</th>
+          <th style="padding:6px 6px;text-align:right">Total Cost</th>
+          <th style="padding:6px 6px;text-align:right">Comm</th>
+          <th style="padding:6px 6px;text-align:right">Fees</th>
+          <th style="padding:6px 6px;text-align:center">Type</th>
+          <th style="padding:6px 6px;text-align:center">TIF</th>
+          <th style="padding:6px 6px;text-align:left;min-width:130px">Fill Time</th>
+          <th style="padding:6px 6px;text-align:center">Status</th>
+        </tr></thead>
+        <tbody>${tradeNums.map(tn => {
+          const g = tradeGroups[tn];
+          const sc = stratColors[g.strategy] || '#666';
+          const gid = 'jg-' + tn;
+          const isC = window._journalCollapsed[gid] || false;
+          const arrow = isC ? '&#9654;' : '&#9660;';
+          const legDisp = isC ? 'none' : '';
+          const netCost = g.netCost;
+          const netLabel = netCost <= 0 ? 'CREDIT' : 'DEBIT';
+          const netColor = netCost <= 0 ? 'var(--green)' : 'var(--red)';
+          const totalQty = g.legs.reduce((s,l) => s + Math.abs(l.quantity || 0), 0);
+          const totalCostAbs = g.legs.reduce((s,l) => s + (l.totalCost || 0), 0);
+          const fillDate = g.legs[0] && g.legs[0].fillTimeStr ? g.legs[0].fillTimeStr.slice(0,10) : '';
+          // Group header
+          const hSt = 'padding:6px 6px;font-family:var(--mono);font-size:11px;font-weight:600';
+          const gExp = (g.legs[0]||{}).expiry;
+          const gExpFmt = gExp ? gExp.slice(4,6)+'/'+gExp.slice(6) : '';
+          const header = `<tr style="background:${sc}0c;border-bottom:1px solid var(--border);cursor:pointer" onclick="window._journalCollapsed['${gid}']=!window._journalCollapsed['${gid}'];document.querySelectorAll('.${gid}').forEach(r=>r.style.display=window._journalCollapsed['${gid}']?'none':'');this.querySelector('.jg-arrow').innerHTML=window._journalCollapsed['${gid}']?'&#9654;':'&#9660;'">
+            <td style="${hSt}"><span class="jg-arrow" style="font-size:10px;color:var(--text-tertiary);display:inline-block;width:12px">${arrow}</span>#${tn}</td>
+            <td style="${hSt};text-align:center"><span class="badge" style="background:${sc}22;color:${sc};font-size:9px">${esc(g.strategy)}</span></td>
+            <td style="${hSt};text-align:center;color:var(--text-tertiary)">${g.legs.length} legs</td>
+            <td style="${hSt}">${esc(g.legs[0] ? g.legs[0].symbol : '')}</td>
+            <td style="${hSt};text-align:right;color:var(--text-tertiary)">--</td>
+            <td style="${hSt};text-align:center">--</td>
+            <td style="${hSt};text-align:center;color:var(--text-tertiary)">${gExpFmt}</td>
+            <td style="${hSt};text-align:right">${totalQty}</td>
+            <td style="${hSt};text-align:right;color:var(--text-tertiary)">--</td>
+            <td style="${hSt};text-align:right;color:var(--text-tertiary)">--</td>
+            <td style="${hSt};text-align:right;color:${netColor}">${netLabel} $${Math.abs(netCost).toFixed(2)}</td>
+            <td style="${hSt};text-align:right;color:var(--text-tertiary)">$${g.totalComm.toFixed(2)}</td>
+            <td style="${hSt};text-align:right;color:var(--text-tertiary)">$${g.totalFees.toFixed(2)}</td>
+            <td style="${hSt};text-align:center;color:var(--text-tertiary)">--</td>
+            <td style="${hSt};text-align:center;color:var(--text-tertiary)">--</td>
+            <td style="${hSt};color:var(--text-tertiary)">${fillDate}</td>
+            <td style="${hSt};text-align:center"><span class="badge" style="background:var(--green)22;color:var(--green);font-size:8px">OPEN</span></td>
+          </tr>`;
+          // Individual legs
+          const legs = g.legs.map(t => {
+            const sideColor = t.side === 'BUY' ? 'var(--green)' : 'var(--red)';
+            const tExpFmt = t.expiry ? t.expiry.slice(4,6)+'/'+t.expiry.slice(6) : '';
+            return `<tr class="${gid}" style="border-bottom:1px solid var(--border-light);display:${legDisp}">
+              <td style="padding:4px 6px 4px 28px;font-family:var(--mono);font-size:10px;color:var(--text-tertiary)">#${tn}</td>
+              <td style="padding:4px 6px;text-align:center"><span class="badge" style="background:${sc}12;color:${sc}99;font-size:8px">${esc(g.strategy)}</span></td>
+              <td style="padding:4px 6px;text-align:center;font-size:9px;font-weight:600;color:${sideColor}">${t.side}</td>
+              <td style="padding:4px 6px;font-weight:500">${esc(t.symbol||'')}</td>
+              <td style="padding:4px 6px;text-align:right;font-family:var(--mono)">${t.strike||'-'}</td>
+              <td style="padding:4px 6px;text-align:center;font-size:10px">${t.right||'-'}</td>
+              <td style="padding:4px 6px;text-align:center;font-size:10px;color:var(--text-tertiary)">${tExpFmt}</td>
+              <td style="padding:4px 6px;text-align:right;font-family:var(--mono)">${t.quantity}</td>
+              <td style="padding:4px 6px;text-align:right;font-family:var(--mono)">$${(t.avgPrice||0).toFixed(2)}</td>
+              <td style="padding:4px 6px;text-align:right;font-family:var(--mono)">$${(t.unitCost||0).toFixed(2)}</td>
+              <td style="padding:4px 6px;text-align:right;font-family:var(--mono);color:${sideColor}">$${(t.totalCost||0).toFixed(2)}</td>
+              <td style="padding:4px 6px;text-align:right;font-family:var(--mono);font-size:10px;color:var(--text-tertiary)">$${(t.commission||0).toFixed(2)}</td>
+              <td style="padding:4px 6px;text-align:right;font-family:var(--mono);font-size:10px;color:var(--text-tertiary)">$${(t.fees||0).toFixed(2)}</td>
+              <td style="padding:4px 6px;text-align:center;font-size:9px;color:var(--text-tertiary)">${t.orderType||''}</td>
+              <td style="padding:4px 6px;text-align:center;font-size:9px;color:var(--text-tertiary)">${t.timeInForce||''}</td>
+              <td style="padding:4px 6px;font-family:var(--mono);font-size:10px;color:var(--text-tertiary)">${t.fillTimeStr||''}</td>
+              <td style="padding:4px 6px;text-align:center"><span class="badge" style="background:var(--green)18;color:var(--green)aa;font-size:7px">${(t.status||'').toUpperCase()}</span></td>
+            </tr>`;
+          }).join('');
+          return header + legs;
+        }).join('')}${(() => {
+          // Grand total
+          const totalLegs = trades.length;
+          const totalNetCost = Object.values(tradeGroups).reduce((s,g) => s + g.netCost, 0);
+          const totalComm = trades.reduce((s,t) => s + (t.commission||0), 0);
+          const totalFees = trades.reduce((s,t) => s + (t.fees||0), 0);
+          const totalQtyAll = trades.reduce((s,t) => s + Math.abs(t.quantity||0), 0);
+          const tSt = 'padding:7px 6px;font-family:var(--mono);font-size:11px;font-weight:700';
+          const netColor = totalNetCost <= 0 ? 'var(--green)' : 'var(--red)';
+          return '<tr style="background:var(--bg-secondary);border-top:2px solid var(--border)">'+
+            '<td style="'+tSt+'" colspan="3">TOTAL ('+tradeNums.length+' trades, '+totalLegs+' legs)</td>'+
+            '<td style="'+tSt+'"></td><td style="'+tSt+'"></td><td style="'+tSt+'"></td><td style="'+tSt+'"></td>'+
+            '<td style="'+tSt+';text-align:right">'+totalQtyAll+'</td>'+
+            '<td style="'+tSt+'"></td><td style="'+tSt+'"></td>'+
+            '<td style="'+tSt+';text-align:right;color:'+netColor+'">'+(totalNetCost<=0?'CREDIT':'DEBIT')+' $'+Math.abs(totalNetCost).toFixed(2)+'</td>'+
+            '<td style="'+tSt+';text-align:right;color:var(--text-tertiary)">$'+totalComm.toFixed(2)+'</td>'+
+            '<td style="'+tSt+';text-align:right;color:var(--text-tertiary)">$'+totalFees.toFixed(2)+'</td>'+
+            '<td style="'+tSt+'"></td><td style="'+tSt+'"></td><td style="'+tSt+'"></td><td style="'+tSt+'"></td></tr>';
+        })()}</tbody>
+      </table>
+    </div>
+  </div>` : '<div class="card" style="padding:24px;text-align:center;color:var(--text-tertiary)">No executed trades</div>';
+
+  // Summary stats row (below KPIs)
+  // Expectancy = (AvgWin * WinRate) - (AvgLoss * LossRate)
+  const expectancy = summary.closedTrades > 0 ? (
+    (summary.avgWin || 0) * (summary.winRate / 100) - (Math.abs(summary.avgLoss || 0)) * (1 - summary.winRate / 100)
+  ) : 0;
+
+  const statsRow = summary.totalTrades > 0 ? `<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px">
+    <div class="card" style="padding:10px;text-align:center">
+      <div style="font-size:20px;font-weight:700;color:${summary.winRate >= 50 ? 'var(--green)' : 'var(--red)'}">${summary.winRate}%</div>
+      <div style="font-size:10px;color:var(--text-tertiary)">Win Rate (${summary.closedTrades} closed)</div>
+    </div>
+    <div class="card" style="padding:10px;text-align:center">
+      <div style="font-size:20px;font-weight:700;color:${pnlColor(summary.totalPnl)}">${fmtPnl(summary.totalPnl)}</div>
+      <div style="font-size:10px;color:var(--text-tertiary)">Total P&L</div>
+    </div>
+    <div class="card" style="padding:10px;text-align:center">
+      <div style="font-size:20px;font-weight:700;color:${pnlColor(expectancy)}">${expectancy >= 0 ? '+' : ''}$${expectancy.toFixed(0)}</div>
+      <div style="font-size:10px;color:var(--text-tertiary)">Expectancy /trade</div>
+    </div>
+    <div class="card" style="padding:10px;text-align:center">
+      <div style="font-size:20px;font-weight:700;color:var(--text-primary)">${summary.profitFactor ? summary.profitFactor.toFixed(2) : '-'}</div>
+      <div style="font-size:10px;color:var(--text-tertiary)">Profit Factor</div>
+    </div>
+    <div class="card" style="padding:10px;text-align:center">
+      <div style="font-size:20px;font-weight:700;color:var(--text-primary)">${summary.sharpeRatio ? summary.sharpeRatio.toFixed(2) : '-'}</div>
+      <div style="font-size:10px;color:var(--text-tertiary)">Sharpe Ratio</div>
+    </div>
+  </div>` : '';
+
+  // ── TOM KING TRACKING + TRADESVIZ ANALYTICS ──
+
+  // Health Metrics Panel (Tom King Automation Framework)
+  const wr = summary.winRate || 0;
+  const pf = summary.profitFactor || 0;
+  const portRisk = risk.buyingPowerUsedPct || 0;
+  const maxDD = 0; // TODO: calculate from snapshots when we have history
+
+  function healthBadge(val, good, warn, bad, fmt, invert) {
+    let level, color;
+    if (invert) {
+      level = val <= good ? 'OK' : val <= warn ? 'WARN' : 'ALERT';
+      color = val <= good ? 'var(--green)' : val <= warn ? 'var(--yellow)' : 'var(--red)';
+    } else {
+      level = val >= good ? 'OK' : val >= warn ? 'WARN' : 'ALERT';
+      color = val >= good ? 'var(--green)' : val >= warn ? 'var(--yellow)' : 'var(--red)';
+    }
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border-light)">
+      <span style="font-size:11px;color:var(--text-secondary)">${fmt.label}</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-family:var(--mono);font-size:12px;font-weight:600;color:${color}">${fmt.fn(val)}</span>
+        <span style="font-size:8px;padding:1px 5px;border-radius:3px;background:${color}20;color:${color};font-weight:600">${level}</span>
+      </div>
+    </div>`;
+  }
+
+  const healthPanel = `<div class="card" style="padding:14px">
+    <div style="font-weight:600;font-size:13px;margin-bottom:8px">System Health</div>
+    ${healthBadge(portRisk, 5, 8, 100, {label: 'Portfolio Risk', fn: v => v.toFixed(1) + '%'}, true)}
+    ${healthBadge(wr, 70, 60, 0, {label: 'Win Rate', fn: v => v.toFixed(0) + '%'}, false)}
+    ${healthBadge(pf, 2.0, 1.5, 0, {label: 'Profit Factor', fn: v => v.toFixed(2)}, false)}
+    ${healthBadge(maxDD, -10, -15, -100, {label: 'Max Drawdown', fn: v => v.toFixed(1) + '%'}, false)}
+    <div style="font-size:9px;color:var(--text-tertiary);margin-top:6px">Targets from Tom King risk framework</div>
+  </div>`;
+
+  // ── INSTITUTIONAL METRICS (Codex + Gemini recommendations) ──
+  const perfReturns = perf.returns || {};
+  const perfRisk = perf.risk || {};
+  const perfMonthly = perf.monthlyReturns || [];
+  const perfUnderwater = perf.underwater || [];
+  const hasPerfData = perf.sampleSize > 1;
+
+  // Paper trading watermark
+  const paperWatermark = perf.accountType === 'PAPER' ? `<div style="position:absolute;top:8px;right:12px;font-size:9px;color:var(--yellow);opacity:0.7;letter-spacing:1px;font-weight:700;text-transform:uppercase">SIMULATED PERFORMANCE</div>` : '';
+
+  // Institutional Risk Metrics Row (Sortino, Calmar, MaxDD, CVaR, Vol)
+  const instMetrics = hasPerfData ? `<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:16px">
+    ${[
+      ['Sortino', perfRisk.sortino, v => v >= 999 ? 'N/A' : v.toFixed(2), v => v >= 2 ? 'var(--green)' : v >= 1 ? 'var(--yellow)' : 'var(--red)'],
+      ['Calmar', perfRisk.calmar, v => v.toFixed(2), v => v >= 2 ? 'var(--green)' : v >= 1 ? 'var(--yellow)' : 'var(--red)'],
+      ['Max DD', perfRisk.maxDrawdown, v => v.toFixed(1) + '%', v => v > -5 ? 'var(--green)' : v > -15 ? 'var(--yellow)' : 'var(--red)'],
+      ['DD Duration', perfRisk.maxDrawdownDuration, v => v + 'd', () => 'var(--text-primary)'],
+      ['VaR 95%', perfRisk.var95Dollars, v => '$' + Math.round(v).toLocaleString(), () => 'var(--red)'],
+      ['CVaR 95%', perfRisk.cvar95Dollars, v => '$' + Math.round(v).toLocaleString(), () => 'var(--red)'],
+    ].map(([label, val, fmt, colorFn]) => {
+      const v = val || 0;
+      return `<div class="card" style="padding:10px;text-align:center">
+        <div style="font-size:16px;font-weight:700;color:${colorFn(v)};font-family:var(--mono)">${fmt(v)}</div>
+        <div style="font-size:9px;color:var(--text-tertiary);margin-top:2px">${label}</div>
+      </div>`;
+    }).join('')}
+  </div>` : '';
+
+  // Underwater Chart (drawdown from peak)
+  const underwaterChart = perfUnderwater.length > 1 ? `<div class="card" style="padding:16px;margin-bottom:16px">
+    <div style="font-weight:600;margin-bottom:8px;font-size:13px">Drawdown (Underwater Chart)</div>
+    ${svgLineChart(perfUnderwater.map(u => u.dd), { height: 100, labels: perfUnderwater.map(u => u.date.slice(5)), color: 'var(--red)', baseline: true })}
+  </div>` : '';
+
+  // Monthly Return Heatmap
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const monthlyByYear = {};
+  perfMonthly.forEach(m => {
+    const [y, mo] = m.month.split('-');
+    if (!monthlyByYear[y]) monthlyByYear[y] = {};
+    monthlyByYear[y][parseInt(mo) - 1] = m.return;
+  });
+  const monthlyHeatmap = perfMonthly.length > 0 ? `<div class="card" style="padding:14px">
+    <div style="font-weight:600;font-size:13px;margin-bottom:8px">Monthly Returns (%)</div>
+    <table style="width:100%;border-collapse:collapse;font-size:10px">
+      <thead><tr style="background:var(--bg-secondary)">
+        <th style="padding:4px 6px;text-align:left">Year</th>
+        ${months.map(m => `<th style="padding:4px 3px;text-align:center;width:7%">${m}</th>`).join('')}
+        <th style="padding:4px 6px;text-align:right">YTD</th>
+      </tr></thead>
+      <tbody>${Object.entries(monthlyByYear).sort().map(([year, mos]) => {
+        const ytd = Object.values(mos).reduce((s, v) => s + v, 0);
+        return `<tr style="border-bottom:1px solid var(--border-light)">
+          <td style="padding:4px 6px;font-weight:600">${year}</td>
+          ${Array.from({length: 12}, (_, i) => {
+            const v = mos[i];
+            if (v === undefined) return '<td style="padding:4px 3px;text-align:center;color:var(--text-tertiary)">-</td>';
+            const bg = v > 3 ? 'rgba(34,197,94,0.3)' : v > 0 ? 'rgba(34,197,94,0.12)' : v > -3 ? 'rgba(239,68,68,0.12)' : 'rgba(239,68,68,0.3)';
+            const c = v >= 0 ? 'var(--green)' : 'var(--red)';
+            return `<td style="padding:4px 3px;text-align:center;background:${bg};color:${c};font-family:var(--mono);font-weight:500">${v.toFixed(1)}</td>`;
+          }).join('')}
+          <td style="padding:4px 6px;text-align:right;font-family:var(--mono);font-weight:600;color:${ytd >= 0 ? 'var(--green)' : 'var(--red)'}">${ytd.toFixed(1)}%</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>
+  </div>` : '';
+
+  // Rolling Volatility Chart
+  const rollingVol = (perf.rollingVol || []);
+  const rollingVolChart = rollingVol.length > 1 ? `<div class="card" style="padding:16px;margin-bottom:16px">
+    <div style="font-weight:600;margin-bottom:8px;font-size:13px">Rolling 30-Day Volatility (Annualized %)</div>
+    ${svgLineChart(rollingVol.map(v => v.vol), { height: 100, labels: rollingVol.map(v => v.date.slice(5)), color: 'var(--yellow)' })}
+  </div>` : '';
+
+  // Daily Portfolio History Table
+  const snapshotRows = snapshots.slice(-14).reverse();
+  const portfolioHistory = snapshotRows.length > 0 ? `<div class="card" style="padding:0;overflow:hidden;margin-bottom:16px">
+    <div style="padding:10px 12px;font-weight:600;font-size:13px;border-bottom:1px solid var(--border)">Daily Portfolio History (5:30 PM ET snapshots)</div>
+    <div style="max-height:280px;overflow-y:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:11px">
+        <thead><tr style="background:var(--bg-secondary);position:sticky;top:0">
+          <th style="padding:6px 8px;text-align:left">Date</th>
+          <th style="padding:6px 8px;text-align:right">NLV</th>
+          <th style="padding:6px 8px;text-align:right">Day P&L</th>
+          <th style="padding:6px 8px;text-align:right">Open P&L</th>
+          <th style="padding:6px 8px;text-align:right">Realized</th>
+          <th style="padding:6px 8px;text-align:right">Positions</th>
+          <th style="padding:6px 8px;text-align:right">Init Margin</th>
+          <th style="padding:6px 8px;text-align:right">Maint Margin</th>
+        </tr></thead>
+        <tbody>${snapshotRows.map((s, i) => {
+          const prevNlv = i < snapshotRows.length - 1 ? snapshotRows[i + 1].nlv : s.nlv;
+          const dayPnl = s.nlv - prevNlv;
+          return `<tr style="border-bottom:1px solid var(--border-light)">
+            <td style="padding:5px 8px;font-family:var(--mono)">${s.date}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-weight:500">$${(s.nlv || 0).toLocaleString()}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);color:${pnlColor(dayPnl)}">${dayPnl !== 0 ? fmtPnl(dayPnl) : '-'}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);color:${pnlColor(s.unrealizedPnl || 0)}">${s.unrealizedPnl ? fmtPnl(s.unrealizedPnl) : '-'}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);color:${pnlColor(s.realizedPnl || 0)}">${s.realizedPnl ? fmtPnl(s.realizedPnl) : '-'}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${s.openPositions || 0}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-size:10px">${s.initMargin ? '$' + s.initMargin.toLocaleString() : '-'}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-size:10px">${s.maintMargin ? '$' + s.maintMargin.toLocaleString() : '-'}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>
+    </div>
+  </div>` : '';
+
+  // Date constants (now is declared at the top of the view function)
+  const calMonth = now.getMonth();
+  const calYear = now.getFullYear();
+  const firstDay = new Date(calYear, calMonth, 1).getDay();
+  const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+
+  // Monthly Income Tracker
+  const thisMonth = now.toLocaleString('en-US', { month: 'short', year: 'numeric' });
+  const monthlyTarget = acct.netLiquidation > 0 ? acct.netLiquidation * 0.03 : 3000; // 3% monthly target
+  const monthlyActual = Object.entries(dailyPnl)
+    .filter(([d]) => d.startsWith(`${calYear}-${String(calMonth+1).padStart(2,'0')}`))
+    .reduce((s, [,v]) => s + (v.pnl || 0), 0);
+  const monthlyPct = monthlyTarget > 0 ? (monthlyActual / monthlyTarget * 100) : 0;
+  const monthlyBarColor = monthlyActual >= monthlyTarget ? 'var(--green)' : monthlyActual >= 0 ? 'var(--accent)' : 'var(--red)';
+
+  const incomeTracker = `<div class="card" style="padding:14px">
+    <div style="font-weight:600;font-size:13px;margin-bottom:8px">Monthly Income -- ${thisMonth}</div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
+      <span style="font-size:22px;font-weight:700;color:${pnlColor(monthlyActual)};font-family:var(--mono)">${monthlyActual >= 0 ? '+' : ''}$${monthlyActual.toFixed(0)}</span>
+      <span style="font-size:11px;color:var(--text-tertiary)">target: $${monthlyTarget.toFixed(0)} (3% NLV)</span>
+    </div>
+    <div style="height:10px;background:var(--bg-tertiary);border-radius:5px;overflow:hidden;margin-bottom:6px">
+      <div style="height:100%;width:${Math.min(Math.max(monthlyPct, 0), 100).toFixed(0)}%;background:${monthlyBarColor};border-radius:5px;transition:width 0.5s"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-tertiary)">
+      <span>${monthlyPct.toFixed(0)}% of target</span>
+      <span>${Math.max(0, daysInMonth - now.getDate())} days remaining</span>
+    </div>
+  </div>`;
+
+  // Strategy Automation Status (Tom King Framework)
+  const automationLevels = {
+    'LT112': { auto: 85, status: 'active', next: 'Pre-market scan 9:00 AM' },
+    '1_2_0': { auto: 80, status: 'active', next: 'Position monitor 30min' },
+    'STRANGLE': { auto: 75, status: 'ready', next: 'Awaiting setup' },
+    'WHEEL_CSP': { auto: 70, status: 'ready', next: 'Awaiting setup' },
+    'LONG_LEAPS': { auto: 60, status: 'active', next: 'LEAPS execution 9:35 AM' },
+    'NAKED_PUT': { auto: 70, status: 'ready', next: 'Awaiting signal' },
+  };
+  const autoRows = Object.entries(automationLevels).map(([name, info]) => {
+    const barColor = info.status === 'active' ? 'var(--green)' : 'var(--text-tertiary)';
+    const statusDot = info.status === 'active' ? 'var(--green)' : 'var(--yellow)';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0">
+      <span style="width:6px;height:6px;border-radius:50%;background:${statusDot};flex-shrink:0"></span>
+      <span style="width:70px;font-size:10px"><span class="badge" style="background:${(stratColors[name]||'#666')}22;color:${stratColors[name]||'#666'};font-size:8px">${esc(name)}</span></span>
+      <div style="flex:1;height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden">
+        <div style="height:100%;width:${info.auto}%;background:${barColor};border-radius:3px;opacity:0.7"></div>
+      </div>
+      <span style="width:30px;font-family:var(--mono);font-size:9px;color:var(--text-tertiary);text-align:right">${info.auto}%</span>
+    </div>`;
+  }).join('');
+
+  const automationCard = `<div class="card" style="padding:14px">
+    <div style="font-weight:600;font-size:13px;margin-bottom:8px">Automation Status</div>
+    ${autoRows}
+    <div style="font-size:9px;color:var(--text-tertiary);margin-top:6px;border-top:1px solid var(--border-light);padding-top:6px">
+      Green = running | Yellow = ready, awaiting setup
+    </div>
+  </div>`;
+
+  // ── TRADESVIZ-INSPIRED ANALYTICS SECTION ──
+
+  // Portfolio Greeks Strip with Beta-Weighted Delta (gP, spyApprox, bwDelta declared above)
+  const greekStrip = `<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:16px">
+    ${[
+      ['BW Delta', bwDelta, 'Beta-weighted delta (SPY equivalent $)', v => '$' + Math.round(v).toLocaleString()],
+      ['Delta', gP.netDelta, 'Raw portfolio delta', v => v.toFixed(1)],
+      ['Gamma', gP.netGamma, 'Rate of delta change', v => v.toFixed(2)],
+      ['Theta', gP.netTheta, 'Daily time decay', v => (v >= 0 ? '+$' : '-$') + Math.abs(v).toFixed(0)],
+      ['Vega', gP.netVega, 'Volatility sensitivity', v => (v >= 0 ? '+' : '') + v.toFixed(0)],
+    ].map(([name, val, tip, fmt]) => {
+      const v = val || 0;
+      const c = name === 'Theta' ? (v > 0 ? 'var(--green)' : v < 0 ? 'var(--red)' : 'var(--text-tertiary)')
+        : name === 'BW Delta' ? (Math.abs(v) > 5000 ? 'var(--red)' : 'var(--accent)')
+        : 'var(--accent)';
+      const label = name === 'BW Delta' ? 'BW-Delta' : name;
+      return `<div class="card" style="padding:8px 10px;display:flex;align-items:center;gap:8px" title="${tip}">
+        <div style="width:30px;height:30px;border-radius:6px;background:${c}15;display:flex;align-items:center;justify-content:center">
+          <span style="font-size:12px;font-weight:700;color:${c};font-family:var(--mono)">${name[0]}</span>
+        </div>
+        <div>
+          <div style="font-size:14px;font-weight:700;color:var(--text-primary);font-family:var(--mono)">${fmt(v)}</div>
+          <div style="font-size:8px;color:var(--text-tertiary);letter-spacing:0.5px;text-transform:uppercase">${label}</div>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+
+  // P&L Calendar Heatmap
+  const closedTrades = trades.filter(t => t.status === 'closed' && t.pnl != null);
+  const tradePnlByDate = {};
+  closedTrades.forEach(t => {
+    const d = (t.timestamp || '').slice(0, 10);
+    if (d) tradePnlByDate[d] = (tradePnlByDate[d] || 0) + (t.pnl || 0);
+  });
+  // Also include daily P&L from snapshots
+  Object.entries(dailyPnl).forEach(([d, v]) => {
+    if (!tradePnlByDate[d]) tradePnlByDate[d] = v.pnl || 0;
+  });
+
+  const monthName = now.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+
+  let calCells = '';
+  // Day headers
+  ['M','T','W','T','F','S','S'].forEach(d => {
+    calCells += `<div style="font-size:9px;color:var(--text-tertiary);text-align:center;padding:2px 0;font-weight:600">${d}</div>`;
+  });
+  // Offset for first day (Mon=0)
+  const offset = (firstDay + 6) % 7;
+  for (let i = 0; i < offset; i++) calCells += '<div></div>';
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateStr = `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    const pnl = tradePnlByDate[dateStr];
+    const isToday = day === now.getDate();
+    let bg = 'var(--bg-tertiary)';
+    let txt = 'var(--text-tertiary)';
+    if (pnl !== undefined) {
+      if (pnl > 500) { bg = 'rgba(34,197,94,0.35)'; txt = 'var(--green)'; }
+      else if (pnl > 0) { bg = 'rgba(34,197,94,0.15)'; txt = 'var(--green)'; }
+      else if (pnl < -500) { bg = 'rgba(239,68,68,0.35)'; txt = 'var(--red)'; }
+      else if (pnl < 0) { bg = 'rgba(239,68,68,0.15)'; txt = 'var(--red)'; }
+    }
+    const border = isToday ? 'border:1px solid var(--accent)' : '';
+    const tip = pnl !== undefined ? `${dateStr}: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(0)}` : dateStr;
+    calCells += `<div style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;border-radius:4px;background:${bg};font-size:10px;font-weight:500;color:${txt};${border};cursor:default" title="${tip}">${day}</div>`;
+  }
+
+  const pnlCalendar = `<div class="card" style="padding:14px">
+    <div style="font-weight:600;font-size:13px;margin-bottom:10px">P&L Calendar -- ${monthName}</div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px">${calCells}</div>
+    <div style="display:flex;gap:12px;margin-top:8px;font-size:9px;color:var(--text-tertiary)">
+      <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:rgba(34,197,94,0.35)"></span> Profit</span>
+      <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:rgba(239,68,68,0.35)"></span> Loss</span>
+      <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:var(--bg-tertiary)"></span> No data</span>
+    </div>
+  </div>`;
+
+  // Win/Loss Distribution (SVG donut)
+  const wins = closedTrades.filter(t => (t.pnl || 0) > 0);
+  const losses = closedTrades.filter(t => (t.pnl || 0) <= 0);
+  const winAmt = wins.reduce((s, t) => s + (t.pnl || 0), 0);
+  const lossAmt = Math.abs(losses.reduce((s, t) => s + (t.pnl || 0), 0));
+  const totalTrades = closedTrades.length || 1;
+  const winPct = (wins.length / totalTrades * 100).toFixed(0);
+  const lossPct = (100 - winPct).toFixed(0);
+
+  const donutR = 42, donutStroke = 14, donutC = 2 * Math.PI * donutR;
+  const winArc = (wins.length / totalTrades) * donutC;
+  const donut = closedTrades.length > 0 ? `
+    <svg viewBox="0 0 120 120" width="120" height="120">
+      <circle cx="60" cy="60" r="${donutR}" fill="none" stroke="var(--bg-tertiary)" stroke-width="${donutStroke}"/>
+      <circle cx="60" cy="60" r="${donutR}" fill="none" stroke="var(--green)" stroke-width="${donutStroke}"
+        stroke-dasharray="${winArc.toFixed(1)} ${donutC.toFixed(1)}" stroke-dashoffset="${(donutC * 0.25).toFixed(1)}"
+        stroke-linecap="round" style="transition:stroke-dasharray 0.5s"/>
+      <circle cx="60" cy="60" r="${donutR}" fill="none" stroke="var(--red)" stroke-width="${donutStroke}"
+        stroke-dasharray="${(donutC - winArc).toFixed(1)} ${donutC.toFixed(1)}" stroke-dashoffset="${(donutC * 0.25 - winArc).toFixed(1)}"
+        stroke-linecap="round" style="transition:stroke-dasharray 0.5s"/>
+      <text x="60" y="56" text-anchor="middle" fill="var(--text-primary)" font-size="18" font-weight="700" font-family="var(--mono)">${winPct}%</text>
+      <text x="60" y="70" text-anchor="middle" fill="var(--text-tertiary)" font-size="9">win rate</text>
+    </svg>` : '<div style="width:120px;height:120px;display:flex;align-items:center;justify-content:center;color:var(--text-tertiary);font-size:11px">No trades</div>';
+
+  const winLossCard = `<div class="card" style="padding:14px">
+    <div style="font-weight:600;font-size:13px;margin-bottom:12px">Win / Loss Distribution</div>
+    <div style="display:flex;align-items:center;gap:20px">
+      ${donut}
+      <div style="flex:1">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border-light)">
+          <span style="font-size:11px;color:var(--green)">Wins</span>
+          <span style="font-family:var(--mono);font-size:12px;color:var(--green)">${wins.length} trades / +$${winAmt.toFixed(0)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border-light)">
+          <span style="font-size:11px;color:var(--red)">Losses</span>
+          <span style="font-family:var(--mono);font-size:12px;color:var(--red)">${losses.length} trades / -$${lossAmt.toFixed(0)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0">
+          <span style="font-size:11px;color:var(--text-tertiary)">Avg Win / Avg Loss</span>
+          <span style="font-family:var(--mono);font-size:11px;color:var(--text-secondary)">$${wins.length ? (winAmt/wins.length).toFixed(0) : '0'} / $${losses.length ? (lossAmt/losses.length).toFixed(0) : '0'}</span>
+        </div>
+      </div>
+    </div>
+  </div>`;
+
+  // P&L by Strategy (horizontal bar chart)
+  const stratEntries2 = Object.entries(stratPerf).sort((a, b) => b[1].pnl - a[1].pnl);
+  const maxStratPnl = stratEntries2.length ? Math.max(...stratEntries2.map(([,s]) => Math.abs(s.pnl)), 1) : 1;
+  const stratPnlBars = stratEntries2.length ? stratEntries2.map(([name, s]) => {
+    const pct = Math.abs(s.pnl) / maxStratPnl * 100;
+    const c = s.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <span style="width:80px;font-size:10px;text-align:right"><span class="badge" style="background:${(stratColors[name]||'#666')}22;color:${stratColors[name]||'#666'};font-size:8px">${esc(name)}</span></span>
+      <div style="flex:1;height:18px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden;position:relative">
+        <div style="height:100%;width:${Math.max(2, pct).toFixed(1)}%;background:${c};border-radius:3px;opacity:0.7"></div>
+      </div>
+      <span style="width:70px;font-family:var(--mono);font-size:10px;color:${c};text-align:right">${s.pnl >= 0 ? '+' : ''}$${s.pnl.toFixed(0)}</span>
+    </div>`;
+  }).join('') : '<div style="padding:16px;text-align:center;color:var(--text-tertiary);font-size:11px">No closed trades</div>';
+
+  const stratPnlCard = `<div class="card" style="padding:14px">
+    <div style="font-weight:600;font-size:13px;margin-bottom:10px">P&L by Strategy</div>
+    ${stratPnlBars}
+  </div>`;
+
+  // Trade Duration Distribution (histogram)
+  const holdDays = closedTrades.map(t => t.holdDays || 0).filter(d => d > 0);
+  const durationBuckets = [
+    { label: '0-7d', min: 0, max: 7 },
+    { label: '8-14d', min: 8, max: 14 },
+    { label: '15-30d', min: 15, max: 30 },
+    { label: '31-60d', min: 31, max: 60 },
+    { label: '61-90d', min: 61, max: 90 },
+    { label: '90d+', min: 91, max: 9999 },
+  ];
+  const durationData = durationBuckets.map(b => ({
+    y: holdDays.filter(d => d >= b.min && d <= b.max).length,
+    label: b.label,
+    color: 'var(--accent)',
+  }));
+  const durationChart = holdDays.length > 0 ? `<div class="card" style="padding:14px">
+    <div style="font-weight:600;font-size:13px;margin-bottom:8px">Trade Duration Distribution</div>
+    ${svgBarChart(durationData, { height: 140, barColor: 'var(--accent)', valueFmt: v => v.toFixed(0) })}
+  </div>` : '';
+
+  // Best/Worst Trades Table
+  const sortedByPnl = [...closedTrades].sort((a, b) => (b.pnl || 0) - (a.pnl || 0));
+  const bestTrades = sortedByPnl.slice(0, 5);
+  const worstTrades = sortedByPnl.slice(-5).reverse();
+  const renderTradeRow = (t, rank) => `<tr style="border-bottom:1px solid var(--border-light)">
+    <td style="padding:4px 8px;font-size:10px;color:var(--text-tertiary)">${rank}</td>
+    <td style="padding:4px 8px;font-weight:500;font-size:11px">${esc(t.symbol || '?')}</td>
+    <td style="padding:4px 8px"><span class="badge" style="background:${(stratColors[t.strategy]||'#666')}22;color:${stratColors[t.strategy]||'#666'};font-size:8px">${esc(t.strategy||'?')}</span></td>
+    <td style="padding:4px 8px;text-align:right;font-family:var(--mono);font-size:11px;color:${pnlColor(t.pnl||0)}">${fmtPnl(t.pnl||0)}</td>
+    <td style="padding:4px 8px;text-align:right;font-family:var(--mono);font-size:10px;color:var(--text-tertiary)">${t.holdDays || '-'}d</td>
+  </tr>`;
+
+  const bestWorstTable = closedTrades.length > 0 ? `<div class="card" style="padding:0;overflow:hidden">
+    <div style="display:grid;grid-template-columns:1fr 1fr;min-height:0">
+      <div style="border-right:1px solid var(--border)">
+        <div style="padding:10px 12px;font-weight:600;font-size:12px;color:var(--green);border-bottom:1px solid var(--border)">Best Trades</div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px"><tbody>
+          ${bestTrades.map((t, i) => renderTradeRow(t, i + 1)).join('')}
+        </tbody></table>
+      </div>
+      <div>
+        <div style="padding:10px 12px;font-weight:600;font-size:12px;color:var(--red);border-bottom:1px solid var(--border)">Worst Trades</div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px"><tbody>
+          ${worstTrades.map((t, i) => renderTradeRow(t, i + 1)).join('')}
+        </tbody></table>
+      </div>
+    </div>
+  </div>` : '';
+
+  // Capital at Risk by Strategy (stacked horizontal bar)
+  const stratPositions = {};
+  positions.forEach(p => {
+    const s = p.strategy || 'OTHER';
+    stratPositions[s] = (stratPositions[s] || 0) + Math.abs(p.marketValue || 0);
+  });
+  const totalCapAtRisk = Object.values(stratPositions).reduce((s, v) => s + v, 0) || 1;
+  const capAtRiskCard = positions.length > 0 ? `<div class="card" style="padding:14px">
+    <div style="font-weight:600;font-size:13px;margin-bottom:10px">Capital at Risk by Strategy</div>
+    <div style="height:24px;border-radius:4px;overflow:hidden;display:flex;margin-bottom:8px">
+      ${Object.entries(stratPositions).map(([name, val]) => {
+        const pct = (val / totalCapAtRisk * 100).toFixed(1);
+        return `<div style="width:${pct}%;background:${stratColors[name] || '#666'};opacity:0.75" title="${name}: $${val.toFixed(0)} (${pct}%)"></div>`;
+      }).join('')}
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px">
+      ${Object.entries(stratPositions).map(([name, val]) => `<span style="font-size:9px;display:flex;align-items:center;gap:4px">
+        <span style="width:8px;height:8px;border-radius:2px;background:${stratColors[name] || '#666'}"></span>
+        ${name}: $${val.toFixed(0)} (${(val/totalCapAtRisk*100).toFixed(0)}%)
+      </span>`).join('')}
+    </div>
+  </div>` : '';
+
+  return `
+    <div style="margin-bottom:8px"><a href="#" onclick="switchView('ventures');return false" style="font-size:11px;color:var(--accent)">Back to Pipeline</a></div>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <h2 style="font-size:20px;font-weight:700;margin:0">IBKR Automated Trading</h2>
+      ${badge('PAPER', 'yellow')}
+      ${badge('Building', 'accent')}
+      ${isConnected ? badge('Connected', 'green') : badge('Disconnected', 'red')}
+    </div>
+    <div style="position:relative">${paperWatermark}${statusBanner}</div>
+
+    <!-- Sticky Header Bar (NLV, Margin Buffer, Net Delta, Connection) -->
+    <div style="position:sticky;top:0;z-index:10;background:var(--bg-primary);padding:8px 0;margin-bottom:12px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:16px;font-family:var(--mono);font-size:12px">
+        <span style="color:var(--text-primary);font-weight:700">NLV: $${hasValidNlv ? Math.round(acct.netLiquidation).toLocaleString() : '--'}</span>
+        <span style="color:${bufferColor}">Buffer: $${hasValidNlv ? Math.round(marginBuffer).toLocaleString() : '--'} (${marginBufferPct.toFixed(0)}%)</span>
+        <span style="color:var(--accent)">BW-D: $${Math.round(bwDelta).toLocaleString()}</span>
+        <span style="color:${portfolioTheta > 0 ? 'var(--green)' : 'var(--text-tertiary)'}">Theta: $${portfolioTheta.toFixed(0)}/d</span>
+        <span style="margin-left:auto;font-size:10px;color:${isConnected ? 'var(--green)' : 'var(--red)'}">${isConnected ? 'CONNECTED' : 'DISCONNECTED'}</span>
+        ${staleWarning}
+      </div>
+    </div>
+
+    <!-- Tab Navigation -->
+    <div style="display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:0">
+      ${['Portfolio', 'Performance', 'Risk', 'Journal'].map(tab => {
+        const tabId = tab.toLowerCase();
+        const isActive = (window._ibkrTab || 'portfolio') === tabId;
+        return `<button onclick="window._ibkrTab='${tabId}';renderView()" style="padding:8px 16px;font-size:12px;font-weight:${isActive ? '600' : '400'};color:${isActive ? 'var(--accent)' : 'var(--text-tertiary)'};background:none;border:none;border-bottom:2px solid ${isActive ? 'var(--accent)' : 'transparent'};cursor:pointer;font-family:var(--font)">${tab}</button>`;
+      }).join('')}
+    </div>
+
+    <!-- TAB: Portfolio (live trading view) -->
+    <div style="display:${(window._ibkrTab || 'portfolio') === 'portfolio' ? 'block' : 'none'}">
+      ${kpi}
+      ${greekStrip}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        ${posTable}
+        ${stratTable}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+        ${greeksTable}
+        ${riskPanel}
+      </div>
+      ${pnlChart}
+      ${dailyChart}
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:16px">
+        ${healthPanel}
+        ${incomeTracker}
+        ${automationCard}
+      </div>
+    </div>
+
+    <!-- TAB: Performance (tear sheet / institutional view) -->
+    <div style="display:${(window._ibkrTab || 'portfolio') === 'performance' ? 'block' : 'none'}">
+      ${statsRow}
+      ${instMetrics}
+      ${pnlChart}
+      ${underwaterChart}
+      ${rollingVolChart}
+      ${monthlyHeatmap ? `<div style="margin-bottom:16px">${monthlyHeatmap}</div>` : ''}
+      ${portfolioHistory}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+        ${pnlCalendar}
+        ${winLossCard}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+        ${stratPnlCard}
+        ${durationChart || capAtRiskCard}
+      </div>
+      ${bestWorstTable ? `<div style="margin-top:16px">${bestWorstTable}</div>` : ''}
+      ${capAtRiskCard && durationChart ? `<div style="margin-top:16px">${capAtRiskCard}</div>` : ''}
+    </div>
+
+    <!-- TAB: Risk (risk management view) -->
+    <div style="display:${(window._ibkrTab || 'portfolio') === 'risk' ? 'block' : 'none'}">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        ${riskPanel}
+        ${healthPanel}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+        ${greeksTable}
+        <div class="card" style="padding:14px">
+          <div style="font-weight:600;font-size:13px;margin-bottom:8px">Capital at Risk</div>
+          ${capAtRiskCard ? capAtRiskCard.replace(/<div class="card"[^>]*>/, '').replace(/<\/div>$/, '') : '<div style="color:var(--text-tertiary);font-size:11px">No positions</div>'}
+        </div>
+      </div>
+      ${underwaterChart}
+      ${rollingVolChart}
+      ${calendarHtml}
+    </div>
+
+    <!-- TAB: Journal (trade log) -->
+    <div style="display:${(window._ibkrTab || 'portfolio') === 'journal' ? 'block' : 'none'}">
+      ${journal}
+      ${bestWorstTable ? `<div style="margin-top:16px">${bestWorstTable}</div>` : ''}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+        ${stratPnlCard}
+        ${winLossCard}
+      </div>
+    </div>
+  `;
+};
+
 const GSA_PAGE_SIZE = 10;
 let _gsaFilterCat = '';     // category filter
 let _gsaFilterShip = '';    // shipping filter
@@ -6465,6 +7578,15 @@ views.nutrition = async () => {
 
   function gradeColor(grade) {
     if (!grade || grade === '—' || grade === 'Not logged') return 'var(--text-tertiary)';
+    // Parse numeric score (e.g. "6.3/10")
+    const numMatch = String(grade).match(/([\d.]+)\s*\/\s*10/);
+    if (numMatch) {
+      const v = parseFloat(numMatch[1]);
+      if (v >= 8) return 'var(--green)';
+      if (v >= 6) return '#4da870';
+      if (v >= 4) return 'var(--yellow)';
+      return 'var(--red)';
+    }
     if (grade.startsWith('A') || grade.startsWith('9') || grade.startsWith('10')) return 'var(--green)';
     if (grade.startsWith('B') || grade.startsWith('7') || grade.startsWith('8')) return '#4da870';
     if (grade.startsWith('C') || grade.startsWith('5') || grade.startsWith('6')) return 'var(--yellow)';
@@ -7085,7 +8207,7 @@ views.nutrition = async () => {
       <div class="section-title">Weekly Trends</div>
       <div class="card" style="overflow-x:auto">
         <table style="width:100%">
-          <tr><th>Day</th><th style="text-align:right">Cals</th><th style="text-align:right">Protein</th><th style="text-align:right">Fat</th><th style="text-align:right">Carbs</th><th style="text-align:center">Superfoods</th><th style="text-align:center">Grade</th></tr>
+          <tr><th>Day</th><th style="text-align:right">Cals</th><th style="text-align:right">Protein</th><th style="text-align:right">Fat</th><th style="text-align:right">Carbs</th><th style="text-align:center">Superfoods</th><th style="text-align:center">Score</th></tr>
           ${weeklyHtml}
         </table>
         <div style="font-size:10px;color:var(--text-tertiary);margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">Click any day with data to view its full snapshot</div>

@@ -15,7 +15,9 @@ import {
   getTaskById,
   getTaskComments,
   getTaskThreadId,
+  incrementTaskFailures,
   logTaskRun,
+  resetTaskFailures,
   setTaskThreadId,
   updateTask,
   updateTaskAfterRun,
@@ -361,38 +363,54 @@ async function runTask(
       ? result.slice(0, 200)
       : 'Completed';
 
-  // One-off tasks should NEVER auto-complete. They go to 'needs_review'
-  // so the user can explicitly mark them done via the dashboard.
-  // Only recurring tasks auto-advance via computeNextRun.
+  // One-off tasks auto-complete after running.
   if (nextRun === null && task.schedule_type === 'once') {
     logger.info(
       { taskId: task.id },
-      'One-off task run finished, moving to review (not auto-completing)',
+      'One-off task run finished, marking completed',
     );
-    updateTaskAfterRun(task.id, null, resultSummary, 'needs_review');
+    updateTaskAfterRun(task.id, null, resultSummary, 'completed');
     return;
   }
 
-  // Cron tasks should NEVER be marked completed — they need to run again.
-  // Compute next run and keep them active.
-  if (task.schedule_type === 'cron') {
+  // Recurring tasks: self-healing with exponential backoff
+  if (task.schedule_type === 'cron' || task.schedule_type === 'interval') {
     if (!nextRun) {
-      // Safety: if computeNextRun failed for a cron task, compute it again
       nextRun = computeNextRun(task);
     }
     if (!nextRun) {
-      // Last resort: set next run to 1 hour from now to prevent permanent death
-      logger.warn(
-        { taskId: task.id },
-        'Cron task has no next_run, forcing 1h fallback',
-      );
+      logger.warn({ taskId: task.id }, 'Recurring task has no next_run, forcing 1h fallback');
       nextRun = new Date(Date.now() + 3600000).toISOString();
     }
+
+    if (error) {
+      // Self-healing: increment failures, apply backoff or auto-disable
+      const { failures, disabled } = incrementTaskFailures(task.id, error);
+      if (disabled) {
+        // Auto-disabled — notify via Discord
+        logger.error({ taskId: task.id, failures }, 'Task auto-disabled after consecutive failures');
+        addTaskComment(task.id, 'system',
+          `Auto-disabled after ${failures} consecutive failures. Last error: ${error.slice(0, 300)}`, 'blocker');
+        try {
+          await deps.sendMessage(task.chat_jid,
+            `Task "${task.name || taskTitle(task.prompt)}" auto-disabled after ${failures} consecutive failures. Last error: ${error.slice(0, 200)}`);
+        } catch { /* notification failure is non-critical */ }
+      } else {
+        // Apply exponential backoff: min(2^failures * 60s + jitter, 4hrs)
+        const jitter = Math.random() * 30000;
+        const backoffMs = Math.min(Math.pow(2, failures) * 60000 + jitter, 4 * 3600000);
+        const backoffNextRun = new Date(Date.now() + backoffMs).toISOString();
+        // Use whichever is later: normal schedule or backoff
+        nextRun = nextRun > backoffNextRun ? nextRun : backoffNextRun;
+        logger.info({ taskId: task.id, failures, nextRun }, 'Task failed, applying backoff');
+      }
+    } else {
+      // Success: reset failures, snap back to normal cadence
+      resetTaskFailures(task.id);
+    }
+
     updateTaskAfterRun(task.id, nextRun, resultSummary);
-    logger.info(
-      { taskId: task.id, nextRun },
-      'Cron task completed run, staying active',
-    );
+    logger.info({ taskId: task.id, nextRun, error: !!error }, 'Recurring task run complete');
     return;
   }
 

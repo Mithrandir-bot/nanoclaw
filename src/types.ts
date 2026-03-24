@@ -53,6 +53,9 @@ export interface NewMessage {
   is_bot_message?: boolean;
 }
 
+export type TaskStatus = 'active' | 'paused' | 'disabled' | 'completed';
+export type TaskCategory = 'monitoring' | 'research' | 'health' | 'trading' | 'business' | 'crypto';
+
 export interface ScheduledTask {
   id: string;
   group_folder: string;
@@ -64,9 +67,47 @@ export interface ScheduledTask {
   next_run: string | null;
   last_run: string | null;
   last_result: string | null;
-  status: 'active' | 'paused' | 'completed' | 'needs_review';
+  status: TaskStatus;
   created_at: string;
   thread_id?: string | null;
+  // Enhanced task fields
+  name?: string | null;
+  template_slug?: string | null;
+  prompt_hash?: string | null;
+  dedup_key?: string | null;
+  consecutive_failures?: number;
+  max_failures?: number;
+  last_error?: string | null;
+  venture_file?: string | null;
+  project_file?: string | null;
+  category?: TaskCategory | null;
+}
+
+export interface TaskTemplate {
+  slug: string;
+  name: string;
+  description: string | null;
+  default_prompt: string;
+  default_schedule: string;
+  default_group: string;
+  default_context_mode: 'group' | 'isolated';
+  category: TaskCategory | null;
+  venture_file: string | null;
+  max_runs_per_day: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskHealthSummary {
+  total: number;
+  active: number;
+  paused: number;
+  disabled: number;
+  overdue: number;
+  successRate24h: number;
+  cost24h: number;
+  runs24h: number;
+  failingTasks: Array<{ id: string; name: string; consecutiveFailures: number; lastError: string | null }>;
 }
 
 export interface TaskRunLog {
@@ -79,6 +120,7 @@ export interface TaskRunLog {
   cost_usd?: number;
   input_tokens?: number;
   output_tokens?: number;
+  model?: string | null;
 }
 
 // --- Channel abstraction ---

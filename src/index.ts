@@ -746,7 +746,7 @@ async function main(): Promise<void> {
       if (
         currentTask &&
         (currentTask.status === 'active' ||
-          currentTask.status === 'needs_review')
+          currentTask.status === 'disabled')
       ) {
         updateTask(task.id, { next_run: now, status: 'active' });
       }
@@ -821,7 +821,7 @@ async function main(): Promise<void> {
       const tasksNeedingThreads = tasks.filter(
         (t) =>
           !t.thread_id &&
-          (t.status === 'active' || t.status === 'needs_review') &&
+          (t.status === 'active' || t.status === 'disabled') &&
           t.chat_jid.startsWith('dc:'),
       );
       for (const t of tasksNeedingThreads) {

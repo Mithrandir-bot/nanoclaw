@@ -153,7 +153,13 @@ function buildVolumeMounts(
   }
 
   // Ensure .claude subdirectories exist for new groups (prevents ENOENT on first run)
-  for (const subdir of ['debug', 'backups', 'plugins', 'session-env', 'shell-snapshots']) {
+  for (const subdir of [
+    'debug',
+    'backups',
+    'plugins',
+    'session-env',
+    'shell-snapshots',
+  ]) {
     fs.mkdirSync(path.join(groupSessionsDir, subdir), { recursive: true });
   }
 

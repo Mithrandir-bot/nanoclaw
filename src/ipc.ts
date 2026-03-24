@@ -6,12 +6,16 @@ import { CronExpressionParser } from 'cron-parser';
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import {
+  computeDedupKey,
+  computePromptHash,
   createTask,
   deleteTask,
+  findExistingByDedupKey,
   getTaskById,
   logCrossGroupSend,
   updateTask,
 } from './db.js';
+import { taskTitle } from './task-scheduler.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
@@ -191,6 +195,10 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // Enhanced task fields
+    venture_file?: string;
+    project_file?: string;
+    category?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -267,13 +275,31 @@ export async function processTaskIpc(
           nextRun = scheduled.toISOString();
         }
 
-        const taskId =
-          data.taskId ||
-          `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const contextMode =
           data.context_mode === 'group' || data.context_mode === 'isolated'
             ? data.context_mode
             : 'isolated';
+        const taskName = (data.name as string) || taskTitle(data.prompt);
+        const dedupKey = computeDedupKey(targetFolder, data.schedule_value, taskName);
+
+        // Dedup: if an active/paused task with the same key exists, update it instead
+        const existing = findExistingByDedupKey(dedupKey);
+        if (existing) {
+          updateTask(existing.id, { prompt: data.prompt, status: 'active' });
+          logger.info(
+            { taskId: existing.id, dedupKey, sourceGroup },
+            'Task updated via dedup (not duplicated)',
+          );
+          break;
+        }
+
+        const categoryMap: Record<string, string> = {
+          main: 'monitoring', 'ai-research': 'research', 'health-wellness': 'health',
+          trading: 'trading', 'business-ideas': 'business', crypto: 'crypto', contacts: 'monitoring',
+        };
+        const taskId =
+          data.taskId ||
+          `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         createTask({
           id: taskId,
           group_folder: targetFolder,
@@ -285,9 +311,15 @@ export async function processTaskIpc(
           next_run: nextRun,
           status: 'active',
           created_at: new Date().toISOString(),
+          name: taskName,
+          prompt_hash: computePromptHash(data.prompt),
+          dedup_key: dedupKey,
+          category: (categoryMap[targetFolder] || 'monitoring') as import('./types.js').TaskCategory,
+          venture_file: (data.venture_file as string) || null,
+          project_file: (data.project_file as string) || null,
         });
         logger.info(
-          { taskId, sourceGroup, targetFolder, contextMode },
+          { taskId, sourceGroup, targetFolder, contextMode, dedupKey },
           'Task created via IPC',
         );
       }

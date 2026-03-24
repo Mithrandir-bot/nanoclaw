@@ -616,14 +616,17 @@ function deriveProgress(t: { progress: number; status: string; last_run: string 
 
 function getTasks() {
   const tasks = db.prepare(`
-    SELECT id, group_folder, prompt, schedule_type, schedule_value, next_run, last_run, last_result, status, created_at, COALESCE(progress, 0) as progress, thread_id
+    SELECT id, group_folder, prompt, schedule_type, schedule_value, next_run, last_run, last_result, status, created_at, COALESCE(progress, 0) as progress, thread_id,
+      name, venture_file, project_file, category, consecutive_failures, max_failures, last_error, template_slug
     FROM scheduled_tasks
-    ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'needs_review' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, next_run ASC
+    ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'disabled' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, next_run ASC
   `).all() as Array<{
     id: string; group_folder: string; prompt: string; schedule_type: string;
     schedule_value: string; next_run: string | null; last_run: string | null;
     last_result: string | null; status: string; created_at: string; progress: number;
-    thread_id: string | null;
+    thread_id: string | null; name: string | null; venture_file: string | null;
+    project_file: string | null; category: string | null; consecutive_failures: number;
+    max_failures: number; last_error: string | null; template_slug: string | null;
   }>;
 
   const recentRuns = db.prepare(`
@@ -1043,6 +1046,37 @@ function getServices(): ServiceStatus[] {
     services.push({ name: 'OptionAlpha', category: 'Trading', status: 'unconfigured', lastChecked: now });
   }
 
+  // --- IBKR ---
+  try {
+    const ibkrCreds = db.prepare("SELECT COUNT(*) as c FROM secrets WHERE name LIKE '%IBKR%'").get() as { c: number };
+    // Check if IBeam container is running by checking port 5000
+    let ibkrStatus = 'unconfigured';
+    let ibkrDetail: string | undefined;
+    if (ibkrCreds.c > 0) {
+      // Check if IBeam container has recent data (account-summary.json timestamp)
+      try {
+        const acctFile = path.join(GROUPS_DIR, 'trading', 'trading-bot', 'data', 'account-summary.json');
+        const raw = readFileSafe(acctFile);
+        if (raw) {
+          const acct = JSON.parse(raw);
+          if (acct.status === 'connected' && acct.netLiquidation > 0) {
+            ibkrStatus = 'connected';
+            ibkrDetail = `Paper: $${Math.round(acct.netLiquidation).toLocaleString()} NLV (IBeam Docker)`;
+          } else {
+            ibkrStatus = 'disconnected';
+            ibkrDetail = 'Gateway not authenticated';
+          }
+        }
+      } catch {
+        ibkrStatus = 'disconnected';
+        ibkrDetail = 'Credentials stored but no data';
+      }
+    }
+    services.push({ name: 'IBKR Paper Trading', category: 'Trading', status: ibkrStatus, detail: ibkrDetail, lastChecked: now });
+  } catch {
+    services.push({ name: 'IBKR Paper Trading', category: 'Trading', status: 'unconfigured', lastChecked: now });
+  }
+
   // --- GSA API ---
   const gsaKey = process.env.GSA_API_KEY;
   services.push({ name: 'GSA Auctions API', category: 'Trading', status: gsaKey && gsaKey !== 'DEMO_KEY' ? 'connected' : gsaKey === 'DEMO_KEY' ? 'disconnected' : 'unconfigured', detail: gsaKey && gsaKey !== 'DEMO_KEY' ? 'Hourly scan' : gsaKey === 'DEMO_KEY' ? 'Using DEMO_KEY (rate limited)' : undefined, lastChecked: now });
@@ -1344,6 +1378,18 @@ function getVentures() {
     if (!fs.existsSync(VENTURES_DIR)) return [];
     const files = fs.readdirSync(VENTURES_DIR).filter(f => f.endsWith('.md') && !f.startsWith('_'));
     const unreadStmt = db.prepare('SELECT COUNT(*) as cnt FROM task_comments WHERE task_id = ? AND read = 0');
+    // Task health per venture (batch query)
+    const ventureTaskHealth = db.prepare(
+      `SELECT venture_file,
+         SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
+         SUM(CASE WHEN status = 'disabled' OR consecutive_failures >= max_failures THEN 1 ELSE 0 END) as failing,
+         SUM(CASE WHEN status IN ('paused', 'disabled') THEN 1 ELSE 0 END) as stopped,
+         COUNT(*) as total
+       FROM scheduled_tasks WHERE venture_file IS NOT NULL GROUP BY venture_file`,
+    ).all() as Array<{ venture_file: string; active: number; failing: number; stopped: number; total: number }>;
+    const healthByVenture: Record<string, { active: number; failing: number; stopped: number; total: number }> = {};
+    for (const h of ventureTaskHealth) healthByVenture[h.venture_file] = h;
+
     return files.map(f => {
       const content = readFileSafe(path.join(VENTURES_DIR, f));
       const { frontmatter, body } = parseFrontmatter(content);
@@ -1373,6 +1419,7 @@ function getVentures() {
         taskCount, doneCount,
         unread,
         body: body.substring(0, 800),
+        taskHealth: healthByVenture[f] || null,
       };
     });
   } catch (err) {
@@ -1592,6 +1639,99 @@ function getVentureKalshi() {
   } catch (err) {
     console.error('[venture-kalshi]', err);
     return { trades: [], summary: {}, backtestSummary: null, todayScan: [], scanDate: '', arbScan: null };
+  }
+}
+
+function getVentureIbkr() {
+  try {
+    const dataDir = path.join(GROUPS_DIR, 'trading', 'trading-bot', 'data');
+    if (!fs.existsSync(dataDir)) return { error: 'No IBKR data directory' };
+
+    const readJson = (file: string) => {
+      const raw = readFileSafe(path.join(dataDir, file));
+      return raw ? JSON.parse(raw) : null;
+    };
+
+    const account = readJson('account-summary.json') || {};
+    const positionsData = readJson('positions.json') || { positions: [] };
+    const tradesData = readJson('trades.json') || { trades: [], summary: {} };
+    const greeks = readJson('greeks-exposure.json') || { portfolio: {}, byExpiry: {}, byStrategy: {} };
+    const risk = readJson('risk-dashboard.json') || {};
+    const snapshots = readJson('daily-snapshots.json') || { snapshots: [] };
+
+    // Find most recent scan file
+    const scanFiles = fs.readdirSync(dataDir).filter(f => f.startsWith('scan-') && f.endsWith('.json')).sort().reverse();
+    const todayScan = scanFiles.length > 0 ? readJson(scanFiles[0]) : null;
+
+    // Build strategy performance from closed trades
+    const closedTrades = (tradesData.trades || []).filter((t: { status: string }) => t.status === 'closed');
+    const strategyPerf: Record<string, { trades: number; wins: number; pnl: number; totalHoldDays: number; avgHold: number; winRate: number }> = {};
+    for (const t of closedTrades) {
+      const s = (t as { strategy: string; pnl?: number; holdDays?: number }).strategy;
+      if (!strategyPerf[s]) strategyPerf[s] = { trades: 0, wins: 0, pnl: 0, totalHoldDays: 0, avgHold: 0, winRate: 0 };
+      strategyPerf[s].trades++;
+      if (((t as { pnl?: number }).pnl || 0) > 0) strategyPerf[s].wins++;
+      strategyPerf[s].pnl += (t as { pnl?: number }).pnl || 0;
+      strategyPerf[s].totalHoldDays += (t as { holdDays?: number }).holdDays || 0;
+    }
+    for (const s of Object.values(strategyPerf)) {
+      s.winRate = s.trades > 0 ? Math.round((s.wins / s.trades) * 100) : 0;
+      s.avgHold = s.trades > 0 ? Math.round(s.totalHoldDays / s.trades) : 0;
+    }
+
+    // Daily P&L from snapshots
+    const snapshotList = snapshots.snapshots || [];
+    const dailyPnl: Record<string, { pnl: number; nlv: number }> = {};
+    for (let i = 1; i < snapshotList.length; i++) {
+      const prev = snapshotList[i - 1] as { nlv: number; date: string };
+      const curr = snapshotList[i] as { nlv: number; date: string };
+      dailyPnl[curr.date] = { pnl: Math.round((curr.nlv - prev.nlv) * 100) / 100, nlv: curr.nlv };
+    }
+
+    // Seasonal calendar data
+    const seasonalCalendar = {
+      winter: [
+        { symbol: '/ZN', asset: '10-Yr Treasuries', strategy: 'Iron Condors', edge: 'Markets consolidate after Jan rebalancing' },
+        { symbol: '/GC', asset: 'Gold', strategy: 'Strangles', edge: 'Post-holiday demand hangover, sideways action' },
+        { symbol: '/ZC', asset: 'Corn', strategy: 'Short Puts', edge: 'Dormant Season — crops in storage, stable floors' },
+      ],
+      spring: [
+        { symbol: '/ES', asset: 'S&P 500', strategy: 'Iron Condors', edge: 'Spring Grind — low-vol growth, declining VIX' },
+        { symbol: '/NG', asset: 'Natural Gas', strategy: 'Vertical Spreads', edge: 'Shoulder Season — no heating or cooling demand' },
+        { symbol: '/SI', asset: 'Silver', strategy: 'Credit Spreads', edge: 'Predictable industrial demand cycles' },
+      ],
+      summer: [
+        { symbol: '/CL', asset: 'Crude Oil', strategy: 'Iron Condors', edge: 'Aug vol crush as driving season winds down' },
+        { symbol: '/ZW', asset: 'Wheat', strategy: 'Short Calls', edge: 'Post-harvest supply creates price ceiling' },
+        { symbol: '/LE', asset: 'Live Cattle', strategy: 'Neutral Verticals', edge: 'Herd cycles stabilize in high-demand months' },
+      ],
+      autumn: [
+        { symbol: '/ZS', asset: 'Soybeans', strategy: 'Short Puts', edge: 'Harvest Vol Crush — uncertainty exits as crops gathered' },
+        { symbol: '/6E', asset: 'Euro FX', strategy: 'Strangles', edge: 'Predictable trade flows, avoids year-end spikes' },
+        { symbol: '/GC, /SI', asset: 'Metals', strategy: 'Neutral Spreads', edge: 'Sideways waiting for year-end Fed data' },
+      ],
+    };
+
+    // Performance metrics (TWR, Sharpe, Sortino, Max DD, CVaR, monthly returns)
+    const perfRaw = readJson('performance-metrics.json') || {};
+
+    return {
+      account,
+      positions: positionsData.positions || [],
+      trades: tradesData.trades || [],
+      tradeSummary: tradesData.summary || {},
+      greeks,
+      risk,
+      snapshots: snapshotList,
+      todayScan,
+      strategyPerf,
+      dailyPnl,
+      seasonalCalendar,
+      performance: perfRaw,
+    };
+  } catch (err) {
+    console.error('[venture-ibkr]', err);
+    return { account: {}, positions: [], trades: [], tradeSummary: {}, greeks: {}, risk: {}, snapshots: [], todayScan: null, strategyPerf: {}, dailyPnl: {}, seasonalCalendar: {}, performance: {} };
   }
 }
 
@@ -2744,20 +2884,25 @@ async function postReschedule(req: http.IncomingMessage) {
 async function postTaskStatus(req: http.IncomingMessage) {
   const body = JSON.parse(await readBody(req));
   const { taskId, status, archiveThread } = body as { taskId: string; status: string; archiveThread?: boolean };
-  if (!taskId || !['active', 'paused', 'completed', 'needs_review'].includes(status)) throw new Error('taskId and valid status required');
+  if (!taskId || !['active', 'paused', 'completed', 'disabled'].includes(status)) throw new Error('taskId and valid status required');
 
-  // Warn if trying to complete a cron task (but allow it — user may intentionally want to stop it)
+  // BLOCK completing cron tasks — they should be paused or deleted, never completed.
+  // This prevents the recurring cron death spiral where tasks stop running permanently.
   if (status === 'completed') {
     const task = db.prepare('SELECT schedule_type FROM scheduled_tasks WHERE id = ?').get(taskId) as { schedule_type: string } | undefined;
     if (task?.schedule_type === 'cron') {
-      // Log warning but allow — the frontend already has a confirmation dialog
-      console.warn(`[tasks] Completing cron task ${taskId} — this will stop all future runs`);
+      console.warn(`[tasks] BLOCKED: Attempt to complete cron task ${taskId} — use 'paused' instead`);
+      return { ok: false, error: 'Cron tasks cannot be completed. Use pause to stop them, or delete to remove permanently.' };
     }
   }
 
-  // When reactivating a cron task, also recompute next_run so it starts running again
+  // When reactivating a task (including from disabled), reset failures and recompute next_run
   if (status === 'active') {
-    const task = db.prepare('SELECT schedule_type, schedule_value FROM scheduled_tasks WHERE id = ?').get(taskId) as { schedule_type: string; schedule_value: string } | undefined;
+    const task = db.prepare('SELECT schedule_type, schedule_value, status as cur_status FROM scheduled_tasks WHERE id = ?').get(taskId) as { schedule_type: string; schedule_value: string; cur_status: string } | undefined;
+    // Reset consecutive failures when reactivating from disabled
+    if (task?.cur_status === 'disabled') {
+      dbWrite.prepare('UPDATE scheduled_tasks SET consecutive_failures = 0, last_error = NULL WHERE id = ?').run(taskId);
+    }
     if (task?.schedule_type === 'cron' && task.schedule_value) {
       try {
         const { CronExpressionParser } = require('cron-parser');
@@ -2868,6 +3013,118 @@ function getTaskCommentsApi(params: URLSearchParams) {
   // Mark as read when viewed
   markCommentsRead(taskId);
   return { comments };
+}
+
+// --- Enhanced Task API (v2) ---
+
+function getTaskHealth() {
+  const counts = db.prepare(
+    `SELECT status, COUNT(*) as cnt FROM scheduled_tasks GROUP BY status`,
+  ).all() as Array<{ status: string; cnt: number }>;
+  const total = counts.reduce((s, c) => s + c.cnt, 0);
+  const byStatus = Object.fromEntries(counts.map(c => [c.status, c.cnt]));
+
+  const overdue = (db.prepare(
+    `SELECT COUNT(*) as cnt FROM scheduled_tasks WHERE status = 'active' AND next_run IS NOT NULL AND next_run < datetime('now', '-5 minutes')`,
+  ).get() as { cnt: number }).cnt;
+
+  const runs24h = db.prepare(
+    `SELECT COUNT(*) as total, SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as ok, COALESCE(SUM(cost_usd), 0) as cost
+     FROM task_run_logs WHERE run_at > datetime('now', '-1 day')`,
+  ).get() as { total: number; ok: number; cost: number };
+
+  const failing = db.prepare(
+    `SELECT id, name, consecutive_failures, last_error FROM scheduled_tasks
+     WHERE consecutive_failures > 0 AND status IN ('active', 'disabled')
+     ORDER BY consecutive_failures DESC LIMIT 10`,
+  ).all() as Array<{ id: string; name: string; consecutive_failures: number; last_error: string | null }>;
+
+  return {
+    total, active: byStatus['active'] || 0, paused: byStatus['paused'] || 0,
+    disabled: byStatus['disabled'] || 0, overdue,
+    successRate24h: runs24h.total > 0 ? Math.round((runs24h.ok / runs24h.total) * 100) : 100,
+    cost24h: Math.round(runs24h.cost * 100) / 100,
+    runs24h: runs24h.total,
+    failingTasks: failing.map(f => ({ id: f.id, name: f.name || f.id, consecutiveFailures: f.consecutive_failures, lastError: f.last_error })),
+  };
+}
+
+function getTaskCostTrends(params: URLSearchParams) {
+  const days = parseInt(params.get('days') || '14', 10);
+  const trends = db.prepare(
+    `SELECT date(run_at) as date, COALESCE(SUM(cost_usd), 0) as cost, COUNT(*) as runs,
+       SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as failures
+     FROM task_run_logs WHERE run_at > datetime('now', '-' || ? || ' days')
+     GROUP BY date(run_at) ORDER BY date`,
+  ).all(days) as Array<{ date: string; cost: number; runs: number; failures: number }>;
+  return { trends };
+}
+
+function getTaskDuplicates() {
+  const dupes = db.prepare(
+    `SELECT dedup_key, COUNT(*) as cnt FROM scheduled_tasks
+     WHERE dedup_key IS NOT NULL AND status IN ('active', 'paused')
+     GROUP BY dedup_key HAVING cnt > 1`,
+  ).all() as Array<{ dedup_key: string; cnt: number }>;
+
+  return {
+    groups: dupes.map(d => ({
+      dedupKey: d.dedup_key,
+      tasks: db.prepare(
+        `SELECT id, name, status, last_run, created_at, schedule_value FROM scheduled_tasks
+         WHERE dedup_key = ? AND status IN ('active', 'paused') ORDER BY last_run DESC`,
+      ).all(d.dedup_key),
+    })),
+  };
+}
+
+function getTaskTemplatesApi() {
+  return {
+    templates: db.prepare(
+      `SELECT slug, name, description, default_schedule, default_group, category, venture_file, max_runs_per_day FROM task_templates ORDER BY name`,
+    ).all(),
+  };
+}
+
+async function postTaskMerge(req: http.IncomingMessage) {
+  const body = JSON.parse(await readBody(req));
+  const { keepId, removeIds } = body as { keepId: string; removeIds: string[] };
+  if (!keepId || !removeIds?.length) throw new Error('keepId and removeIds required');
+
+  const placeholders = removeIds.map(() => '?').join(',');
+  dbWrite.transaction(() => {
+    dbWrite.prepare(`UPDATE task_run_logs SET task_id = ? WHERE task_id IN (${placeholders})`).run(keepId, ...removeIds);
+    dbWrite.prepare(`UPDATE task_comments SET task_id = ? WHERE task_id IN (${placeholders})`).run(keepId, ...removeIds);
+    for (const rid of removeIds) {
+      dbWrite.prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(rid);
+    }
+  })();
+  return { ok: true, merged: removeIds.length };
+}
+
+async function postTaskDelete(req: http.IncomingMessage) {
+  const body = JSON.parse(await readBody(req));
+  const { taskId } = body as { taskId: string };
+  if (!taskId) throw new Error('taskId required');
+  dbWrite.prepare('DELETE FROM task_run_logs WHERE task_id = ?').run(taskId);
+  dbWrite.prepare('DELETE FROM task_comments WHERE task_id = ?').run(taskId);
+  dbWrite.prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(taskId);
+  return { ok: true };
+}
+
+async function postTaskLink(req: http.IncomingMessage) {
+  const body = JSON.parse(await readBody(req));
+  const { taskId, venture_file, project_file } = body as { taskId: string; venture_file?: string; project_file?: string };
+  if (!taskId) throw new Error('taskId required');
+  const updates: string[] = [];
+  const values: unknown[] = [];
+  if (venture_file !== undefined) { updates.push('venture_file = ?'); values.push(venture_file || null); }
+  if (project_file !== undefined) { updates.push('project_file = ?'); values.push(project_file || null); }
+  if (updates.length > 0) {
+    values.push(taskId);
+    dbWrite.prepare(`UPDATE scheduled_tasks SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+  }
+  return { ok: true };
 }
 
 // --- Accounting ---
@@ -3733,13 +3990,16 @@ function getNutrition() {
 
     const content = fs.readFileSync(NUTRITION_TRACKER_PATH, 'utf-8');
     const lines = content.split('\n');
+    // Compute boundary index for today's section (before Historical Logs)
+    const _histIdx = lines.findIndex(l => l.startsWith('## Historical'));
+    const todayLines = _histIdx >= 0 ? lines.slice(0, _histIdx) : lines;
 
     // Extract date
-    const dateLine = lines.find(l => l.startsWith('### Date:'));
-    const date = dateLine ? dateLine.replace('### Date:', '').trim() : new Date().toISOString().split('T')[0];
+    const dateLine = todayLines.find(l => l.startsWith('### Date:'));
+    const date = dateLine ? dateLine.replace('### Date:', '').trim() : new Date().toLocaleDateString('en-CA', { timeZone: TZ });
 
     // Extract diet framework
-    const dietLine = lines.find(l => l.includes('Diet Framework'));
+    const dietLine = todayLines.find(l => l.includes('Diet Framework'));
     const dietFramework = dietLine ? dietLine.replace(/.*?Framework\*\*:\s*/, '').trim() : 'Moderate-Carb High-Protein';
 
     // Parse meals from Today's Log table
@@ -3747,6 +4007,7 @@ function getNutrition() {
     let inMealsTable = false;
     let mealsHeaderPassed = false;
     for (const line of lines) {
+      if (line.startsWith('## Historical')) break;
       if (line.includes("Today's Log") || line.includes('### Date:')) { inMealsTable = true; continue; }
       if (inMealsTable && line.startsWith('|') && (line.includes('Meal') || line.includes('---'))) { mealsHeaderPassed = true; continue; }
       if (inMealsTable && mealsHeaderPassed && line.startsWith('|')) {
@@ -3776,15 +4037,16 @@ function getNutrition() {
       };
       const pattern = mealPatterns[meal.meal];
       if (!pattern) continue;
-      // Find the detail section header
-      const headerIdx = lines.findIndex(l => pattern.test(l.trim()));
+      // Find the detail section header (today's section only)
+      const histBound = _histIdx >= 0 ? _histIdx : lines.length;
+      const headerIdx = lines.findIndex((l, idx) => idx < histBound && pattern.test(l.trim()));
       if (headerIdx < 0) continue;
       // Extract time from header like "#### Lunch (~2:30 PM)"
       const timeMatch = lines[headerIdx].match(/\(~?([\d:]+\s*[AP]M)\)/i);
       if (timeMatch) meal.time = '~' + timeMatch[1];
       // Find the totals row in this section (bold meal name + "totals")
       const foodNames: string[] = [];
-      for (let i = headerIdx + 1; i < lines.length && i < headerIdx + 30; i++) {
+      for (let i = headerIdx + 1; i < Math.min(lines.length, histBound) && i < headerIdx + 30; i++) {
         const line = lines[i];
         // Stop at next section header or blank line after content
         if (/^#{1,4}\s/.test(line) && i > headerIdx + 1) break;
@@ -3812,8 +4074,8 @@ function getNutrition() {
     }
 
     // Parse daily totals line
-    const totalsLine = lines.find(l => l.startsWith('**Daily Totals**'));
-    const macroLine = lines.find(l => l.startsWith('**Macro Split**'));
+    const totalsLine = todayLines.find(l => l.startsWith('**Daily Totals**'));
+    const macroLine = todayLines.find(l => l.startsWith('**Macro Split**'));
     const totals: Record<string, string> = {};
     if (totalsLine) {
       const parts = totalsLine.replace(/\*\*/g, '').replace('Daily Totals:', '').trim().split('|').map(s => s.trim());
@@ -3831,6 +4093,7 @@ function getNutrition() {
     let inScores = false;
     let scoresHeaderPassed = false;
     for (const line of lines) {
+      if (line.startsWith('## Historical')) break;
       if (line.includes("Today's Scores")) { inScores = true; continue; }
       if (inScores && line.startsWith('|') && (line.includes('Domain') || line.includes('---'))) { scoresHeaderPassed = true; continue; }
       if (inScores && scoresHeaderPassed && line.startsWith('|')) {
@@ -3847,6 +4110,7 @@ function getNutrition() {
     let inSuperfoods = false;
     let sfHeaderPassed = false;
     for (const line of lines) {
+      if (line.startsWith('## Historical')) break;
       if (line.includes('Superfoods (Prioritize')) { inSuperfoods = true; continue; }
       if (inSuperfoods && line.startsWith('|') && (line.includes('Food') || line.includes('---'))) { sfHeaderPassed = true; continue; }
       if (inSuperfoods && sfHeaderPassed && line.startsWith('|')) {
@@ -3868,6 +4132,7 @@ function getNutrition() {
     let inAvoid = false;
     let avoidHeaderPassed = false;
     for (const line of lines) {
+      if (line.startsWith('## Historical')) break;
       if (line.includes('Foods to AVOID')) { inAvoid = true; continue; }
       if (inAvoid && line.startsWith('|') && (line.includes('Food') || line.includes('---'))) { avoidHeaderPassed = true; continue; }
       if (inAvoid && avoidHeaderPassed && line.startsWith('|')) {
@@ -3888,6 +4153,7 @@ function getNutrition() {
     let inTargets = false;
     let targetsHeaderPassed = false;
     for (const line of lines) {
+      if (line.startsWith('## Historical')) break;
       if (line.includes('## Daily Targets')) { inTargets = true; continue; }
       if (inTargets && line.startsWith('|') && (line.includes('Metric') || line.includes('---'))) { targetsHeaderPassed = true; continue; }
       if (inTargets && targetsHeaderPassed && line.startsWith('|')) {
@@ -3903,6 +4169,7 @@ function getNutrition() {
     const checklist: Array<{ text: string; checked: boolean }> = [];
     let inChecklist = false;
     for (const line of lines) {
+      if (line.startsWith('## Historical')) break;
       if (line.includes('## Protocol Compliance Checklist')) { inChecklist = true; continue; }
       if (inChecklist && line.startsWith('## ') && !line.includes('Protocol')) { inChecklist = false; continue; }
       if (inChecklist) {
@@ -3925,7 +4192,16 @@ function getNutrition() {
         _weeklyDates.push(dd.toLocaleDateString('en-CA', { timeZone: TZ }));
       }
     }
-    function _buildWeeklyRow(a: Record<string, string>, sfs: Array<{ checked: boolean }>, dateStr: string): { cals: string; protein: string; fat: string; carbs: string; sfCount: string; grade: string; date: string; day: string } {
+    function _extractOverallGrade(scoresList: Array<{ domain: string; score: string; status: string }>): string {
+      const og = scoresList.find(s => s.domain === 'Overall Grade');
+      if (!og) return '—';
+      const raw = String(og.score).replace(/\*/g, '').trim();
+      if (!raw || raw === '—' || raw === '—/10') return '—';
+      const m = raw.match(/([\d.]+)\s*\/\s*10/);
+      return m ? `${m[1]}/10` : '—';
+    }
+
+    function _buildWeeklyRow(a: Record<string, string>, sfs: Array<{ checked: boolean }>, dateStr: string, scoresList?: Array<{ domain: string; score: string; status: string }>): { cals: string; protein: string; fat: string; carbs: string; sfCount: string; grade: string; date: string; day: string } {
       const dayIdx = new Date(dateStr + 'T12:00:00').getDay();
       const cals = parseFloat(String(a.Calories || '0').replace(/[^0-9.]/g, ''));
       const protein = parseFloat(String(a.Protein || '0').replace(/[^0-9.]/g, ''));
@@ -3934,13 +4210,7 @@ function getNutrition() {
       const sfChecked = sfs.filter(s => s.checked).length;
       const sfTotal = sfs.length;
       const sfCount = sfTotal > 0 ? `${sfChecked}/${sfTotal}` : '—';
-      let score = 0, checks = 0;
-      if (cals >= 1900 && cals <= 2150) score++; checks++;
-      if (protein >= 120 && protein <= 150) score++; checks++;
-      if (fat >= 65 && fat <= 80) score++; checks++;
-      if (carbs >= 120 && carbs <= 160) score++; checks++;
-      const pct2 = checks > 0 ? score / checks : 0;
-      const grade = pct2 >= 0.75 ? 'A' : pct2 >= 0.5 ? 'B' : pct2 >= 0.25 ? 'C' : 'D';
+      const grade = scoresList ? _extractOverallGrade(scoresList) : '—';
       return {
         day: _weeklyDayNames[dayIdx], date: dateStr,
         cals: cals > 0 ? String(Math.round(cals)) : '—',
@@ -3953,7 +4223,7 @@ function getNutrition() {
 
     // Parse actuals from daily totals line and hydration
     const actuals: Record<string, string> = {};
-    const totalsRaw = lines.find(l => l.startsWith('**Daily Totals**'));
+    const totalsRaw = todayLines.find(l => l.startsWith('**Daily Totals**'));
     if (totalsRaw) {
       const calMatch = totalsRaw.match(/([\d,.]+)\s*cals?/i);
       if (calMatch) actuals['Calories'] = calMatch[1];
@@ -3967,7 +4237,7 @@ function getNutrition() {
       if (fiberMatch) actuals['Fiber'] = fiberMatch[1] + 'g';
     }
     // Parse micro totals line: "**Micro Totals**: ~1190mg sodium | ~1360mg potassium | ~154mg magnesium"
-    const microRaw = lines.find(l => l.startsWith('**Micro Totals**'));
+    const microRaw = todayLines.find(l => l.startsWith('**Micro Totals**'));
     if (microRaw) {
       const sodMatch = microRaw.match(/~?([\d,.]+)\s*mg\s*sodium/i);
       if (sodMatch) actuals['Sodium'] = sodMatch[1] + 'mg';
@@ -3976,7 +4246,7 @@ function getNutrition() {
       const mgMatch = microRaw.match(/~?([\d,.]+)\s*mg\s*magnesium/i);
       if (mgMatch) actuals['Magnesium'] = mgMatch[1] + 'mg';
     }
-    const hydrationLine = lines.find(l => l.startsWith('**Hydration**'));
+    const hydrationLine = todayLines.find(l => l.startsWith('**Hydration**'));
     if (hydrationLine) {
       const hydMatch = hydrationLine.match(/([\d,.]+)\s*oz/i);
       if (hydMatch) actuals['Water'] = hydMatch[1] + ' oz';
@@ -3991,6 +4261,7 @@ function getNutrition() {
       { key: 'Magnesium', pattern: /Magnesium:\s*~?([\d,.]+)\s*mg/i, unit: 'mg' },
     ];
     for (const line of lines) {
+      if (line.startsWith('## Historical')) break; // Don't scan past historical logs
       if (!line.startsWith('- ')) continue;
       for (const nm of nutrientMap) {
         const m = line.match(nm.pattern);
@@ -4000,27 +4271,29 @@ function getNutrition() {
 
     // If EPA+DHA not found from bullet lines, extract from Supplements table
     // Format: "| Fish Oil (Omega-3) | ... | EPA 690mg, DHA 260mg ..." or similar
+    // Scope to today's section only (stop before Historical Logs)
     if (!actuals['EPA+DHA']) {
       let totalEpaDhaMg = 0;
-      const inSupplements = lines.some(l => l.includes('Supplements Taken'));
-      if (inSupplements) {
-        for (const line of lines) {
-          if (!line.startsWith('|')) continue;
-          // Match EPA Xmg and/or DHA Xmg anywhere in a table row
-          const epaMatch = line.match(/EPA\s+([\d,.]+)\s*mg/i) || line.match(/([\d,.]+)\s*mg\s*EPA/i);
-          const dhaMatch = line.match(/DHA\s+([\d,.]+)\s*mg/i) || line.match(/([\d,.]+)\s*mg\s*DHA/i);
-          if (epaMatch) totalEpaDhaMg += parseFloat(epaMatch[1].replace(/,/g, ''));
-          if (dhaMatch) totalEpaDhaMg += parseFloat(dhaMatch[1].replace(/,/g, ''));
-        }
-        if (totalEpaDhaMg > 0) {
-          const grams = (totalEpaDhaMg / 1000).toFixed(2).replace(/\.?0+$/, '');
-          actuals['EPA+DHA'] = grams + 'g';
-        }
+      let inSupplements = false;
+      for (const line of lines) {
+        if (line.startsWith('## Historical')) break; // Don't scan past historical logs
+        if (line.includes('Supplements Taken')) { inSupplements = true; continue; }
+        if (!inSupplements) continue;
+        if (!line.startsWith('|')) { if (line.startsWith('#') || line.startsWith('---')) inSupplements = false; continue; }
+        // Match EPA Xmg and/or DHA Xmg anywhere in a table row
+        const epaMatch = line.match(/EPA\s+([\d,.]+)\s*mg/i) || line.match(/([\d,.]+)\s*mg\s*EPA/i);
+        const dhaMatch = line.match(/DHA\s+([\d,.]+)\s*mg/i) || line.match(/([\d,.]+)\s*mg\s*DHA/i);
+        if (epaMatch) totalEpaDhaMg += parseFloat(epaMatch[1].replace(/,/g, ''));
+        if (dhaMatch) totalEpaDhaMg += parseFloat(dhaMatch[1].replace(/,/g, ''));
+      }
+      if (totalEpaDhaMg > 0) {
+        const grams = (totalEpaDhaMg / 1000).toFixed(2).replace(/\.?0+$/, '');
+        actuals['EPA+DHA'] = grams + 'g';
       }
     }
 
     // Parse food quality line: "**Food Quality**: 2/12 organic | 0 wild-caught | 10 conventional"
-    const qualityLine = lines.find(l => l.startsWith('**Food Quality**'));
+    const qualityLine = todayLines.find(l => l.startsWith('**Food Quality**'));
     const foodQuality: Record<string, string> = {};
     if (qualityLine) {
       const orgRatioMatch = qualityLine.match(/([\d]+\/[\d]+)\s*organic/i);
@@ -4039,13 +4312,16 @@ function getNutrition() {
       if (unkGmoMatch) foodQuality.unknownGMO = unkGmoMatch[1];
     }
 
-    // Parse ingredient detail tables
+    // Parse ingredient detail tables (stop before Historical Logs)
     const ingredients: Array<{ meal: string; items: Array<Record<string, string>> }> = [];
     let currentMeal = '';
     let inIngTable = false;
     let ingHeaders: string[] = [];
-    for (const line of lines) {
-      if (line.startsWith('#### ') && lines.indexOf(line) > lines.findIndex(l => l.includes('Ingredient Detail Log'))) {
+    const ingDetailStart = lines.findIndex(l => l.includes('Ingredient Detail Log'));
+    for (let li = ingDetailStart >= 0 ? ingDetailStart : 0; li < lines.length; li++) {
+      const line = lines[li];
+      if (line.startsWith('## Historical')) break; // Don't scan past historical logs
+      if (line.startsWith('#### ')) {
         currentMeal = line.replace('####', '').trim();
         inIngTable = false;
         ingredients.push({ meal: currentMeal, items: [] });
@@ -4066,11 +4342,37 @@ function getNutrition() {
       if (inIngTable && !line.startsWith('|') && line.trim() !== '') { inIngTable = false; }
     }
 
+    // Fallback: if no Food Quality summary line, compute from ingredient tables
+    if (!qualityLine && ingredients.length > 0) {
+      let organic = 0, nonGMO = 0, wildCaught = 0, conventional = 0, total = 0;
+      for (const meal of ingredients) {
+        for (const item of meal.items) {
+          total++;
+          const orgVal = (item['Organic'] || '').toLowerCase();
+          const gmoVal = (item['GMO'] || '').toLowerCase();
+          const originVal = (item['Origin'] || '').toLowerCase();
+          const notesVal = (item['Notes'] || '').toLowerCase();
+          const isWild = originVal.includes('wild') || notesVal.includes('wild-caught') || notesVal.includes('wild caught');
+          if (isWild) wildCaught++;
+          if (orgVal.includes('organic') && !orgVal.includes('non-organic')) organic++;
+          else if (!isWild && orgVal !== 'n/a' && orgVal !== '') conventional++;
+          if (gmoVal.includes('non-gmo') || gmoVal.includes('non gmo')) nonGMO++;
+        }
+      }
+      if (total > 0) {
+        foodQuality.organic = `${organic}/${total}`;
+        if (nonGMO > 0) foodQuality.nonGMO = `${nonGMO}/${total}`;
+        if (wildCaught > 0) foodQuality.wildCaught = String(wildCaught);
+        foodQuality.conventional = String(conventional);
+      }
+    }
+
     // Parse recommended alternatives table
     const alternatives: Array<Record<string, string>> = [];
     let inAltTable = false;
     let altHeaders: string[] = [];
     for (const line of lines) {
+      if (line.startsWith('## Historical')) break;
       if (line.includes('Recommended Alternatives') && line.startsWith('#')) { inAltTable = true; continue; }
       if (inAltTable && line.startsWith('|') && (line.includes('Current Item') || line.includes('Issue'))) {
         altHeaders = line.split('|').map(c => c.trim()).filter(c => c);
@@ -4191,12 +4493,12 @@ function getNutrition() {
     const weeklyTrends: Array<{ day: string; date: string; cals: string; protein: string; fat: string; carbs: string; sfCount: string; grade: string }> = [];
     for (const dateStr of _weeklyDates) {
       if (dateStr === date) {
-        // Today — use live actuals
-        weeklyTrends.push(_buildWeeklyRow(actuals, superfoods, dateStr));
+        // Today — use live actuals + live scores
+        weeklyTrends.push(_buildWeeklyRow(actuals, superfoods, dateStr, scores));
       } else {
         const entry = _weeklyHistory.find(h => h.date === dateStr);
         if (entry?.actuals) {
-          weeklyTrends.push(_buildWeeklyRow(entry.actuals, entry.superfoods || [], dateStr));
+          weeklyTrends.push(_buildWeeklyRow(entry.actuals, entry.superfoods || [], dateStr, entry.scores || []));
         } else {
           const dayIdx = new Date(dateStr + 'T12:00:00').getDay();
           weeklyTrends.push({ day: _weeklyDayNames[dayIdx], date: dateStr, cals: '—', protein: '—', fat: '—', carbs: '—', sfCount: '—', grade: '—' });
@@ -4285,8 +4587,15 @@ function getNutritionPrices(): { lastUpdated: string; items: Record<string, any>
 function resetNutritionDaily() {
   try {
     const content = fs.readFileSync(NUTRITION_TRACKER_PATH, 'utf-8');
-    // Reset all superfood checkboxes [x] → [ ] (table format only)
-    let updated = content.replace(/(\| \[)[xX](\] \|)/g, '$1 $2');
+    // Reset superfood checkboxes [x] → [ ] (table format only, today's section only)
+    const histBoundary = content.indexOf('\n## Historical');
+    let updated: string;
+    if (histBoundary >= 0) {
+      const todayPart = content.substring(0, histBoundary).replace(/(\| \[)[xX](\] \|)/g, '$1 $2');
+      updated = todayPart + content.substring(histBoundary);
+    } else {
+      updated = content.replace(/(\| \[)[xX](\] \|)/g, '$1 $2');
+    }
 
     // Reset protocol checklist - [x] → - [ ] (scoped to Protocol Checklist section only)
     updated = updated.replace(/(## Protocol Checklist\s*\n)([\s\S]*?)(?=\n##|\n---|$)/, (match, header, body) => {
@@ -4300,20 +4609,28 @@ function resetNutritionDaily() {
 
     // Update the date header to today
     const today = new Date().toLocaleDateString('en-CA', { timeZone: TZ }); // YYYY-MM-DD
-    updated = updated.replace(/### Date: \d{4}-\d{2}-\d{2}/, `### Date: ${today}`);
+
+    // Scope all resets to today's section only (before Historical Logs)
+    const histSplit = updated.indexOf('\n## Historical');
+    let todaySection = histSplit >= 0 ? updated.substring(0, histSplit) : updated;
+    const histSection = histSplit >= 0 ? updated.substring(histSplit) : '';
+
+    todaySection = todaySection.replace(/### Date: \d{4}-\d{2}-\d{2}/, `### Date: ${today}`);
 
     // Reset ALL meal rows to "Not logged yet" (including Smoothie, Beverage, etc.)
     const mealReset = '| — | *Not logged yet* | — | — | — | — | — |';
-    updated = updated.replace(/\| (Breakfast|Lunch|Dinner|Snacks?|Smoothie|Beverage) \|[^\n]+/g,
+    todaySection = todaySection.replace(/\| (Breakfast|Lunch|Dinner|Snacks?|Smoothie|Beverage) \|[^\n]+/g,
       (match, meal) => `| ${meal} ${mealReset}`);
 
     // Reset daily totals
-    updated = updated.replace(/\*\*Daily Totals\*\*:.+/, '**Daily Totals**: — cals | —g protein | —g fat | —g carbs | —g net carbs');
-    updated = updated.replace(/\*\*Micro Totals\*\*:.+/, '**Micro Totals**: —mg sodium | —mg potassium | —mg magnesium');
-    updated = updated.replace(/\*\*Macro Split\*\*:.+/, '**Macro Split**: —% fat / —% protein / —% carbs');
-    updated = updated.replace(/\*\*Hydration\*\*:.+/, '**Hydration**: 0 oz (target: 80-100 oz)');
-    updated = updated.replace(/\*\*Food Quality\*\*:.+/, '**Food Quality**: —');
-    updated = updated.replace(/\*\*GKI\*\*:.+/g, '**GKI**: Not measured');
+    todaySection = todaySection.replace(/\*\*Daily Totals\*\*:.+/, '**Daily Totals**: — cals | —g protein | —g fat | —g carbs | —g net carbs');
+    todaySection = todaySection.replace(/\*\*Micro Totals\*\*:.+/, '**Micro Totals**: —mg sodium | —mg potassium | —mg magnesium');
+    todaySection = todaySection.replace(/\*\*Macro Split\*\*:.+/, '**Macro Split**: —% fat / —% protein / —% carbs');
+    todaySection = todaySection.replace(/\*\*Hydration\*\*:.+/, '**Hydration**: 0 oz (target: 80-100 oz)');
+    todaySection = todaySection.replace(/\*\*Food Quality\*\*:.+/, '**Food Quality**: —');
+    todaySection = todaySection.replace(/\*\*GKI\*\*:.+/g, '**GKI**: Not measured');
+
+    updated = todaySection + histSection;
 
     // Reset score dashboard (scoped to Scoring Dashboard section only — avoid clobbering Daily Targets table)
     updated = updated.replace(/(## Scoring Dashboard\s*\n)([\s\S]*?)(?=\n##|\n---|$)/, (match, header, body) => {
@@ -4528,6 +4845,31 @@ function maybeResetNutrition() {
           console.warn(`[nutrition] Warning: ${yesterdayStr} missing from history — file was already reset to ${today} before dashboard could snapshot.`);
         }
       }
+      // Guard: if agent updated the date but didn't reset scores, reset them now.
+      // Two detection methods:
+      // 1. Frontmatter 'updated' date is before today (agent changed date header but not frontmatter)
+      // 2. Daily totals are dashes/empty but scores have real values (scores from yesterday, no food logged today yet)
+      const fmDateMatch = content.match(/^updated:\s*(\d{4}-\d{2}-\d{2})/m);
+      const fmDate = fmDateMatch ? fmDateMatch[1] : '';
+      const totalsAreDashes = /\*\*Daily Totals\*\*:\s*—/.test(content) || !/\*\*Daily Totals\*\*/.test(content);
+      const scoresHaveValues = /\| \*\*Viome Compliance\*\*\s*\|\s*\d/.test(content);
+      const scoresAreStale = (fmDate && fmDate < today) || (totalsAreDashes && scoresHaveValues);
+      if (scoresAreStale) {
+        // Scores are from previous day — reset the scoring section
+        let updated = content;
+        updated = updated.replace(/(## Scoring Dashboard\s*\n)([\s\S]*?)(?=\n##|\n---|$)/, (match: string, header: string, body: string) => {
+          let reset = body.replace(/(\| \*\*(?:Viome|Macro|Protein|Fiber|Omega|Hydration|TMA|Oxalate|Superfood|Overall)[^|]*\*\*) \|[^|]+\|[^|]+\|/g,
+            (m: string, domain: string) => `${domain} | —/10 | Not logged |`);
+          reset = reset.replace(/(\| \*\*Overall Grade\*\*) \|[^|]+\|[^|]+\|/, '$1 | — | Not logged |');
+          return header + reset;
+        });
+        if (updated !== content) {
+          // Also update frontmatter date so this doesn't re-trigger
+          updated = updated.replace(/^(updated:\s*)\d{4}-\d{2}-\d{2}/m, `$1${today}`);
+          fs.writeFileSync(NUTRITION_TRACKER_PATH, updated);
+          console.log(`[nutrition] Reset stale scores (frontmatter=${fmDate}, totalsEmpty=${totalsAreDashes}, scoresPopulated=${scoresHaveValues})`);
+        }
+      }
       lastNutritionResetDate = today;
     } else {
       lastNutritionResetDate = today;
@@ -4551,6 +4893,7 @@ async function postNutritionSuperfoodToggle(req: http.IncomingMessage) {
   let dataRowIdx = 0;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (line.startsWith('## Historical')) break;
     if (line.includes('Superfoods (Prioritize')) { inSuperfoods = true; continue; }
     if (inSuperfoods && line.startsWith('|') && (line.includes('Food') || line.includes('---'))) { headerPassed = true; continue; }
     if (inSuperfoods && headerPassed && line.startsWith('|')) {
@@ -5553,6 +5896,10 @@ const getRoutes: Record<string, Handler> = {
   '/api/health': () => getChannelHealth(),
   '/api/messages': (p) => getMessages(p.get('group') || 'main', parseInt(p.get('limit') || '20', 10)),
   '/api/tasks': () => getTasks(),
+  '/api/task/health': () => getTaskHealth(),
+  '/api/task/cost-trends': (p) => getTaskCostTrends(p),
+  '/api/task/duplicates': () => getTaskDuplicates(),
+  '/api/task/templates': () => getTaskTemplatesApi(),
   '/api/task/comments': (p) => getTaskCommentsApi(p),
   '/api/task/detail': (p) => getTaskDetail(p.get('id') || ''),
   '/api/associations': (p) => getAssociationsApi(p),
@@ -5568,6 +5915,7 @@ const getRoutes: Record<string, Handler> = {
   '/api/ventures': () => getVentures(),
   '/api/venture': (p) => getVentureDetail(p.get('file') || ''),
   '/api/venture/kalshi': () => getVentureKalshi(),
+  '/api/venture/ibkr': () => getVentureIbkr(),
   '/api/venture/gsa': () => getVentureGsa(),
   '/api/venture/smb': () => getVentureSmb(),
   '/api/venture/realestate': () => getVentureRealestate(),
@@ -5612,13 +5960,12 @@ const getRoutes: Record<string, Handler> = {
           const cb = parseFloat(String(a['Net Carbs'] || '0').replace(/[^0-9.]/g, ''));
           const sc = (he.superfoods || []).filter((s: {checked:boolean}) => s.checked).length;
           const st = (he.superfoods || []).length;
-          let gr = 0, gc = 0;
-          if (c2>=1900&&c2<=2150) gr++; gc++;
-          if (p2>=120&&p2<=150) gr++; gc++;
-          if (f2>=65&&f2<=80) gr++; gc++;
-          if (cb>=120&&cb<=160) gr++; gc++;
-          const gp = gc>0?gr/gc:0;
-          wt.push({ day: dayNames[dd.getDay()], date: ds, cals: c2>0?String(Math.round(c2)):'—', protein: p2>0?Math.round(p2)+'g':'—', fat: f2>0?Math.round(f2)+'g':'—', carbs: cb>0?Math.round(cb)+'g':'—', sfCount: st>0?`${sc}/${st}`:'—', grade: c2>0?(gp>=0.75?'A':gp>=0.5?'B':gp>=0.25?'C':'D'):'—' });
+          // Use agent's Overall Grade score from history
+          const ogEntry = (he.scores || []).find((s: {domain:string}) => s.domain === 'Overall Grade');
+          const ogRaw = ogEntry ? String(ogEntry.score).replace(/\*/g, '').trim() : '';
+          const ogMatch = ogRaw.match(/([\d.]+)\s*\/\s*10/);
+          const ogGrade = ogMatch ? `${ogMatch[1]}/10` : '—';
+          wt.push({ day: dayNames[dd.getDay()], date: ds, cals: c2>0?String(Math.round(c2)):'—', protein: p2>0?Math.round(p2)+'g':'—', fat: f2>0?Math.round(f2)+'g':'—', carbs: cb>0?Math.round(cb)+'g':'—', sfCount: st>0?`${sc}/${st}`:'—', grade: c2>0?ogGrade:'—' });
         } else {
           wt.push({ day: dayNames[dd.getDay()], date: ds, cals:'—', protein:'—', fat:'—', carbs:'—', sfCount:'—', grade:'—' });
         }
@@ -5658,6 +6005,9 @@ const postRoutes: Record<string, (req: http.IncomingMessage) => Promise<unknown>
   '/api/task/run-now': postTaskRunNow,
   '/api/task/comment': postTaskComment,
   '/api/task/comments/read': postTaskCommentsRead,
+  '/api/task/merge': postTaskMerge,
+  '/api/task/delete': postTaskDelete,
+  '/api/task/link': postTaskLink,
   '/api/project/update': postProjectUpdate,
   '/api/venture/update': postVentureUpdate,
   '/api/chat/send': postChatSend,
@@ -5699,7 +6049,7 @@ const server = http.createServer(async (req, res) => {
       if (body.token && timingSafeCompare(body.token, DASHBOARD_TOKEN)) {
         res.writeHead(200, {
           'Content-Type': 'application/json',
-          'Set-Cookie': `${AUTH_COOKIE_NAME}=${DASHBOARD_TOKEN}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${60 * 60 * 24 * 365}`,
+          'Set-Cookie': `${AUTH_COOKIE_NAME}=${DASHBOARD_TOKEN}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${60 * 60 * 24 * 365}`,
         });
         res.end(JSON.stringify({ ok: true }));
       } else {
@@ -5716,7 +6066,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && pathname === '/api/auth/logout') {
     res.writeHead(200, {
       'Content-Type': 'application/json',
-      'Set-Cookie': `${AUTH_COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Strict; Max-Age=0`,
+      'Set-Cookie': `${AUTH_COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`,
     });
     res.end(JSON.stringify({ ok: true }));
     return;

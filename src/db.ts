@@ -214,6 +214,71 @@ function createSchema(database: Database.Database): void {
   database.exec(
     `CREATE INDEX IF NOT EXISTS idx_cgs_timestamp ON cross_group_sends(timestamp)`,
   );
+
+  // --- Enhanced task architecture migrations ---
+
+  // New columns on scheduled_tasks for task management v2
+  const taskV2Columns = [
+    ['name', 'TEXT'],
+    ['template_slug', 'TEXT'],
+    ['prompt_hash', 'TEXT'],
+    ['dedup_key', 'TEXT'],
+    ['consecutive_failures', 'INTEGER DEFAULT 0'],
+    ['max_failures', 'INTEGER DEFAULT 5'],
+    ['last_error', 'TEXT'],
+    ['venture_file', 'TEXT'],
+    ['project_file', 'TEXT'],
+    ['category', 'TEXT'],
+  ];
+  for (const [col, type] of taskV2Columns) {
+    try {
+      database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN ${col} ${type}`);
+    } catch { /* column already exists */ }
+  }
+
+  // Add model column to task_run_logs
+  try {
+    database.exec(`ALTER TABLE task_run_logs ADD COLUMN model TEXT`);
+  } catch { /* column already exists */ }
+
+  // Add progress column (may already exist from dashboard writes)
+  try {
+    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN progress INTEGER DEFAULT 0`);
+  } catch { /* column already exists */ }
+
+  // Task templates registry
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS task_templates (
+      slug TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      default_prompt TEXT NOT NULL,
+      default_schedule TEXT NOT NULL,
+      default_group TEXT NOT NULL,
+      default_context_mode TEXT DEFAULT 'isolated',
+      category TEXT,
+      venture_file TEXT,
+      max_runs_per_day INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  // NOTE: Dedup unique index is created AFTER migrateTasksV2() merges duplicates.
+  // See initDatabase() for the index creation.
+
+  // DB-level safety net: prevent recurring tasks from being marked 'completed'.
+  // Also blocks 'needs_review' on recurring tasks (legacy status, being phased out).
+  database.exec(`DROP TRIGGER IF EXISTS prevent_recurring_task_completion`);
+  database.exec(`
+    CREATE TRIGGER prevent_recurring_task_completion
+    BEFORE UPDATE OF status ON scheduled_tasks
+    FOR EACH ROW
+    WHEN NEW.status IN ('completed', 'needs_review') AND OLD.schedule_type != 'once'
+    BEGIN
+      SELECT RAISE(IGNORE);
+    END
+  `);
 }
 
 export function initDatabase(): void {
@@ -225,6 +290,83 @@ export function initDatabase(): void {
 
   // Migrate from JSON files if they exist
   migrateJsonState();
+
+  // Run task v2 migration (idempotent, gated by router_state key)
+  migrateTasksV2();
+
+  // Create dedup index AFTER migration merges duplicates
+  try {
+    db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_dedup_key
+        ON scheduled_tasks(dedup_key)
+        WHERE status IN ('active', 'paused') AND dedup_key IS NOT NULL
+    `);
+  } catch { /* index already exists or conflict */ }
+}
+
+/** One-time migration: backfill task names, dedup keys, merge duplicates, seed templates. */
+function migrateTasksV2(): void {
+  try {
+    const existing = db.prepare("SELECT value FROM router_state WHERE key = 'task_migration_v2'").get() as { value: string } | undefined;
+    if (existing) return; // Already migrated
+  } catch { /* router_state table may not exist yet */ return; }
+
+  console.log('[db] Running task v2 migration...');
+
+  // Helper: extract task name from prompt (first sentence, max 60 chars)
+  function taskTitle(prompt: string): string {
+    const firstLine = prompt.split('\n')[0].replace(/^you are (the |a )?/i, '').trim();
+    return firstLine.length > 60 ? firstLine.slice(0, 57) + '...' : firstLine;
+  }
+
+  const categoryMap: Record<string, string> = {
+    main: 'monitoring', 'ai-research': 'research', 'health-wellness': 'health',
+    trading: 'trading', 'business-ideas': 'business', crypto: 'crypto', contacts: 'monitoring',
+  };
+
+  db.transaction(() => {
+    // 1. Backfill name, prompt_hash, dedup_key, category
+    const tasks = db.prepare('SELECT id, group_folder, schedule_value, prompt FROM scheduled_tasks WHERE name IS NULL').all() as Array<{ id: string; group_folder: string; schedule_value: string; prompt: string }>;
+    const updateStmt = db.prepare('UPDATE scheduled_tasks SET name = ?, prompt_hash = ?, dedup_key = ?, category = ? WHERE id = ?');
+    for (const t of tasks) {
+      const name = taskTitle(t.prompt);
+      const hash = crypto.createHash('sha256').update(t.prompt).digest('hex');
+      const dedupKey = `${t.group_folder}::${t.schedule_value}::${name}`;
+      const cat = categoryMap[t.group_folder] || 'monitoring';
+      updateStmt.run(name, hash, dedupKey, cat, t.id);
+    }
+
+    // 2. Convert needs_review → active for recurring tasks (trigger won't block this direction)
+    db.prepare("UPDATE scheduled_tasks SET status = 'active' WHERE status = 'needs_review' AND schedule_type != 'once'").run();
+
+    // 3. Merge duplicates: for each dedup_key with count > 1 among active/paused, keep the one with most recent successful run
+    const dupeKeys = db.prepare(
+      `SELECT dedup_key, COUNT(*) as cnt FROM scheduled_tasks WHERE dedup_key IS NOT NULL AND status IN ('active', 'paused') GROUP BY dedup_key HAVING cnt > 1`,
+    ).all() as Array<{ dedup_key: string; cnt: number }>;
+
+    for (const dk of dupeKeys) {
+      const group = db.prepare(
+        `SELECT s.id, (SELECT MAX(run_at) FROM task_run_logs WHERE task_id = s.id AND status = 'success') as last_success
+         FROM scheduled_tasks s WHERE s.dedup_key = ? AND s.status IN ('active', 'paused')
+         ORDER BY last_success DESC NULLS LAST, s.created_at DESC`,
+      ).all(dk.dedup_key) as Array<{ id: string; last_success: string | null }>;
+
+      if (group.length < 2) continue;
+      const keeper = group[0];
+      const removeIds = group.slice(1).map(g => g.id);
+      const ph = removeIds.map(() => '?').join(',');
+      db.prepare(`UPDATE task_run_logs SET task_id = ? WHERE task_id IN (${ph})`).run(keeper.id, ...removeIds);
+      db.prepare(`UPDATE task_comments SET task_id = ? WHERE task_id IN (${ph})`).run(keeper.id, ...removeIds);
+      for (const rid of removeIds) {
+        db.prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(rid);
+      }
+    }
+
+    // 4. Mark migration complete
+    db.prepare("INSERT OR REPLACE INTO router_state (key, value) VALUES ('task_migration_v2', ?)").run(new Date().toISOString());
+  })();
+
+  console.log('[db] Task v2 migration complete');
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */
@@ -433,8 +575,9 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, next_run, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, next_run, status, created_at,
+      name, template_slug, prompt_hash, dedup_key, venture_file, project_file, category)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
@@ -447,6 +590,13 @@ export function createTask(
     task.next_run,
     task.status,
     task.created_at,
+    task.name || null,
+    task.template_slug || null,
+    task.prompt_hash || null,
+    task.dedup_key || null,
+    task.venture_file || null,
+    task.project_file || null,
+    task.category || null,
   );
 }
 
@@ -470,35 +620,47 @@ export function getAllTasks(): ScheduledTask[] {
     .all() as ScheduledTask[];
 }
 
+/** Returns true if a task's schedule_type allows it to be marked 'completed'. Only 'once' tasks can be completed. */
+function isCompletableTask(id: string): boolean {
+  const task = db
+    .prepare('SELECT schedule_type FROM scheduled_tasks WHERE id = ?')
+    .get(id) as { schedule_type: string } | undefined;
+  return task?.schedule_type === 'once';
+}
+
 export function updateTask(
   id: string,
   updates: Partial<
     Pick<
       ScheduledTask,
-      'prompt' | 'schedule_type' | 'schedule_value' | 'next_run' | 'status'
+      'prompt' | 'schedule_type' | 'schedule_value' | 'next_run' | 'status' |
+      'name' | 'venture_file' | 'project_file' | 'category' | 'template_slug' | 'dedup_key'
     >
   >,
 ): void {
   const fields: string[] = [];
   const values: unknown[] = [];
 
-  if (updates.prompt !== undefined) {
-    fields.push('prompt = ?');
-    values.push(updates.prompt);
+  // Simple string/null fields
+  const simpleFields: Array<keyof typeof updates> = [
+    'prompt', 'schedule_type', 'schedule_value', 'next_run',
+    'name', 'venture_file', 'project_file', 'category', 'template_slug', 'dedup_key',
+  ];
+  for (const key of simpleFields) {
+    if (updates[key] !== undefined) {
+      fields.push(`${key} = ?`);
+      values.push(updates[key]);
+    }
   }
-  if (updates.schedule_type !== undefined) {
-    fields.push('schedule_type = ?');
-    values.push(updates.schedule_type);
-  }
-  if (updates.schedule_value !== undefined) {
-    fields.push('schedule_value = ?');
-    values.push(updates.schedule_value);
-  }
-  if (updates.next_run !== undefined) {
-    fields.push('next_run = ?');
-    values.push(updates.next_run);
-  }
+
   if (updates.status !== undefined) {
+    // GUARD: Only 'once' tasks can be completed. Recurring tasks (cron, interval) must be paused or deleted.
+    if (updates.status === 'completed' && !isCompletableTask(id)) {
+      console.warn(
+        `[db] BLOCKED: Attempt to mark recurring task ${id} as completed — downgrading to paused`,
+      );
+      updates.status = 'paused';
+    }
     fields.push('status = ?');
     values.push(updates.status);
   }
@@ -538,29 +700,36 @@ export function updateTaskAfterRun(
 ): void {
   const now = new Date().toISOString();
   if (statusOverride) {
+    // GUARD: Only 'once' tasks can be completed via statusOverride
+    let safeStatus = statusOverride;
+    if (statusOverride === 'completed' && !isCompletableTask(id)) {
+      console.warn(
+        `[db] BLOCKED: statusOverride='completed' for recurring task ${id} — forcing 'active'`,
+      );
+      safeStatus = 'active';
+    }
     db.prepare(
       `UPDATE scheduled_tasks SET next_run = ?, last_run = ?, last_result = ?, status = ? WHERE id = ?`,
-    ).run(nextRun, now, lastResult, statusOverride, id);
+    ).run(nextRun, now, lastResult, safeStatus, id);
   } else {
     // Only auto-complete one-off tasks (schedule_type = 'once') when nextRun is null.
-    // Cron tasks should NEVER be auto-completed — they must stay active.
+    // All other task types (cron, interval) keep their current status.
     db.prepare(
       `UPDATE scheduled_tasks SET next_run = ?, last_run = ?, last_result = ?,
        status = CASE
          WHEN ? IS NULL AND schedule_type = 'once' THEN 'completed'
-         WHEN ? IS NULL AND schedule_type = 'cron' THEN status  -- keep active
          ELSE status
        END
        WHERE id = ?`,
-    ).run(nextRun, now, lastResult, nextRun, nextRun, id);
+    ).run(nextRun, now, lastResult, nextRun, id);
   }
 }
 
 export function logTaskRun(log: TaskRunLog): void {
   db.prepare(
     `
-    INSERT INTO task_run_logs (task_id, run_at, duration_ms, status, result, error, cost_usd, input_tokens, output_tokens)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO task_run_logs (task_id, run_at, duration_ms, status, result, error, cost_usd, input_tokens, output_tokens, model)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     log.task_id,
@@ -572,7 +741,165 @@ export function logTaskRun(log: TaskRunLog): void {
     log.cost_usd || 0,
     log.input_tokens || 0,
     log.output_tokens || 0,
+    log.model || null,
   );
+}
+
+// --- Self-healing & dedup ---
+
+export function computeDedupKey(groupFolder: string, scheduleValue: string, name: string): string {
+  return `${groupFolder}::${scheduleValue}::${name}`;
+}
+
+export function computePromptHash(prompt: string): string {
+  return crypto.createHash('sha256').update(prompt).digest('hex');
+}
+
+export function findExistingByDedupKey(dedupKey: string): ScheduledTask | undefined {
+  return db
+    .prepare(`SELECT * FROM scheduled_tasks WHERE dedup_key = ? AND status IN ('active', 'paused') LIMIT 1`)
+    .get(dedupKey) as ScheduledTask | undefined;
+}
+
+/** Increment consecutive failures. Returns new count and whether task was auto-disabled. */
+export function incrementTaskFailures(id: string, error: string): { failures: number; disabled: boolean } {
+  const task = db
+    .prepare('SELECT consecutive_failures, max_failures FROM scheduled_tasks WHERE id = ?')
+    .get(id) as { consecutive_failures: number; max_failures: number } | undefined;
+  if (!task) return { failures: 0, disabled: false };
+
+  const newFailures = (task.consecutive_failures || 0) + 1;
+  const maxFail = task.max_failures || 5;
+  const shouldDisable = newFailures >= maxFail;
+
+  db.prepare(
+    `UPDATE scheduled_tasks SET consecutive_failures = ?, last_error = ?${shouldDisable ? ", status = 'disabled'" : ''} WHERE id = ?`,
+  ).run(newFailures, error.slice(0, 500), id);
+
+  return { failures: newFailures, disabled: shouldDisable };
+}
+
+export function resetTaskFailures(id: string): void {
+  db.prepare(
+    `UPDATE scheduled_tasks SET consecutive_failures = 0, last_error = NULL WHERE id = ?`,
+  ).run(id);
+}
+
+export function findDuplicateTaskGroups(): Array<{ dedup_key: string; tasks: ScheduledTask[] }> {
+  const dupes = db
+    .prepare(
+      `SELECT dedup_key FROM scheduled_tasks
+       WHERE dedup_key IS NOT NULL AND status IN ('active', 'paused')
+       GROUP BY dedup_key HAVING COUNT(*) > 1`,
+    )
+    .all() as Array<{ dedup_key: string }>;
+
+  return dupes.map(d => ({
+    dedup_key: d.dedup_key,
+    tasks: db
+      .prepare(`SELECT * FROM scheduled_tasks WHERE dedup_key = ? AND status IN ('active', 'paused') ORDER BY last_run DESC`)
+      .all(d.dedup_key) as ScheduledTask[],
+  }));
+}
+
+export function mergeTaskDuplicates(keepId: string, removeIds: string[]): void {
+  if (removeIds.length === 0) return;
+  const placeholders = removeIds.map(() => '?').join(',');
+  db.transaction(() => {
+    // Move run logs to keeper
+    db.prepare(`UPDATE task_run_logs SET task_id = ? WHERE task_id IN (${placeholders})`).run(keepId, ...removeIds);
+    // Move comments to keeper
+    db.prepare(`UPDATE task_comments SET task_id = ? WHERE task_id IN (${placeholders})`).run(keepId, ...removeIds);
+    // Delete duplicates
+    for (const rid of removeIds) {
+      db.prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(rid);
+    }
+  })();
+}
+
+// --- Task health aggregates ---
+
+export function getTaskHealthSummary(): {
+  total: number; active: number; paused: number; disabled: number; overdue: number;
+  successRate24h: number; cost24h: number; runs24h: number;
+  failingTasks: Array<{ id: string; name: string; consecutiveFailures: number; lastError: string | null }>;
+} {
+  const counts = db.prepare(
+    `SELECT status, COUNT(*) as cnt FROM scheduled_tasks GROUP BY status`,
+  ).all() as Array<{ status: string; cnt: number }>;
+
+  const total = counts.reduce((s, c) => s + c.cnt, 0);
+  const byStatus = Object.fromEntries(counts.map(c => [c.status, c.cnt]));
+
+  const overdue = db.prepare(
+    `SELECT COUNT(*) as cnt FROM scheduled_tasks WHERE status = 'active' AND next_run IS NOT NULL AND next_run < datetime('now', '-5 minutes')`,
+  ).get() as { cnt: number };
+
+  const runs24h = db.prepare(
+    `SELECT COUNT(*) as total, SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as ok, COALESCE(SUM(cost_usd), 0) as cost
+     FROM task_run_logs WHERE run_at > datetime('now', '-1 day')`,
+  ).get() as { total: number; ok: number; cost: number };
+
+  const failing = db.prepare(
+    `SELECT id, name, consecutive_failures, last_error FROM scheduled_tasks
+     WHERE consecutive_failures > 0 AND status IN ('active', 'disabled')
+     ORDER BY consecutive_failures DESC LIMIT 10`,
+  ).all() as Array<{ id: string; name: string; consecutive_failures: number; last_error: string | null }>;
+
+  return {
+    total,
+    active: byStatus['active'] || 0,
+    paused: byStatus['paused'] || 0,
+    disabled: byStatus['disabled'] || 0,
+    overdue: overdue.cnt,
+    successRate24h: runs24h.total > 0 ? Math.round((runs24h.ok / runs24h.total) * 100) : 100,
+    cost24h: Math.round(runs24h.cost * 100) / 100,
+    runs24h: runs24h.total,
+    failingTasks: failing.map(f => ({
+      id: f.id,
+      name: f.name || f.id,
+      consecutiveFailures: f.consecutive_failures,
+      lastError: f.last_error,
+    })),
+  };
+}
+
+export function getTaskCostTrends(days: number = 14): Array<{ date: string; cost: number; runs: number; failures: number }> {
+  return db.prepare(
+    `SELECT date(run_at) as date, COALESCE(SUM(cost_usd), 0) as cost, COUNT(*) as runs,
+       SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as failures
+     FROM task_run_logs WHERE run_at > datetime('now', '-' || ? || ' days')
+     GROUP BY date(run_at) ORDER BY date`,
+  ).all(days) as Array<{ date: string; cost: number; runs: number; failures: number }>;
+}
+
+// --- Task templates ---
+
+export function getTaskTemplates(): Array<{
+  slug: string; name: string; description: string | null; default_schedule: string;
+  default_group: string; category: string | null; venture_file: string | null; max_runs_per_day: number;
+}> {
+  return db.prepare(
+    `SELECT slug, name, description, default_schedule, default_group, category, venture_file, max_runs_per_day FROM task_templates ORDER BY name`,
+  ).all() as Array<{
+    slug: string; name: string; description: string | null; default_schedule: string;
+    default_group: string; category: string | null; venture_file: string | null; max_runs_per_day: number;
+  }>;
+}
+
+export function getTaskTemplate(slug: string): { slug: string; name: string; default_prompt: string; default_schedule: string; default_group: string; default_context_mode: string; category: string | null; venture_file: string | null; max_runs_per_day: number } | undefined {
+  return db.prepare(`SELECT * FROM task_templates WHERE slug = ?`).get(slug) as { slug: string; name: string; default_prompt: string; default_schedule: string; default_group: string; default_context_mode: string; category: string | null; venture_file: string | null; max_runs_per_day: number } | undefined;
+}
+
+export function seedTaskTemplates(templates: Array<{ slug: string; name: string; description: string | null; default_prompt: string; default_schedule: string; default_group: string; category: string | null; venture_file: string | null; max_runs_per_day: number }>): void {
+  const now = new Date().toISOString();
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO task_templates (slug, name, description, default_prompt, default_schedule, default_group, category, venture_file, max_runs_per_day, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  for (const t of templates) {
+    stmt.run(t.slug, t.name, t.description, t.default_prompt, t.default_schedule, t.default_group, t.category, t.venture_file, t.max_runs_per_day, now, now);
+  }
 }
 
 // --- Task comments ---
