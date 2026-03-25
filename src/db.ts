@@ -233,18 +233,26 @@ function createSchema(database: Database.Database): void {
   for (const [col, type] of taskV2Columns) {
     try {
       database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN ${col} ${type}`);
-    } catch { /* column already exists */ }
+    } catch {
+      /* column already exists */
+    }
   }
 
   // Add model column to task_run_logs
   try {
     database.exec(`ALTER TABLE task_run_logs ADD COLUMN model TEXT`);
-  } catch { /* column already exists */ }
+  } catch {
+    /* column already exists */
+  }
 
   // Add progress column (may already exist from dashboard writes)
   try {
-    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN progress INTEGER DEFAULT 0`);
-  } catch { /* column already exists */ }
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN progress INTEGER DEFAULT 0`,
+    );
+  } catch {
+    /* column already exists */
+  }
 
   // Task templates registry
   database.exec(`
@@ -301,33 +309,58 @@ export function initDatabase(): void {
         ON scheduled_tasks(dedup_key)
         WHERE status IN ('active', 'paused') AND dedup_key IS NOT NULL
     `);
-  } catch { /* index already exists or conflict */ }
+  } catch {
+    /* index already exists or conflict */
+  }
 }
 
 /** One-time migration: backfill task names, dedup keys, merge duplicates, seed templates. */
 function migrateTasksV2(): void {
   try {
-    const existing = db.prepare("SELECT value FROM router_state WHERE key = 'task_migration_v2'").get() as { value: string } | undefined;
+    const existing = db
+      .prepare("SELECT value FROM router_state WHERE key = 'task_migration_v2'")
+      .get() as { value: string } | undefined;
     if (existing) return; // Already migrated
-  } catch { /* router_state table may not exist yet */ return; }
+  } catch {
+    /* router_state table may not exist yet */ return;
+  }
 
   console.log('[db] Running task v2 migration...');
 
   // Helper: extract task name from prompt (first sentence, max 60 chars)
   function taskTitle(prompt: string): string {
-    const firstLine = prompt.split('\n')[0].replace(/^you are (the |a )?/i, '').trim();
+    const firstLine = prompt
+      .split('\n')[0]
+      .replace(/^you are (the |a )?/i, '')
+      .trim();
     return firstLine.length > 60 ? firstLine.slice(0, 57) + '...' : firstLine;
   }
 
   const categoryMap: Record<string, string> = {
-    main: 'monitoring', 'ai-research': 'research', 'health-wellness': 'health',
-    trading: 'trading', 'business-ideas': 'business', crypto: 'crypto', contacts: 'monitoring',
+    main: 'monitoring',
+    'ai-research': 'research',
+    'health-wellness': 'health',
+    trading: 'trading',
+    'business-ideas': 'business',
+    crypto: 'crypto',
+    contacts: 'monitoring',
   };
 
   db.transaction(() => {
     // 1. Backfill name, prompt_hash, dedup_key, category
-    const tasks = db.prepare('SELECT id, group_folder, schedule_value, prompt FROM scheduled_tasks WHERE name IS NULL').all() as Array<{ id: string; group_folder: string; schedule_value: string; prompt: string }>;
-    const updateStmt = db.prepare('UPDATE scheduled_tasks SET name = ?, prompt_hash = ?, dedup_key = ?, category = ? WHERE id = ?');
+    const tasks = db
+      .prepare(
+        'SELECT id, group_folder, schedule_value, prompt FROM scheduled_tasks WHERE name IS NULL',
+      )
+      .all() as Array<{
+      id: string;
+      group_folder: string;
+      schedule_value: string;
+      prompt: string;
+    }>;
+    const updateStmt = db.prepare(
+      'UPDATE scheduled_tasks SET name = ?, prompt_hash = ?, dedup_key = ?, category = ? WHERE id = ?',
+    );
     for (const t of tasks) {
       const name = taskTitle(t.prompt);
       const hash = crypto.createHash('sha256').update(t.prompt).digest('hex');
@@ -337,33 +370,48 @@ function migrateTasksV2(): void {
     }
 
     // 2. Convert needs_review → active for recurring tasks (trigger won't block this direction)
-    db.prepare("UPDATE scheduled_tasks SET status = 'active' WHERE status = 'needs_review' AND schedule_type != 'once'").run();
+    db.prepare(
+      "UPDATE scheduled_tasks SET status = 'active' WHERE status = 'needs_review' AND schedule_type != 'once'",
+    ).run();
 
     // 3. Merge duplicates: for each dedup_key with count > 1 among active/paused, keep the one with most recent successful run
-    const dupeKeys = db.prepare(
-      `SELECT dedup_key, COUNT(*) as cnt FROM scheduled_tasks WHERE dedup_key IS NOT NULL AND status IN ('active', 'paused') GROUP BY dedup_key HAVING cnt > 1`,
-    ).all() as Array<{ dedup_key: string; cnt: number }>;
+    const dupeKeys = db
+      .prepare(
+        `SELECT dedup_key, COUNT(*) as cnt FROM scheduled_tasks WHERE dedup_key IS NOT NULL AND status IN ('active', 'paused') GROUP BY dedup_key HAVING cnt > 1`,
+      )
+      .all() as Array<{ dedup_key: string; cnt: number }>;
 
     for (const dk of dupeKeys) {
-      const group = db.prepare(
-        `SELECT s.id, (SELECT MAX(run_at) FROM task_run_logs WHERE task_id = s.id AND status = 'success') as last_success
+      const group = db
+        .prepare(
+          `SELECT s.id, (SELECT MAX(run_at) FROM task_run_logs WHERE task_id = s.id AND status = 'success') as last_success
          FROM scheduled_tasks s WHERE s.dedup_key = ? AND s.status IN ('active', 'paused')
          ORDER BY last_success DESC NULLS LAST, s.created_at DESC`,
-      ).all(dk.dedup_key) as Array<{ id: string; last_success: string | null }>;
+        )
+        .all(dk.dedup_key) as Array<{
+        id: string;
+        last_success: string | null;
+      }>;
 
       if (group.length < 2) continue;
       const keeper = group[0];
-      const removeIds = group.slice(1).map(g => g.id);
+      const removeIds = group.slice(1).map((g) => g.id);
       const ph = removeIds.map(() => '?').join(',');
-      db.prepare(`UPDATE task_run_logs SET task_id = ? WHERE task_id IN (${ph})`).run(keeper.id, ...removeIds);
-      db.prepare(`UPDATE task_comments SET task_id = ? WHERE task_id IN (${ph})`).run(keeper.id, ...removeIds);
+      db.prepare(
+        `UPDATE task_run_logs SET task_id = ? WHERE task_id IN (${ph})`,
+      ).run(keeper.id, ...removeIds);
+      db.prepare(
+        `UPDATE task_comments SET task_id = ? WHERE task_id IN (${ph})`,
+      ).run(keeper.id, ...removeIds);
       for (const rid of removeIds) {
         db.prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(rid);
       }
     }
 
     // 4. Mark migration complete
-    db.prepare("INSERT OR REPLACE INTO router_state (key, value) VALUES ('task_migration_v2', ?)").run(new Date().toISOString());
+    db.prepare(
+      "INSERT OR REPLACE INTO router_state (key, value) VALUES ('task_migration_v2', ?)",
+    ).run(new Date().toISOString());
   })();
 
   console.log('[db] Task v2 migration complete');
@@ -633,8 +681,17 @@ export function updateTask(
   updates: Partial<
     Pick<
       ScheduledTask,
-      'prompt' | 'schedule_type' | 'schedule_value' | 'next_run' | 'status' |
-      'name' | 'venture_file' | 'project_file' | 'category' | 'template_slug' | 'dedup_key'
+      | 'prompt'
+      | 'schedule_type'
+      | 'schedule_value'
+      | 'next_run'
+      | 'status'
+      | 'name'
+      | 'venture_file'
+      | 'project_file'
+      | 'category'
+      | 'template_slug'
+      | 'dedup_key'
     >
   >,
 ): void {
@@ -643,8 +700,16 @@ export function updateTask(
 
   // Simple string/null fields
   const simpleFields: Array<keyof typeof updates> = [
-    'prompt', 'schedule_type', 'schedule_value', 'next_run',
-    'name', 'venture_file', 'project_file', 'category', 'template_slug', 'dedup_key',
+    'prompt',
+    'schedule_type',
+    'schedule_value',
+    'next_run',
+    'name',
+    'venture_file',
+    'project_file',
+    'category',
+    'template_slug',
+    'dedup_key',
   ];
   for (const key of simpleFields) {
     if (updates[key] !== undefined) {
@@ -747,7 +812,11 @@ export function logTaskRun(log: TaskRunLog): void {
 
 // --- Self-healing & dedup ---
 
-export function computeDedupKey(groupFolder: string, scheduleValue: string, name: string): string {
+export function computeDedupKey(
+  groupFolder: string,
+  scheduleValue: string,
+  name: string,
+): string {
   return `${groupFolder}::${scheduleValue}::${name}`;
 }
 
@@ -755,17 +824,28 @@ export function computePromptHash(prompt: string): string {
   return crypto.createHash('sha256').update(prompt).digest('hex');
 }
 
-export function findExistingByDedupKey(dedupKey: string): ScheduledTask | undefined {
+export function findExistingByDedupKey(
+  dedupKey: string,
+): ScheduledTask | undefined {
   return db
-    .prepare(`SELECT * FROM scheduled_tasks WHERE dedup_key = ? AND status IN ('active', 'paused') LIMIT 1`)
+    .prepare(
+      `SELECT * FROM scheduled_tasks WHERE dedup_key = ? AND status IN ('active', 'paused') LIMIT 1`,
+    )
     .get(dedupKey) as ScheduledTask | undefined;
 }
 
 /** Increment consecutive failures. Returns new count and whether task was auto-disabled. */
-export function incrementTaskFailures(id: string, error: string): { failures: number; disabled: boolean } {
+export function incrementTaskFailures(
+  id: string,
+  error: string,
+): { failures: number; disabled: boolean } {
   const task = db
-    .prepare('SELECT consecutive_failures, max_failures FROM scheduled_tasks WHERE id = ?')
-    .get(id) as { consecutive_failures: number; max_failures: number } | undefined;
+    .prepare(
+      'SELECT consecutive_failures, max_failures FROM scheduled_tasks WHERE id = ?',
+    )
+    .get(id) as
+    | { consecutive_failures: number; max_failures: number }
+    | undefined;
   if (!task) return { failures: 0, disabled: false };
 
   const newFailures = (task.consecutive_failures || 0) + 1;
@@ -785,7 +865,10 @@ export function resetTaskFailures(id: string): void {
   ).run(id);
 }
 
-export function findDuplicateTaskGroups(): Array<{ dedup_key: string; tasks: ScheduledTask[] }> {
+export function findDuplicateTaskGroups(): Array<{
+  dedup_key: string;
+  tasks: ScheduledTask[];
+}> {
   const dupes = db
     .prepare(
       `SELECT dedup_key FROM scheduled_tasks
@@ -794,10 +877,12 @@ export function findDuplicateTaskGroups(): Array<{ dedup_key: string; tasks: Sch
     )
     .all() as Array<{ dedup_key: string }>;
 
-  return dupes.map(d => ({
+  return dupes.map((d) => ({
     dedup_key: d.dedup_key,
     tasks: db
-      .prepare(`SELECT * FROM scheduled_tasks WHERE dedup_key = ? AND status IN ('active', 'paused') ORDER BY last_run DESC`)
+      .prepare(
+        `SELECT * FROM scheduled_tasks WHERE dedup_key = ? AND status IN ('active', 'paused') ORDER BY last_run DESC`,
+      )
       .all(d.dedup_key) as ScheduledTask[],
   }));
 }
@@ -807,9 +892,13 @@ export function mergeTaskDuplicates(keepId: string, removeIds: string[]): void {
   const placeholders = removeIds.map(() => '?').join(',');
   db.transaction(() => {
     // Move run logs to keeper
-    db.prepare(`UPDATE task_run_logs SET task_id = ? WHERE task_id IN (${placeholders})`).run(keepId, ...removeIds);
+    db.prepare(
+      `UPDATE task_run_logs SET task_id = ? WHERE task_id IN (${placeholders})`,
+    ).run(keepId, ...removeIds);
     // Move comments to keeper
-    db.prepare(`UPDATE task_comments SET task_id = ? WHERE task_id IN (${placeholders})`).run(keepId, ...removeIds);
+    db.prepare(
+      `UPDATE task_comments SET task_id = ? WHERE task_id IN (${placeholders})`,
+    ).run(keepId, ...removeIds);
     // Delete duplicates
     for (const rid of removeIds) {
       db.prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(rid);
@@ -820,31 +909,55 @@ export function mergeTaskDuplicates(keepId: string, removeIds: string[]): void {
 // --- Task health aggregates ---
 
 export function getTaskHealthSummary(): {
-  total: number; active: number; paused: number; disabled: number; overdue: number;
-  successRate24h: number; cost24h: number; runs24h: number;
-  failingTasks: Array<{ id: string; name: string; consecutiveFailures: number; lastError: string | null }>;
+  total: number;
+  active: number;
+  paused: number;
+  disabled: number;
+  overdue: number;
+  successRate24h: number;
+  cost24h: number;
+  runs24h: number;
+  failingTasks: Array<{
+    id: string;
+    name: string;
+    consecutiveFailures: number;
+    lastError: string | null;
+  }>;
 } {
-  const counts = db.prepare(
-    `SELECT status, COUNT(*) as cnt FROM scheduled_tasks GROUP BY status`,
-  ).all() as Array<{ status: string; cnt: number }>;
+  const counts = db
+    .prepare(
+      `SELECT status, COUNT(*) as cnt FROM scheduled_tasks GROUP BY status`,
+    )
+    .all() as Array<{ status: string; cnt: number }>;
 
   const total = counts.reduce((s, c) => s + c.cnt, 0);
-  const byStatus = Object.fromEntries(counts.map(c => [c.status, c.cnt]));
+  const byStatus = Object.fromEntries(counts.map((c) => [c.status, c.cnt]));
 
-  const overdue = db.prepare(
-    `SELECT COUNT(*) as cnt FROM scheduled_tasks WHERE status = 'active' AND next_run IS NOT NULL AND next_run < datetime('now', '-5 minutes')`,
-  ).get() as { cnt: number };
+  const overdue = db
+    .prepare(
+      `SELECT COUNT(*) as cnt FROM scheduled_tasks WHERE status = 'active' AND next_run IS NOT NULL AND next_run < datetime('now', '-5 minutes')`,
+    )
+    .get() as { cnt: number };
 
-  const runs24h = db.prepare(
-    `SELECT COUNT(*) as total, SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as ok, COALESCE(SUM(cost_usd), 0) as cost
+  const runs24h = db
+    .prepare(
+      `SELECT COUNT(*) as total, SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as ok, COALESCE(SUM(cost_usd), 0) as cost
      FROM task_run_logs WHERE run_at > datetime('now', '-1 day')`,
-  ).get() as { total: number; ok: number; cost: number };
+    )
+    .get() as { total: number; ok: number; cost: number };
 
-  const failing = db.prepare(
-    `SELECT id, name, consecutive_failures, last_error FROM scheduled_tasks
+  const failing = db
+    .prepare(
+      `SELECT id, name, consecutive_failures, last_error FROM scheduled_tasks
      WHERE consecutive_failures > 0 AND status IN ('active', 'disabled')
      ORDER BY consecutive_failures DESC LIMIT 10`,
-  ).all() as Array<{ id: string; name: string; consecutive_failures: number; last_error: string | null }>;
+    )
+    .all() as Array<{
+    id: string;
+    name: string;
+    consecutive_failures: number;
+    last_error: string | null;
+  }>;
 
   return {
     total,
@@ -852,10 +965,11 @@ export function getTaskHealthSummary(): {
     paused: byStatus['paused'] || 0,
     disabled: byStatus['disabled'] || 0,
     overdue: overdue.cnt,
-    successRate24h: runs24h.total > 0 ? Math.round((runs24h.ok / runs24h.total) * 100) : 100,
+    successRate24h:
+      runs24h.total > 0 ? Math.round((runs24h.ok / runs24h.total) * 100) : 100,
     cost24h: Math.round(runs24h.cost * 100) / 100,
     runs24h: runs24h.total,
-    failingTasks: failing.map(f => ({
+    failingTasks: failing.map((f) => ({
       id: f.id,
       name: f.name || f.id,
       consecutiveFailures: f.consecutive_failures,
@@ -864,41 +978,114 @@ export function getTaskHealthSummary(): {
   };
 }
 
-export function getTaskCostTrends(days: number = 14): Array<{ date: string; cost: number; runs: number; failures: number }> {
-  return db.prepare(
-    `SELECT date(run_at) as date, COALESCE(SUM(cost_usd), 0) as cost, COUNT(*) as runs,
+export function getTaskCostTrends(
+  days: number = 14,
+): Array<{ date: string; cost: number; runs: number; failures: number }> {
+  return db
+    .prepare(
+      `SELECT date(run_at) as date, COALESCE(SUM(cost_usd), 0) as cost, COUNT(*) as runs,
        SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as failures
      FROM task_run_logs WHERE run_at > datetime('now', '-' || ? || ' days')
      GROUP BY date(run_at) ORDER BY date`,
-  ).all(days) as Array<{ date: string; cost: number; runs: number; failures: number }>;
+    )
+    .all(days) as Array<{
+    date: string;
+    cost: number;
+    runs: number;
+    failures: number;
+  }>;
 }
 
 // --- Task templates ---
 
 export function getTaskTemplates(): Array<{
-  slug: string; name: string; description: string | null; default_schedule: string;
-  default_group: string; category: string | null; venture_file: string | null; max_runs_per_day: number;
+  slug: string;
+  name: string;
+  description: string | null;
+  default_schedule: string;
+  default_group: string;
+  category: string | null;
+  venture_file: string | null;
+  max_runs_per_day: number;
 }> {
-  return db.prepare(
-    `SELECT slug, name, description, default_schedule, default_group, category, venture_file, max_runs_per_day FROM task_templates ORDER BY name`,
-  ).all() as Array<{
-    slug: string; name: string; description: string | null; default_schedule: string;
-    default_group: string; category: string | null; venture_file: string | null; max_runs_per_day: number;
+  return db
+    .prepare(
+      `SELECT slug, name, description, default_schedule, default_group, category, venture_file, max_runs_per_day FROM task_templates ORDER BY name`,
+    )
+    .all() as Array<{
+    slug: string;
+    name: string;
+    description: string | null;
+    default_schedule: string;
+    default_group: string;
+    category: string | null;
+    venture_file: string | null;
+    max_runs_per_day: number;
   }>;
 }
 
-export function getTaskTemplate(slug: string): { slug: string; name: string; default_prompt: string; default_schedule: string; default_group: string; default_context_mode: string; category: string | null; venture_file: string | null; max_runs_per_day: number } | undefined {
-  return db.prepare(`SELECT * FROM task_templates WHERE slug = ?`).get(slug) as { slug: string; name: string; default_prompt: string; default_schedule: string; default_group: string; default_context_mode: string; category: string | null; venture_file: string | null; max_runs_per_day: number } | undefined;
+export function getTaskTemplate(
+  slug: string,
+):
+  | {
+      slug: string;
+      name: string;
+      default_prompt: string;
+      default_schedule: string;
+      default_group: string;
+      default_context_mode: string;
+      category: string | null;
+      venture_file: string | null;
+      max_runs_per_day: number;
+    }
+  | undefined {
+  return db.prepare(`SELECT * FROM task_templates WHERE slug = ?`).get(slug) as
+    | {
+        slug: string;
+        name: string;
+        default_prompt: string;
+        default_schedule: string;
+        default_group: string;
+        default_context_mode: string;
+        category: string | null;
+        venture_file: string | null;
+        max_runs_per_day: number;
+      }
+    | undefined;
 }
 
-export function seedTaskTemplates(templates: Array<{ slug: string; name: string; description: string | null; default_prompt: string; default_schedule: string; default_group: string; category: string | null; venture_file: string | null; max_runs_per_day: number }>): void {
+export function seedTaskTemplates(
+  templates: Array<{
+    slug: string;
+    name: string;
+    description: string | null;
+    default_prompt: string;
+    default_schedule: string;
+    default_group: string;
+    category: string | null;
+    venture_file: string | null;
+    max_runs_per_day: number;
+  }>,
+): void {
   const now = new Date().toISOString();
   const stmt = db.prepare(
     `INSERT OR IGNORE INTO task_templates (slug, name, description, default_prompt, default_schedule, default_group, category, venture_file, max_runs_per_day, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   for (const t of templates) {
-    stmt.run(t.slug, t.name, t.description, t.default_prompt, t.default_schedule, t.default_group, t.category, t.venture_file, t.max_runs_per_day, now, now);
+    stmt.run(
+      t.slug,
+      t.name,
+      t.description,
+      t.default_prompt,
+      t.default_schedule,
+      t.default_group,
+      t.category,
+      t.venture_file,
+      t.max_runs_per_day,
+      now,
+      now,
+    );
   }
 }
 

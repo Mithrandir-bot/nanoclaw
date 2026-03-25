@@ -54,7 +54,13 @@ export interface NewMessage {
 }
 
 export type TaskStatus = 'active' | 'paused' | 'disabled' | 'completed';
-export type TaskCategory = 'monitoring' | 'research' | 'health' | 'trading' | 'business' | 'crypto';
+export type TaskCategory =
+  | 'monitoring'
+  | 'research'
+  | 'health'
+  | 'trading'
+  | 'business'
+  | 'crypto';
 
 export interface ScheduledTask {
   id: string;
@@ -107,7 +113,12 @@ export interface TaskHealthSummary {
   successRate24h: number;
   cost24h: number;
   runs24h: number;
-  failingTasks: Array<{ id: string; name: string; consecutiveFailures: number; lastError: string | null }>;
+  failingTasks: Array<{
+    id: string;
+    name: string;
+    consecutiveFailures: number;
+    lastError: string | null;
+  }>;
 }
 
 export interface TaskRunLog {

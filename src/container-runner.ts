@@ -2,7 +2,7 @@
  * Container Runner for NanoClaw
  * Spawns agent execution in containers and handles IPC
  */
-import { ChildProcess, exec, spawn } from 'child_process';
+import { ChildProcess, exec, execSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -316,6 +316,10 @@ export async function runContainerAgent(
 
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
+  // Container runs as UID 1000 (node user) — ensure group dir is writable
+  try {
+    execSync(`chown -R 1000:1000 ${JSON.stringify(groupDir)}`, { stdio: 'ignore' });
+  } catch { /* best-effort: may fail on non-root hosts */ }
 
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');

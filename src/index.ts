@@ -745,8 +745,7 @@ async function main(): Promise<void> {
       const currentTask = getTaskById(task.id);
       if (
         currentTask &&
-        (currentTask.status === 'active' ||
-          currentTask.status === 'disabled')
+        (currentTask.status === 'active' || currentTask.status === 'disabled')
       ) {
         updateTask(task.id, { next_run: now, status: 'active' });
       }

@@ -379,7 +379,10 @@ async function runTask(
       nextRun = computeNextRun(task);
     }
     if (!nextRun) {
-      logger.warn({ taskId: task.id }, 'Recurring task has no next_run, forcing 1h fallback');
+      logger.warn(
+        { taskId: task.id },
+        'Recurring task has no next_run, forcing 1h fallback',
+      );
       nextRun = new Date(Date.now() + 3600000).toISOString();
     }
 
@@ -388,21 +391,38 @@ async function runTask(
       const { failures, disabled } = incrementTaskFailures(task.id, error);
       if (disabled) {
         // Auto-disabled — notify via Discord
-        logger.error({ taskId: task.id, failures }, 'Task auto-disabled after consecutive failures');
-        addTaskComment(task.id, 'system',
-          `Auto-disabled after ${failures} consecutive failures. Last error: ${error.slice(0, 300)}`, 'blocker');
+        logger.error(
+          { taskId: task.id, failures },
+          'Task auto-disabled after consecutive failures',
+        );
+        addTaskComment(
+          task.id,
+          'system',
+          `Auto-disabled after ${failures} consecutive failures. Last error: ${error.slice(0, 300)}`,
+          'blocker',
+        );
         try {
-          await deps.sendMessage(task.chat_jid,
-            `Task "${task.name || taskTitle(task.prompt)}" auto-disabled after ${failures} consecutive failures. Last error: ${error.slice(0, 200)}`);
-        } catch { /* notification failure is non-critical */ }
+          await deps.sendMessage(
+            task.chat_jid,
+            `Task "${task.name || taskTitle(task.prompt)}" auto-disabled after ${failures} consecutive failures. Last error: ${error.slice(0, 200)}`,
+          );
+        } catch {
+          /* notification failure is non-critical */
+        }
       } else {
         // Apply exponential backoff: min(2^failures * 60s + jitter, 4hrs)
         const jitter = Math.random() * 30000;
-        const backoffMs = Math.min(Math.pow(2, failures) * 60000 + jitter, 4 * 3600000);
+        const backoffMs = Math.min(
+          Math.pow(2, failures) * 60000 + jitter,
+          4 * 3600000,
+        );
         const backoffNextRun = new Date(Date.now() + backoffMs).toISOString();
         // Use whichever is later: normal schedule or backoff
         nextRun = nextRun > backoffNextRun ? nextRun : backoffNextRun;
-        logger.info({ taskId: task.id, failures, nextRun }, 'Task failed, applying backoff');
+        logger.info(
+          { taskId: task.id, failures, nextRun },
+          'Task failed, applying backoff',
+        );
       }
     } else {
       // Success: reset failures, snap back to normal cadence
@@ -410,7 +430,10 @@ async function runTask(
     }
 
     updateTaskAfterRun(task.id, nextRun, resultSummary);
-    logger.info({ taskId: task.id, nextRun, error: !!error }, 'Recurring task run complete');
+    logger.info(
+      { taskId: task.id, nextRun, error: !!error },
+      'Recurring task run complete',
+    );
     return;
   }
 

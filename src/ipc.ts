@@ -280,7 +280,11 @@ export async function processTaskIpc(
             ? data.context_mode
             : 'isolated';
         const taskName = (data.name as string) || taskTitle(data.prompt);
-        const dedupKey = computeDedupKey(targetFolder, data.schedule_value, taskName);
+        const dedupKey = computeDedupKey(
+          targetFolder,
+          data.schedule_value,
+          taskName,
+        );
 
         // Dedup: if an active/paused task with the same key exists, update it instead
         const existing = findExistingByDedupKey(dedupKey);
@@ -294,8 +298,13 @@ export async function processTaskIpc(
         }
 
         const categoryMap: Record<string, string> = {
-          main: 'monitoring', 'ai-research': 'research', 'health-wellness': 'health',
-          trading: 'trading', 'business-ideas': 'business', crypto: 'crypto', contacts: 'monitoring',
+          main: 'monitoring',
+          'ai-research': 'research',
+          'health-wellness': 'health',
+          trading: 'trading',
+          'business-ideas': 'business',
+          crypto: 'crypto',
+          contacts: 'monitoring',
         };
         const taskId =
           data.taskId ||
@@ -314,7 +323,8 @@ export async function processTaskIpc(
           name: taskName,
           prompt_hash: computePromptHash(data.prompt),
           dedup_key: dedupKey,
-          category: (categoryMap[targetFolder] || 'monitoring') as import('./types.js').TaskCategory,
+          category: (categoryMap[targetFolder] ||
+            'monitoring') as import('./types.js').TaskCategory,
           venture_file: (data.venture_file as string) || null,
           project_file: (data.project_file as string) || null,
         });
