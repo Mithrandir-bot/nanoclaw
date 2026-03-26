@@ -318,8 +318,12 @@ export async function runContainerAgent(
   fs.mkdirSync(groupDir, { recursive: true });
   // Container runs as UID 1000 (node user) — ensure group dir is writable
   try {
-    execSync(`chown -R 1000:1000 ${JSON.stringify(groupDir)}`, { stdio: 'ignore' });
-  } catch { /* best-effort: may fail on non-root hosts */ }
+    execSync(`chown -R 1000:1000 ${JSON.stringify(groupDir)}`, {
+      stdio: 'ignore',
+    });
+  } catch {
+    /* best-effort: may fail on non-root hosts */
+  }
 
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');

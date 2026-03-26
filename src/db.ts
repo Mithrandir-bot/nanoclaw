@@ -1024,9 +1024,7 @@ export function getTaskTemplates(): Array<{
   }>;
 }
 
-export function getTaskTemplate(
-  slug: string,
-):
+export function getTaskTemplate(slug: string):
   | {
       slug: string;
       name: string;
