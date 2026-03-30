@@ -6124,6 +6124,7 @@ views['venture-realestate'] = async () => {
       if (!window._scanPages) window._scanPages = {};
       if (!window._scanSorts) window._scanSorts = {};
       if (!window._scanExpanded) window._scanExpanded = {};
+      if (!window._scanStatusFilter) window._scanStatusFilter = {};
       const SCAN_PAGE_SIZE = 15;
 
       const countyAppraiserUrl = (city, address, zip) => {
@@ -6281,7 +6282,7 @@ views['venture-realestate'] = async () => {
           });
 
           const sortKey = window._scanSorts[scanId] || 'score';
-          const sorted = [...listings].sort((a,b) => {
+          const sorted = [...filteredListings].sort((a,b) => {
             if (sortKey==='score') return (b._score||0)-(a._score||0);
             if (sortKey==='price-asc') return (a.price||0)-(b.price||0);
             if (sortKey==='price-desc') return (b.price||0)-(a.price||0);
@@ -6296,9 +6297,24 @@ views['venture-realestate'] = async () => {
 
           card += '<div style="padding:0 20px 16px">';
           card += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px">';
-          card += '<div style="display:flex;align-items:center;gap:8px">';
-          card += '<div style="font-size:9px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px">Matched Listings <span style="font-family:var(--mono);margin-left:4px;color:' + accent.color + '">' + listings.length + '</span></div>';
-          card += '<span style="font-size:9px;color:var(--text-tertiary)">Sort:</span>';
+          card += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
+          // Status counts
+          const statusCounts = {};
+          listings.forEach(l => { const s = l.listingStatus || 'UNVERIFIED'; statusCounts[s] = (statusCounts[s]||0)+1; });
+          const activeFilter = (window._scanStatusFilter || {})[scanId] || 'active';
+          const filteredListings = activeFilter === 'all' ? listings : listings.filter(l => {
+            const s = (l.listingStatus || 'UNVERIFIED').toUpperCase();
+            if (activeFilter === 'active') return s === 'ACTIVE' || s === 'UNVERIFIED';
+            return s === activeFilter.toUpperCase();
+          });
+          card += '<div style="font-size:9px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px">Listings <span style="font-family:var(--mono);margin-left:4px;color:' + accent.color + '">' + filteredListings.length + '/' + listings.length + '</span></div>';
+          card += '<span style="font-size:9px;color:var(--text-tertiary)">Status:</span>';
+          const statusOpts = [['active','Active+Unverified'],['ACTIVE','Active Only'],['PENDING','Pending'],['SOLD','Sold'],['all','All']];
+          statusOpts.forEach(([val,label]) => {
+            const isSel = activeFilter === val;
+            card += '<button style="' + sbtn(isSel ? 'score' : '') + (isSel ? '' : '') + '" onclick="if(!window._scanStatusFilter)window._scanStatusFilter={};window._scanStatusFilter[\'' + scanId + '\']=\'' + val + '\';window._scanPages[\'' + scanId + '\']=1;renderView()">' + label + '</button>';
+          });
+          card += '<span style="font-size:9px;color:var(--text-tertiary);margin-left:8px">Sort:</span>';
           ['score','date','price-asc','price-desc','sqft'].forEach((k,i) => {
             const labels = ['Best Deal','Newest','Price Low','Price High','Largest'];
             card += '<button style="' + sbtn(k) + '" onclick="window._scanSorts[\'' + scanId + '\']=\'' + k + '\';window._scanPages[\'' + scanId + '\']=1;renderView()">' + labels[i] + '</button>';
@@ -6313,7 +6329,7 @@ views['venture-realestate'] = async () => {
             card += '</div>';
           }
           card += '</div>';
-          card += '<table class="vdash-table"><tr><th>Score</th><th>Address</th><th>City</th><th class="right">Price</th><th class="right">$/sf</th><th>Bed/Ba</th><th class="right">Sqft</th><th class="right">HOA</th><th>View</th><th>STR</th><th>Links</th><th>Action</th></tr>';
+          card += '<table class="vdash-table"><tr><th>Score</th><th>Status</th><th>Address</th><th>City</th><th class="right">Price</th><th class="right">$/sf</th><th>Bed/Ba</th><th class="right">Sqft</th><th class="right">HOA</th><th>View</th><th>STR</th><th>Links</th><th>Action</th></tr>';
           card += pl.map((l, li) => {
             const lp=l.price||0; const ps = lp>=1000000?'$'+(lp/1000000).toFixed(1).replace(/\.0$/,'')+'M':lp>=1000?'$'+Math.round(lp/1000)+'K':'$'+lp;
             const ppsf = (lp && l.sqft) ? '$' + Math.round(lp/l.sqft) : '--';
@@ -6326,7 +6342,10 @@ views['venture-realestate'] = async () => {
             const addrEnc = encodeURIComponent(l.address || '');
             const cityEnc = encodeURIComponent(l.city || '');
             const isExpanded = !!window._scanExpanded[rowId];
-            let row = '<tr style="cursor:pointer" onclick="window._scanExpanded[\'' + rowId + '\']=!window._scanExpanded[\'' + rowId + '\'];renderView()" title="Click for rental analysis"><td style="text-align:center;white-space:nowrap"><span class="vc-score ' + (sc>=75?'hot':sc>=55?'warm':'cool') + '" title="Size:' + weights.size + ' HOA:' + weights.hoa + ' STR:' + weights.str + ' View:' + weights.view + ' Loc:' + weights.location + ' Val:' + weights.value + '">' + sc + '</span> <span style="font-size:9px;font-weight:700;color:' + tierColor + '">' + (l._tier||'?') + '</span></td><td class="text" style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="'+esc((l.building?l.building+' — ':'')+( l.address||''))+'">'+esc((l.address||'').substring(0,32))+(l.building?'<div style="font-size:9px;color:var(--text-tertiary);margin-top:1px">'+esc(l.building)+'</div>':'')+'</td><td class="text">'+esc(l.city||'')+'</td><td class="right" style="font-weight:600">'+ps+'</td><td class="right">'+ppsf+'</td><td class="text">'+(l.beds||'?')+'/'+(l.baths||'?')+'</td><td class="right">'+(l.sqft ? l.sqft.toLocaleString() : '--')+'</td><td class="right">'+(l.hoaFee!==undefined&&l.hoaFee!==null?'$'+l.hoaFee.toLocaleString():'--')+'</td><td class="text" style="font-size:10px">'+esc(l.view||'')+'</td><td style="text-align:center;font-size:10px">'+(l.strAllowed===true?'<span style="color:var(--green)">Yes</span>':l.strAllowed===false?'<span style="color:var(--red)">No</span>':'<span style="color:var(--text-tertiary)">?</span>')+'</td><td style="white-space:nowrap"><a href="'+(l.url||'#')+'" target="_blank" style="color:'+accent.color+';font-size:9px;text-decoration:none;font-weight:500;margin-right:6px" title="Original listing" onclick="event.stopPropagation()">Listing</a><a href="'+zUrl+'" target="_blank" style="color:var(--text-tertiary);font-size:9px;text-decoration:none;margin-right:6px" title="Zillow" onclick="event.stopPropagation()">Zillow</a><a href="'+paUrl+'" target="_blank" style="color:var(--text-tertiary);font-size:9px;text-decoration:none" title="Tax Records" onclick="event.stopPropagation()">Tax</a></td>' +
+            const ls = (l.listingStatus||'UNVERIFIED').toUpperCase();
+            const lsColor = ls==='ACTIVE'?'var(--green)':ls==='PENDING'?'var(--yellow)':ls==='SOLD'?'var(--red)':ls==='OFF_MARKET'?'var(--text-tertiary)':'var(--text-tertiary)';
+            const lsLabel = ls==='NO_URL'?'No URL':ls==='UNVERIFIED'?'Unverified':ls.charAt(0)+ls.slice(1).toLowerCase();
+            let row = '<tr style="cursor:pointer" onclick="window._scanExpanded[\'' + rowId + '\']=!window._scanExpanded[\'' + rowId + '\'];renderView()" title="Click for rental analysis"><td style="text-align:center;white-space:nowrap"><span class="vc-score ' + (sc>=75?'hot':sc>=55?'warm':'cool') + '" title="Size:' + weights.size + ' HOA:' + weights.hoa + ' STR:' + weights.str + ' View:' + weights.view + ' Loc:' + weights.location + ' Val:' + weights.value + '">' + sc + '</span> <span style="font-size:9px;font-weight:700;color:' + tierColor + '">' + (l._tier||'?') + '</span></td><td style="text-align:center"><span style="font-size:9px;font-weight:600;color:' + lsColor + '">' + lsLabel + '</span></td><td class="text" style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="'+esc((l.building?l.building+' — ':'')+( l.address||''))+'">'+esc((l.address||'').substring(0,32))+(l.building?'<div style="font-size:9px;color:var(--text-tertiary);margin-top:1px">'+esc(l.building)+'</div>':'')+'</td><td class="text">'+esc(l.city||'')+'</td><td class="right" style="font-weight:600">'+ps+'</td><td class="right">'+ppsf+'</td><td class="text">'+(l.beds||'?')+'/'+(l.baths||'?')+'</td><td class="right">'+(l.sqft ? l.sqft.toLocaleString() : '--')+'</td><td class="right">'+(l.hoaFee!==undefined&&l.hoaFee!==null?'$'+l.hoaFee.toLocaleString():'--')+'</td><td class="text" style="font-size:10px">'+esc(l.view||'')+'</td><td style="text-align:center;font-size:10px">'+(l.strAllowed===true?'<span style="color:var(--green)">Yes</span>':l.strAllowed===false?'<span style="color:var(--red)">No</span>':'<span style="color:var(--text-tertiary)">?</span>')+'</td><td style="white-space:nowrap"><a href="'+(l.url||'#')+'" target="_blank" style="color:'+accent.color+';font-size:9px;text-decoration:none;font-weight:500;margin-right:6px" title="Original listing" onclick="event.stopPropagation()">Listing</a><a href="'+zUrl+'" target="_blank" style="color:var(--text-tertiary);font-size:9px;text-decoration:none;margin-right:6px" title="Zillow" onclick="event.stopPropagation()">Zillow</a><a href="'+paUrl+'" target="_blank" style="color:var(--text-tertiary);font-size:9px;text-decoration:none" title="Tax Records" onclick="event.stopPropagation()">Tax</a></td>' +
               '<td onclick="event.stopPropagation()"><select style="font-size:10px;padding:2px 4px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);cursor:pointer;font-family:var(--font)" onchange="window._reAction(this.value,\'' + scanId + '\',' + li + ',' + lp + ',\'' + addrEnc + '\',\'' + cityEnc + '\');this.selectedIndex=0"><option value="">--</option><option value="offer">Create Offer</option><option value="score">Set Score</option><option value="toured">Mark Toured</option><option value="watch">Add to Watchlist</option><option value="verify-str">Verify STR</option><option value="remove">Remove</option></select></td></tr>';
 
             // Expandable rental analysis row
@@ -6338,7 +6357,7 @@ views['venture-realestate'] = async () => {
               const ltr = ra.ltr || {};
               const str = ra.str || {};
 
-              row += '<tr id="' + rowId + '" style="display:' + (isExpanded ? 'table-row' : 'none') + ';background:var(--bg-tertiary)"><td colspan="12" style="padding:12px 16px">';
+              row += '<tr id="' + rowId + '" style="display:' + (isExpanded ? 'table-row' : 'none') + ';background:var(--bg-tertiary)"><td colspan="13" style="padding:12px 16px">';
               row += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;font-size:11px">';
 
               // Column 1: Financing
