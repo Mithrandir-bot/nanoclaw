@@ -367,6 +367,282 @@ The question/comment will appear in the Mission Control dashboard with an unread
   },
 );
 
+// ── Market Data Tool ──────────────────────────────────────────────────────────
+// Fetches prices directly via HTTP inside the container (no IPC needed).
+
+server.tool(
+  'get_market_data',
+  `Get current market prices for stocks, crypto, commodities, and indices. Returns real-time quotes.
+
+Examples:
+• Stocks: "AAPL", "TSLA", "SPY", "QQQ"
+• Crypto: "BTC-USD", "ETH-USD", "SOL-USD"
+• Commodities: "GC=F" (gold), "CL=F" (crude oil), "SI=F" (silver)
+• Indices: "^GSPC" (S&P 500), "^IXIC" (Nasdaq), "^VIX" (VIX)
+• Futures: "ES=F" (E-mini S&P), "NQ=F" (E-mini Nasdaq), "MES=F" (Micro E-mini)
+
+Pass up to 10 symbols at once for efficiency.`,
+  {
+    symbols: z.array(z.string()).min(1).max(10).describe('Ticker symbols (e.g., ["AAPL", "BTC-USD", "GC=F"])'),
+  },
+  async (args) => {
+    try {
+      const joined = args.symbols.join(',');
+      const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(joined)}`;
+      const resp = await fetch(url, {
+        headers: { 'User-Agent': 'NanoClaw/1.0' },
+      });
+
+      if (!resp.ok) {
+        return {
+          content: [{ type: 'text' as const, text: `Yahoo Finance API error: ${resp.status} ${resp.statusText}` }],
+          isError: true,
+        };
+      }
+
+      const data = await resp.json() as {
+        quoteResponse?: {
+          result?: Array<{
+            symbol: string;
+            shortName?: string;
+            regularMarketPrice?: number;
+            regularMarketChange?: number;
+            regularMarketChangePercent?: number;
+            regularMarketPreviousClose?: number;
+            regularMarketOpen?: number;
+            regularMarketDayHigh?: number;
+            regularMarketDayLow?: number;
+            regularMarketVolume?: number;
+            fiftyTwoWeekHigh?: number;
+            fiftyTwoWeekLow?: number;
+            marketCap?: number;
+            bid?: number;
+            ask?: number;
+            bidSize?: number;
+            askSize?: number;
+            quoteType?: string;
+          }>;
+        };
+      };
+      const results = data?.quoteResponse?.result;
+
+      if (!results || results.length === 0) {
+        return {
+          content: [{ type: 'text' as const, text: `No data found for symbols: ${joined}` }],
+          isError: true,
+        };
+      }
+
+      const lines = results.map((q) => {
+        const price = q.regularMarketPrice?.toFixed(2) ?? 'N/A';
+        const change = q.regularMarketChange?.toFixed(2) ?? 'N/A';
+        const pct = q.regularMarketChangePercent?.toFixed(2) ?? 'N/A';
+        const vol = q.regularMarketVolume ? (q.regularMarketVolume / 1e6).toFixed(1) + 'M' : 'N/A';
+        const hi = q.regularMarketDayHigh?.toFixed(2) ?? 'N/A';
+        const lo = q.regularMarketDayLow?.toFixed(2) ?? 'N/A';
+        const bid = q.bid?.toFixed(2) ?? 'N/A';
+        const ask = q.ask?.toFixed(2) ?? 'N/A';
+        return [
+          `${q.symbol} (${q.shortName || q.quoteType || 'Unknown'})`,
+          `  Price: $${price}  Change: ${change} (${pct}%)`,
+          `  Day: $${lo} - $${hi}  Vol: ${vol}`,
+          `  Bid: $${bid}  Ask: $${ask}`,
+          `  52wk: $${q.fiftyTwoWeekLow?.toFixed(2) ?? 'N/A'} - $${q.fiftyTwoWeekHigh?.toFixed(2) ?? 'N/A'}`,
+        ].join('\n');
+      });
+
+      return { content: [{ type: 'text' as const, text: lines.join('\n\n') }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Market data fetch failed: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+// ── Google Calendar Tools ────────────────────────────────────────────────────
+// Uses Google Calendar API with OAuth credentials from container env vars.
+// Non-main groups: read-only. Main group: read-write.
+
+const GOOGLE_CALENDAR_ID = 'primary';
+
+async function getGoogleAccessToken(): Promise<string> {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+
+  if (!clientId || !clientSecret || !refreshToken) {
+    throw new Error('Google OAuth credentials not configured (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN)');
+  }
+
+  const resp = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      grant_type: 'refresh_token',
+    }),
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`Google token refresh failed: ${resp.status} ${body}`);
+  }
+
+  const data = await resp.json() as { access_token: string };
+  return data.access_token;
+}
+
+server.tool(
+  'list_calendar_events',
+  `List upcoming events from your Google Calendar. Returns events within the specified time range.
+
+Defaults to the next 7 days if no range specified. All times in ET.`,
+  {
+    days_ahead: z.number().min(1).max(90).default(7).describe('Number of days ahead to fetch (default: 7, max: 90)'),
+    max_results: z.number().min(1).max(50).default(20).describe('Maximum events to return (default: 20)'),
+    query: z.string().optional().describe('Optional search query to filter events'),
+  },
+  async (args) => {
+    try {
+      const token = await getGoogleAccessToken();
+      const now = new Date();
+      const until = new Date(now.getTime() + args.days_ahead * 86400000);
+
+      const params = new URLSearchParams({
+        timeMin: now.toISOString(),
+        timeMax: until.toISOString(),
+        maxResults: String(args.max_results),
+        singleEvents: 'true',
+        orderBy: 'startTime',
+      });
+      if (args.query) params.set('q', args.query);
+
+      const resp = await fetch(
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(GOOGLE_CALENDAR_ID)}/events?${params}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+
+      if (!resp.ok) {
+        const body = await resp.text();
+        return {
+          content: [{ type: 'text' as const, text: `Calendar API error: ${resp.status} ${body.slice(0, 200)}` }],
+          isError: true,
+        };
+      }
+
+      const data = await resp.json() as {
+        items?: Array<{
+          id: string;
+          summary?: string;
+          description?: string;
+          location?: string;
+          start?: { dateTime?: string; date?: string };
+          end?: { dateTime?: string; date?: string };
+          status?: string;
+          htmlLink?: string;
+          attendees?: Array<{ email: string; responseStatus?: string }>;
+        }>;
+      };
+
+      if (!data.items || data.items.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No events found in the specified range.' }] };
+      }
+
+      const lines = data.items.map((e) => {
+        const start = e.start?.dateTime || e.start?.date || 'TBD';
+        const end = e.end?.dateTime || e.end?.date || '';
+        const loc = e.location ? `  Location: ${e.location}` : '';
+        const attendees = e.attendees?.length
+          ? `  Attendees: ${e.attendees.map((a) => `${a.email} (${a.responseStatus || '?'})`).join(', ')}`
+          : '';
+        return [
+          `${e.summary || '(No title)'} [${e.id}]`,
+          `  Start: ${start}${end ? `  End: ${end}` : ''}`,
+          loc,
+          attendees,
+        ].filter(Boolean).join('\n');
+      });
+
+      return { content: [{ type: 'text' as const, text: `${data.items.length} events:\n\n${lines.join('\n\n')}` }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Calendar fetch failed: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'create_calendar_event',
+  `Create a new event on your Google Calendar. Main group only.
+
+Times should be in ISO 8601 format with timezone offset, e.g., "2026-04-01T14:00:00-04:00" for 2 PM ET.
+For all-day events, use date format: "2026-04-01".`,
+  {
+    summary: z.string().describe('Event title'),
+    start: z.string().describe('Start time (ISO 8601 with offset) or date for all-day events'),
+    end: z.string().describe('End time (ISO 8601 with offset) or date for all-day events'),
+    description: z.string().optional().describe('Event description/notes'),
+    location: z.string().optional().describe('Event location'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can create calendar events.' }],
+        isError: true,
+      };
+    }
+
+    try {
+      const token = await getGoogleAccessToken();
+
+      const isAllDay = /^\d{4}-\d{2}-\d{2}$/.test(args.start);
+      const event: Record<string, unknown> = {
+        summary: args.summary,
+        start: isAllDay ? { date: args.start } : { dateTime: args.start },
+        end: isAllDay ? { date: args.end } : { dateTime: args.end },
+      };
+      if (args.description) event.description = args.description;
+      if (args.location) event.location = args.location;
+
+      const resp = await fetch(
+        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(GOOGLE_CALENDAR_ID)}/events`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(event),
+        },
+      );
+
+      if (!resp.ok) {
+        const body = await resp.text();
+        return {
+          content: [{ type: 'text' as const, text: `Calendar create error: ${resp.status} ${body.slice(0, 200)}` }],
+          isError: true,
+        };
+      }
+
+      const created = await resp.json() as { id: string; htmlLink?: string; summary?: string };
+      return {
+        content: [{ type: 'text' as const, text: `Event created: "${created.summary}" [${created.id}]\n${created.htmlLink || ''}` }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Calendar create failed: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

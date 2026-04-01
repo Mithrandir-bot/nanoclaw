@@ -87,6 +87,7 @@ export interface ScheduledTask {
   venture_file?: string | null;
   project_file?: string | null;
   category?: TaskCategory | null;
+  model?: string | null;
 }
 
 export interface TaskTemplate {

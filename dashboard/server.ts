@@ -5588,7 +5588,16 @@ const SOURCE_PATTERNS: { pattern: RegExp; type: string; name: string }[] = [
   { pattern: /malone\.news/i, type: 'newsletter', name: 'Dr. Robert Malone' },
   { pattern: /midwesterndoctor/i, type: 'newsletter', name: 'Midwestern Doctor' },
   { pattern: /Huberman/i, type: 'expert', name: 'Andrew Huberman' },
-  { pattern: /Peter\s*(?:Attia|Brecka)/i, type: 'expert', name: 'Peter Attia' },
+  { pattern: /Peter\s*Attia/i, type: 'expert', name: 'Peter Attia' },
+  { pattern: /Robert\s*Malone/i, type: 'expert', name: 'Dr. Robert Malone' },
+  { pattern: /Kennedy|RFK/i, type: 'expert', name: 'Robert F. Kennedy Jr.' },
+  { pattern: /Mercola/i, type: 'expert', name: 'Dr. Joseph Mercola' },
+  { pattern: /McCullough/i, type: 'expert', name: 'Dr. Peter McCullough' },
+  { pattern: /Zach\s*Bush/i, type: 'expert', name: 'Dr. Zach Bush' },
+  { pattern: /Casey\s*Means/i, type: 'expert', name: 'Dr. Casey Means' },
+  { pattern: /Mark\s*Hyman/i, type: 'expert', name: 'Dr. Mark Hyman' },
+  { pattern: /Gary\s*Brecka/i, type: 'expert', name: 'Gary Brecka' },
+  { pattern: /Suzanne\s*Humphries/i, type: 'expert', name: 'Dr. Suzanne Humphries' },
   { pattern: /BizBuySell/i, type: 'platform', name: 'BizBuySell' },
   { pattern: /OptionAlpha/i, type: 'platform', name: 'OptionAlpha' },
   { pattern: /Kalshi/i, type: 'platform', name: 'Kalshi' },
@@ -6163,13 +6172,24 @@ const server = http.createServer(async (req, res) => {
 
 const HOST = process.env.DASHBOARD_HOST || '0.0.0.0';
 // --- Zombie task detection at startup ---
+// Only flag recurring tasks stuck in 'running' as zombies. One-time tasks are
+// handled by the scheduler (auto-completed after run) and should not be touched.
+// Previous logic caught completed one-time tasks on dashboard restart, flooding
+// needs_review with false positives.
 try {
   const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
   const zombies = dbWrite.prepare(
-    "UPDATE scheduled_tasks SET status = 'needs_review' WHERE status IN ('active', 'running') AND last_run IS NOT NULL AND last_run < ? RETURNING id"
+    "UPDATE scheduled_tasks SET status = 'needs_review' WHERE status = 'running' AND schedule_type != 'once' AND last_run IS NOT NULL AND last_run < ? RETURNING id"
   ).all(thirtyMinAgo) as Array<{ id: string }>;
   if (zombies.length > 0) {
     console.log(`[startup] Marked ${zombies.length} zombie task(s) as needs_review: ${zombies.map(z => z.id).join(', ')}`);
+  }
+  // Auto-complete one-time tasks that already ran but got stuck in active/running
+  const staleOnce = dbWrite.prepare(
+    "UPDATE scheduled_tasks SET status = 'completed' WHERE schedule_type = 'once' AND status IN ('active', 'running') AND last_run IS NOT NULL RETURNING id"
+  ).all() as Array<{ id: string }>;
+  if (staleOnce.length > 0) {
+    console.log(`[startup] Auto-completed ${staleOnce.length} stale one-time task(s): ${staleOnce.map(z => z.id).join(', ')}`);
   }
 } catch (err) {
   console.error('[startup] Zombie task detection failed:', err);

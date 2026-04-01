@@ -113,6 +113,15 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  // Add model column if it doesn't exist (migration for per-task model selection)
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN model TEXT DEFAULT NULL`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
   // Add is_bot_message column if it doesn't exist (migration for existing DBs)
   try {
     database.exec(
@@ -692,6 +701,7 @@ export function updateTask(
       | 'category'
       | 'template_slug'
       | 'dedup_key'
+      | 'model'
     >
   >,
 ): void {
@@ -710,6 +720,7 @@ export function updateTask(
     'category',
     'template_slug',
     'dedup_key',
+    'model',
   ];
   for (const key of simpleFields) {
     if (updates[key] !== undefined) {

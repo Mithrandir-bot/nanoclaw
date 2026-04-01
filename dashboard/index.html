@@ -4406,7 +4406,9 @@ views['venture-ibkr'] = async () => {
   // Beta-weighted delta and SPY approximation (used by Greeks strip AND stress test)
   const spyApprox = 560;
   const gP = greeks.portfolio || {};
-  const bwDelta = (gP.netDelta || 0) * 50;
+  // BW-delta: netDelta is already in $/point-of-underlying (delta × qty × multiplier).
+  // SPY ≈ SPX/10, so $1 SPY move = 10 SPX points → BW-delta in SPY shares = netDelta × 10.
+  const bwDelta = (gP.netDelta || 0) * 10;
 
   // Strategy color map
   const stratColors = {
@@ -4427,11 +4429,11 @@ views['venture-ibkr'] = async () => {
   const _ts = acct.timestamp ? new Date(acct.timestamp).getTime() : NaN;
   const dataAge = Number.isFinite(_ts) ? Math.round((Date.now() - _ts) / 60000) : null;
   const _dow = now.getDay();
-  const _isWeekend = _dow === 0 || _dow === 6;
   const _hr = now.getHours();
-  const _isFuturesBreak = _hr === 17; // 5-6 PM ET daily break
-  const staleThreshold = (_isWeekend || _isFuturesBreak) ? 120 : 5; // 2hr tolerance on weekends/breaks
-  const staleWarning = dataAge === null ? `<div style="font-size:9px;color:var(--yellow);text-align:right;margin-bottom:4px">Timestamp unavailable</div>` : dataAge > staleThreshold ? `<div style="font-size:9px;color:var(--red);text-align:right;margin-bottom:4px">Data is ${dataAge} min old${_isWeekend ? ' (weekend)' : _isFuturesBreak ? ' (futures break)' : ' — may be stale'}</div>` : `<div style="font-size:9px;color:var(--text-tertiary);text-align:right;margin-bottom:4px">Updated ${dataAge} min ago${_isWeekend ? ' (weekend)' : ''}</div>`;
+  // Futures closed: Sat all day, Sun before 6 PM, Fri after 5 PM, daily 5-6 PM break
+  const _isFuturesClosed = _dow === 6 || (_dow === 0 && _hr < 18) || (_dow === 5 && _hr >= 17) || _hr === 17;
+  const staleThreshold = _isFuturesClosed ? 120 : 45; // 2hr tolerance when closed, 45min during session (30min export cycle + buffer)
+  const staleWarning = dataAge === null ? `<div style="font-size:9px;color:var(--yellow);text-align:right;margin-bottom:4px">Timestamp unavailable</div>` : dataAge > staleThreshold ? `<div style="font-size:9px;color:var(--red);text-align:right;margin-bottom:4px">Data is ${dataAge} min old${_isFuturesClosed ? ' (futures closed)' : ' — may be stale'}</div>` : `<div style="font-size:9px;color:var(--text-tertiary);text-align:right;margin-bottom:4px">Updated ${dataAge} min ago${_isFuturesClosed ? ' (futures closed)' : ''}</div>`;
 
   // KPI Tiles (expanded to 6 with margin buffer)
   const kpi = `${staleWarning}<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:16px">
@@ -4445,7 +4447,7 @@ views['venture-ibkr'] = async () => {
     </div>
     <div class="card" style="padding:12px;text-align:center">
       <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:3px">Open P&L</div>
-      <div style="font-size:20px;font-weight:700;color:${pnlColor(acct.unrealizedPnl || 0)}">${isConnected ? fmtPnl(acct.unrealizedPnl || 0) : '--'}</div>
+      <div style="font-size:20px;font-weight:700;color:${pnlColor((acct.unrealizedPnl || 0) || positions.reduce((s,p) => s + (p.unrealizedPnl||0), 0))}">${isConnected ? fmtPnl((acct.unrealizedPnl || 0) || positions.reduce((s,p) => s + (p.unrealizedPnl||0), 0)) : '--'}</div>
     </div>
     <div class="card" style="padding:12px;text-align:center">
       <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:3px">Buying Power</div>
@@ -4582,7 +4584,7 @@ views['venture-ibkr'] = async () => {
           <td style="padding:4px 8px;text-align:center;font-size:10px;color:var(--text-tertiary)">${p.expiry ? p.expiry.slice(4,6) + '/' + p.expiry.slice(6) : ''}</td>
           <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">${p.quantity}</td>
           <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">$${(p.avgCost || 0).toFixed(2)}</td>
-          <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">$${(p.marketPrice || 0).toFixed(2)}</td>
+          <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">$${((p.marketPrice || 0) * (p.multiplier || 1)).toFixed(2)}</td>
           <td style="padding:4px 8px;text-align:right;font-family:var(--mono);color:${pnlColor(p.unrealizedPnl || 0)}">${fmtPnl(p.unrealizedPnl || 0)}</td>
           <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">${posDelta >= 0 ? '+' : ''}${posDelta.toFixed(3)}</td>
           <td style="padding:4px 8px;text-align:right;font-family:var(--mono);color:${posTheta >= 0 ? 'var(--green)' : 'var(--red)'}">${posTheta >= 0 ? '+' : ''}${posTheta.toFixed(3)}</td>
@@ -4864,13 +4866,16 @@ views['venture-ibkr'] = async () => {
     (summary.avgWin || 0) * (summary.winRate / 100) - (Math.abs(summary.avgLoss || 0)) * (1 - summary.winRate / 100)
   ) : 0;
 
+  const _wr = summary.winRate ?? 0;
+  const _tpnl = summary.totalPnl ?? 0;
+  const _ct = summary.closedTrades ?? 0;
   const statsRow = summary.totalTrades > 0 ? `<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px">
     <div class="card" style="padding:10px;text-align:center">
-      <div style="font-size:20px;font-weight:700;color:${summary.winRate >= 50 ? 'var(--green)' : 'var(--red)'}">${summary.winRate}%</div>
-      <div style="font-size:10px;color:var(--text-tertiary)">Win Rate (${summary.closedTrades} closed)</div>
+      <div style="font-size:20px;font-weight:700;color:${_ct > 0 ? (_wr >= 50 ? 'var(--green)' : 'var(--red)') : 'var(--text-tertiary)'}">${_ct > 0 ? _wr + '%' : '-'}</div>
+      <div style="font-size:10px;color:var(--text-tertiary)">Win Rate (${_ct} closed)</div>
     </div>
     <div class="card" style="padding:10px;text-align:center">
-      <div style="font-size:20px;font-weight:700;color:${pnlColor(summary.totalPnl)}">${fmtPnl(summary.totalPnl)}</div>
+      <div style="font-size:20px;font-weight:700;color:${_ct > 0 ? pnlColor(_tpnl) : 'var(--text-tertiary)'}">${_ct > 0 ? fmtPnl(_tpnl) : '-'}</div>
       <div style="font-size:10px;color:var(--text-tertiary)">Total P&L</div>
     </div>
     <div class="card" style="padding:10px;text-align:center">
@@ -4893,7 +4898,7 @@ views['venture-ibkr'] = async () => {
   const wr = summary.winRate || 0;
   const pf = summary.profitFactor || 0;
   const portRisk = risk.buyingPowerUsedPct || 0;
-  const maxDD = 0; // TODO: calculate from snapshots when we have history
+  const maxDD = (perf.risk || {}).maxDrawdown || 0;
 
   function healthBadge(val, good, warn, bad, fmt, invert) {
     let level, color;
@@ -5118,32 +5123,43 @@ views['venture-ibkr'] = async () => {
     }).join('')}
   </div>`;
 
-  // P&L Calendar Heatmap
+  // P&L Calendar Heatmap (interactive)
   const closedTrades = trades.filter(t => t.status === 'closed' && t.pnl != null);
   const tradePnlByDate = {};
   closedTrades.forEach(t => {
     const d = (t.timestamp || '').slice(0, 10);
     if (d) tradePnlByDate[d] = (tradePnlByDate[d] || 0) + (t.pnl || 0);
   });
-  // Also include daily P&L from snapshots
   Object.entries(dailyPnl).forEach(([d, v]) => {
     if (!tradePnlByDate[d]) tradePnlByDate[d] = v.pnl || 0;
   });
 
+  // Build per-day detail data for tooltips
+  const _snapByDate = {};
+  snapshots.forEach(s => { _snapByDate[s.date] = s; });
+  const _tradesByDate = {};
+  trades.forEach(t => {
+    const d = (t.fillTimeStr || '').slice(0, 10);
+    if (d) { if (!_tradesByDate[d]) _tradesByDate[d] = []; _tradesByDate[d].push(t); }
+  });
+
   const monthName = now.toLocaleString('en-US', { month: 'long', year: 'numeric' });
 
+  // Store calendar detail data globally for click handler
+  if (!window._calData) window._calData = {};
+  window._calData = { snapByDate: _snapByDate, tradesByDate: _tradesByDate, dailyPnl, tradePnlByDate };
+
   let calCells = '';
-  // Day headers
   ['M','T','W','T','F','S','S'].forEach(d => {
     calCells += `<div style="font-size:9px;color:var(--text-tertiary);text-align:center;padding:2px 0;font-weight:600">${d}</div>`;
   });
-  // Offset for first day (Mon=0)
   const offset = (firstDay + 6) % 7;
   for (let i = 0; i < offset; i++) calCells += '<div></div>';
   for (let day = 1; day <= daysInMonth; day++) {
     const dateStr = `${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
     const pnl = tradePnlByDate[dateStr];
     const isToday = day === now.getDate();
+    const hasData = pnl !== undefined || _snapByDate[dateStr] || _tradesByDate[dateStr];
     let bg = 'var(--bg-tertiary)';
     let txt = 'var(--text-tertiary)';
     if (pnl !== undefined) {
@@ -5152,9 +5168,88 @@ views['venture-ibkr'] = async () => {
       else if (pnl < -500) { bg = 'rgba(239,68,68,0.35)'; txt = 'var(--red)'; }
       else if (pnl < 0) { bg = 'rgba(239,68,68,0.15)'; txt = 'var(--red)'; }
     }
-    const border = isToday ? 'border:1px solid var(--accent)' : '';
-    const tip = pnl !== undefined ? `${dateStr}: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(0)}` : dateStr;
-    calCells += `<div style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;border-radius:4px;background:${bg};font-size:10px;font-weight:500;color:${txt};${border};cursor:default" title="${tip}">${day}</div>`;
+    const border = isToday ? 'border:2px solid var(--accent)' : '';
+    calCells += `<div data-cal-date="${dateStr}" style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;border-radius:4px;background:${bg};font-size:10px;font-weight:500;color:${txt};${border};cursor:${hasData ? 'pointer' : 'default'};transition:transform 0.1s;position:relative" onmouseenter="this.style.transform='scale(1.15)';this.style.zIndex='2'" onmouseleave="this.style.transform='';this.style.zIndex=''" onclick="window._showCalDetail&&window._showCalDetail('${dateStr}',this)">${day}</div>`;
+  }
+
+  // Calendar detail popup — define as inline onclick via the data attributes + global fn
+  // (script tags inside innerHTML don't execute, so we register the handler here)
+  if (!window._showCalDetail) {
+    window._showCalDetail = function(dateStr, el) {
+      const cd = window._calData || {};
+      const snap = (cd.snapByDate || {})[dateStr];
+      const dayTrades = (cd.tradesByDate || {})[dateStr] || [];
+      const pnl = (cd.tradePnlByDate || {})[dateStr];
+
+      if (!snap && !dayTrades.length && pnl === undefined) return;
+
+      const old = document.getElementById('cal-detail-popup');
+      if (old) old.remove();
+
+      const popup = document.createElement('div');
+      popup.id = 'cal-detail-popup';
+
+      const rect = el.getBoundingClientRect();
+      let rows = '';
+
+      const dayName = new Date(dateStr + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+      rows += '<div style="font-weight:700;font-size:13px;margin-bottom:8px;color:var(--text-primary)">' + dayName + '</div>';
+
+      if (pnl !== undefined) {
+        const c = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+        const sign = pnl >= 0 ? '+' : '-';
+        rows += '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-light)"><span style="font-size:11px;color:var(--text-secondary)">Day P&L</span><span style="font-family:var(--mono);font-size:13px;font-weight:700;color:' + c + '">' + sign + '$' + Math.abs(pnl).toFixed(2) + '</span></div>';
+      }
+
+      if (snap) {
+        const nlv = snap.nlv || 0;
+        const upnl = snap.unrealizedPnl || 0;
+        const pos = snap.openPositions || 0;
+        const mm = snap.maintMargin || 0;
+        const marginPct = nlv > 0 ? (mm / nlv * 100).toFixed(1) : '0';
+        rows += '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-light)"><span style="font-size:11px;color:var(--text-secondary)">NLV</span><span style="font-family:var(--mono);font-size:11px;color:var(--text-primary)">$' + Math.round(nlv).toLocaleString() + '</span></div>';
+        if (upnl !== 0) rows += '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-light)"><span style="font-size:11px;color:var(--text-secondary)">Open P&L</span><span style="font-family:var(--mono);font-size:11px;color:' + (upnl >= 0 ? 'var(--green)' : 'var(--red)') + '">' + (upnl >= 0 ? '+' : '-') + '$' + Math.abs(upnl).toFixed(2) + '</span></div>';
+        rows += '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-light)"><span style="font-size:11px;color:var(--text-secondary)">Positions</span><span style="font-family:var(--mono);font-size:11px">' + pos + ' legs</span></div>';
+        rows += '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-light)"><span style="font-size:11px;color:var(--text-secondary)">Margin</span><span style="font-family:var(--mono);font-size:11px">$' + Math.round(mm).toLocaleString() + ' (' + marginPct + '%)</span></div>';
+      }
+
+      if (dayTrades.length > 0) {
+        rows += '<div style="font-size:10px;font-weight:600;color:var(--text-secondary);margin-top:8px;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">Trades (' + dayTrades.length + ' legs)</div>';
+        dayTrades.forEach(function(t) {
+          const sc = t.side === 'BUY' ? 'var(--green)' : 'var(--red)';
+          rows += '<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid var(--border-light);font-size:10px">' +
+            '<span style="color:' + sc + ';font-weight:600;width:28px">' + (t.side||'') + '</span>' +
+            '<span style="font-family:var(--mono);width:16px;text-align:right">' + Math.abs(t.quantity||0) + 'x</span>' +
+            '<span style="color:var(--text-primary)">' + (t.symbol||'') + ' ' + (t.right||'') + (t.strike||'') + '</span>' +
+            '<span style="margin-left:auto;font-family:var(--mono);color:var(--text-tertiary)">@$' + (t.avgPrice||0).toFixed(2) + '</span>' +
+            '</div>';
+        });
+        let netCost = dayTrades.reduce(function(s,t) { return s + ((t.quantity||0) < 0 ? -(t.totalCost||0) : (t.totalCost||0)); }, 0);
+        const netLabel = netCost <= 0 ? 'Credit' : 'Debit';
+        const netColor = netCost <= 0 ? 'var(--green)' : 'var(--red)';
+        rows += '<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:10px;font-weight:600"><span style="color:var(--text-secondary)">Net</span><span style="color:' + netColor + '">' + netLabel + ' $' + Math.abs(netCost).toFixed(2) + '</span></div>';
+      }
+
+      popup.innerHTML = rows;
+
+      const popupWidth = 260;
+      let left = rect.right + 8;
+      if (left + popupWidth > window.innerWidth - 20) left = rect.left - popupWidth - 8;
+      let top = rect.top - 20;
+      if (top < 10) top = 10;
+      if (top + 300 > window.innerHeight) top = window.innerHeight - 310;
+
+      popup.style.cssText = 'position:fixed;left:' + left + 'px;top:' + top + 'px;width:' + popupWidth + 'px;max-height:320px;overflow-y:auto;background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:12px;box-shadow:0 8px 24px rgba(0,0,0,0.4);z-index:100;';
+      document.body.appendChild(popup);
+
+      function closePopup(e) {
+        if (!popup.contains(e.target) && e.target !== el) {
+          popup.remove();
+          document.removeEventListener('click', closePopup, true);
+        }
+      }
+      setTimeout(function() { document.addEventListener('click', closePopup, true); }, 50);
+    };
   }
 
   const pnlCalendar = `<div class="card" style="padding:14px">
@@ -8306,7 +8401,7 @@ views.shopping = async () => {
     const priceData = prices[name];
 
     // Build search-based purchase links for the two best stores
-    const searchName = encodeURIComponent(name.replace(/\(.+?\)/g, '').trim());
+    const searchName = encodeURIComponent(name.replace(/\(.+?\)/g, '').replace(/[*_~`\[\]]/g, '').trim());
     const storesDef = [
       { key: 'AMZ', label: 'Amazon', url: `https://www.amazon.com/s?k=${searchName}`, color: '#FF9900' },
       { key: 'WMT', label: 'Walmart', url: `https://www.walmart.com/search?q=${searchName}`, color: '#0071CE' },
@@ -8324,7 +8419,8 @@ views.shopping = async () => {
     const wl = where.toLowerCase();
     const nameMap = { AMZ: 'amazon', WMT: 'walmart', TGT: 'target', WF: 'whole foods', PBX: 'publix', TJ: 'trader joe' };
     const mentioned = storesDef.filter(s => wl.includes(nameMap[s.key]));
-    const top2 = mentioned.length >= 2 ? mentioned.slice(0, 2) : mentioned.length === 1 ? [mentioned[0], storesDef.find(s => s !== mentioned[0])] : [storesDef[0], storesDef[1]];
+    const defaults = storesDef.filter(s => !mentioned.includes(s));
+    const top2 = [...mentioned, ...defaults].slice(0, 2);
 
     // Build badge with optional price
     const liveAMZ = priceData?.amazon?.price;
@@ -8332,8 +8428,8 @@ views.shopping = async () => {
     const purchaseLinks = top2.map(s => {
       if (!s) return '';
       let label = s.key;
-      const lp = s.key === 'AMZ' ? liveAMZ : s.key === 'WMT' ? liveWMT : null;
-      if (lp) label += ' $' + lp.toFixed(0);
+      const lp = Number(s.key === 'AMZ' ? liveAMZ : s.key === 'WMT' ? liveWMT : null);
+      if (lp && !isNaN(lp)) label += ' $' + lp.toFixed(0);
       return `<a href="${s.url}" target="_blank" onclick="event.stopPropagation();event.preventDefault();window.open(this.href)" style="font-size:9px;font-weight:600;color:${s.color};background:${s.color}18;padding:2px 6px;border-radius:4px;text-decoration:none;letter-spacing:0.3px">${label}</a>`;
     }).join('');
 
