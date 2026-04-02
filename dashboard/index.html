@@ -1100,6 +1100,7 @@
       <div class="nav-item" data-view="venture-grants"><span class="icon">&#9830;</span> Gov Grants</div>
       <div class="nav-item" data-view="venture-tradeschool"><span class="icon">&#9998;</span> Trade School</div>
       <div class="nav-item" data-view="venture-realestate"><span class="icon">&#9962;</span> Real Estate</div>
+      <div class="nav-item" data-view="venture-defi-carry"><span class="icon">&#8644;</span> DeFi Carry</div>
     </div>
     <div class="nav-section">
       <div class="nav-section-label">Knowledge</div>
@@ -1346,7 +1347,7 @@ const GROUP_COLORS = {
   'real-estate': 'var(--grp-realestate)',
 };
 function switchView(v, pushState = true) {
-  const viewTitles = {'venture-kalshi':'Kalshi','venture-ibkr':'IBKR Trading','venture-gsa':'GSA Auctions','venture-smb':'SMB Acquisition','venture-grants':'Government Grants','venture-tradeschool':'Trade School','venture-realestate':'Real Estate'};
+  const viewTitles = {'venture-kalshi':'Kalshi','venture-ibkr':'IBKR Trading','venture-gsa':'GSA Auctions','venture-smb':'SMB Acquisition','venture-grants':'Government Grants','venture-tradeschool':'Trade School','venture-realestate':'Real Estate','venture-defi-carry':'DeFi Carry Trade'};
   currentView = v;
   $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
   $('#viewTitle').textContent = viewTitles[v] || v.charAt(0).toUpperCase() + v.slice(1);
@@ -3940,6 +3941,7 @@ const VENTURE_DASHBOARDS = {
   'Government-Grants.md': 'venture-grants',
   'AI-Trade-School.md': 'venture-tradeschool',
   'Real-Estate-Deals.md': 'venture-realestate',
+  'DeFi-IBKR-Carry-Trade.md': 'venture-defi-carry',
 };
 window.ventureCardClick = (file) => {
   const dashView = VENTURE_DASHBOARDS[file];
@@ -5504,6 +5506,416 @@ views['venture-ibkr'] = async () => {
 
 const GSA_PAGE_SIZE = 10;
 let _gsaFilterCat = '';     // category filter
+// --- DeFi-IBKR Carry Trade Venture ---
+let _defiPools = []; // cached for sort/filter/page
+let _defiSort = { col: 'totalSupply', dir: 'desc' };
+let _defiPage = 0;
+let _defiFilter = ''; // text filter
+let _defiFilterBorrowOnly = false;
+const DEFI_PAGE_SIZE = 10;
+
+function _defiSortedPools() {
+  let list = [..._defiPools];
+  if (_defiFilterBorrowOnly) list = list.filter(p => p.apyBorrow > 0);
+  if (_defiFilter) {
+    const q = _defiFilter.toLowerCase();
+    list = list.filter(p => p.name.toLowerCase().includes(q) || p.symbol.toLowerCase().includes(q) || p.chain.toLowerCase().includes(q));
+  }
+  const col = _defiSort.col;
+  const dir = _defiSort.dir === 'asc' ? 1 : -1;
+  list.sort((a, b) => {
+    let va = a[col], vb = b[col];
+    if (typeof va === 'string') return dir * va.localeCompare(vb);
+    return dir * ((va || 0) - (vb || 0));
+  });
+  return list;
+}
+
+function defiSetSort(col) {
+  if (_defiSort.col === col) _defiSort.dir = _defiSort.dir === 'desc' ? 'asc' : 'desc';
+  else { _defiSort.col = col; _defiSort.dir = 'desc'; }
+  _defiPage = 0;
+  defiRenderTable();
+  document.querySelectorAll('#defi-table-head th[data-col]').forEach(th => {
+    const c = th.getAttribute('data-col');
+    const arrow = c === _defiSort.col ? (_defiSort.dir === 'desc' ? ' \u25BC' : ' \u25B2') : '';
+    th.innerHTML = (th.getAttribute('data-label') || '') + arrow;
+    th.style.color = c === _defiSort.col ? 'var(--accent)' : 'var(--text-tertiary)';
+  });
+}
+function defiSetPage(p) { _defiPage = p; defiRenderTable(); }
+let _defiFilterTimer = null;
+function defiSetFilter(val) {
+  _defiFilter = val;
+  _defiPage = 0;
+  clearTimeout(_defiFilterTimer);
+  _defiFilterTimer = setTimeout(() => defiRenderTable(), 400);
+}
+
+function defiRenderTable() {
+  const tbody = document.getElementById('defi-table-body');
+  const pager = document.getElementById('defi-pager');
+  if (!tbody) { renderView(); return; }
+
+  const sorted = _defiSortedPools();
+  const totalPages = Math.ceil(sorted.length / DEFI_PAGE_SIZE);
+  const page = Math.max(0, Math.min(_defiPage, totalPages - 1));
+  const start = page * DEFI_PAGE_SIZE;
+  const pageItems = sorted.slice(start, start + DEFI_PAGE_SIZE);
+  const bestSupplyApy = sorted.length > 0 ? Math.max(...sorted.map(p => p.apy)) : -1;
+  const borrowable = sorted.filter(p => p.apyBorrow > 0);
+  const bestBorrowApy = borrowable.length > 0 ? Math.min(...borrowable.map(p => p.apyBorrow)) : -1;
+  const apyColor = (n) => n >= 7 ? 'var(--green)' : n >= 4 ? 'var(--yellow)' : n >= 0 ? 'var(--text-secondary)' : 'var(--red)';
+
+  tbody.innerHTML = pageItems.length === 0
+    ? '<tr><td colspan="7" style="padding:16px;text-align:center;color:var(--text-tertiary);font-size:12px">' + (_defiPools.length === 0 ? 'Loading...' : 'No pools match filters') + '</td></tr>'
+    : pageItems.map(p => `<tr style="transition:background 0.1s" onmouseover="this.style.background='var(--bg-tertiary)'" onmouseout="this.style.background=''">
+        <td style="padding:7px 12px;border-bottom:1px solid var(--border-light);font-weight:600;font-size:12px;text-transform:capitalize">${p.url ? '<a href="' + p.url.replace(/"/g,'&quot;') + '" target="_blank" onclick="event.stopPropagation()" style="color:var(--text-primary);text-decoration:none;border-bottom:1px dotted var(--text-tertiary)" onmouseover="this.style.color=\'var(--accent)\'" onmouseout="this.style.color=\'var(--text-primary)\'">' + p.name.replace(/</g,'&lt;') + '</a>' : p.name.replace(/</g,'&lt;')}</td>
+        <td style="padding:7px 12px;font-size:11px;font-family:var(--mono);color:var(--text-secondary);border-bottom:1px solid var(--border-light)">${p.symbol.replace(/</g,'&lt;')}</td>
+        <td style="padding:7px 12px;font-size:11px;color:var(--text-secondary);border-bottom:1px solid var(--border-light)">${p.chain.replace(/</g,'&lt;')}</td>
+        <td style="padding:7px 12px;text-align:right;font-size:12px;font-family:var(--mono);border-bottom:1px solid var(--border-light)">${p.totalSupply > 0 ? (p.totalSupply >= 1e9 ? '$' + (p.totalSupply/1e9).toFixed(1) + 'B' : '$' + (p.totalSupply/1e6).toFixed(0) + 'M') : '--'}</td>
+        <td style="padding:7px 12px;text-align:right;font-size:12px;font-family:var(--mono);font-weight:600;color:${apyColor(p.apy)};border-bottom:1px solid var(--border-light);${p.apy === bestSupplyApy && bestSupplyApy > 0 ? 'background:var(--green-muted);border-radius:4px' : ''}">${p.apy.toFixed(2)}%</td>
+        <td style="padding:7px 12px;text-align:right;font-size:12px;font-family:var(--mono);color:${p.apyBorrow > 0 ? 'var(--red)' : 'var(--text-tertiary)'};border-bottom:1px solid var(--border-light);${p.apyBorrow === bestBorrowApy && bestBorrowApy > 0 ? 'background:var(--green-muted);border-radius:4px' : ''}">${p.apyBorrow > 0 ? p.apyBorrow.toFixed(2) + '%' : '--'}</td>
+        <td style="padding:7px 12px;text-align:right;font-size:12px;font-family:var(--mono);font-weight:600;color:${p.spread != null ? (p.spread > 0 ? 'var(--green)' : 'var(--red)') : 'var(--text-tertiary)'};border-bottom:1px solid var(--border-light)">${p.spread != null ? (p.spread >= 0 ? '+' : '') + p.spread.toFixed(2) + '%' : '--'}</td>
+      </tr>`).join('');
+
+  if (pager) {
+    if (totalPages > 1) {
+      pager.innerHTML = '<span style="font-size:11px;color:var(--text-tertiary)">' + sorted.length + ' pools &middot; Page ' + (page+1) + ' of ' + totalPages + '</span>'
+        + '<div style="display:flex;gap:4px">'
+        + '<button onclick="defiSetPage(' + (page-1) + ')" ' + (page===0?'disabled ':'') + 'style="padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:' + (page===0?'var(--bg-tertiary)':'var(--bg-primary)') + ';color:' + (page===0?'var(--text-tertiary)':'var(--text-primary)') + ';font-size:11px;cursor:' + (page===0?'default':'pointer') + '">&larr; Prev</button>'
+        + '<button onclick="defiSetPage(' + (page+1) + ')" ' + (page>=totalPages-1?'disabled ':'') + 'style="padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:' + (page>=totalPages-1?'var(--bg-tertiary)':'var(--bg-primary)') + ';color:' + (page>=totalPages-1?'var(--text-tertiary)':'var(--text-primary)') + ';font-size:11px;cursor:' + (page>=totalPages-1?'default':'pointer') + '">Next &rarr;</button>'
+        + '</div>';
+      pager.style.display = 'flex';
+    } else {
+      pager.innerHTML = '<span style="font-size:11px;color:var(--text-tertiary)">' + sorted.length + ' pools</span>';
+      pager.style.display = 'block';
+    }
+  }
+
+  // Update header count
+  const hdr = document.getElementById('defi-pool-count');
+  if (hdr) hdr.textContent = sorted.length + ' pools';
+}
+function defiToggleBorrowOnly() {
+  _defiFilterBorrowOnly = !_defiFilterBorrowOnly;
+  _defiPage = 0;
+  defiRenderTable();
+  const btn = document.getElementById('defi-borrow-toggle');
+  if (btn) {
+    btn.style.borderColor = _defiFilterBorrowOnly ? 'var(--accent)' : 'var(--border)';
+    btn.style.background = _defiFilterBorrowOnly ? 'var(--accent-muted)' : 'var(--bg-primary)';
+    btn.style.color = _defiFilterBorrowOnly ? 'var(--accent)' : 'var(--text-tertiary)';
+  }
+}
+
+// Carry examples table state
+let _carryExamples = [];
+let _carrySort = { col: 'spread', dir: 'desc' };
+let _carryPage = 0;
+let _carryFilter = '';
+let _carryFilterSameChain = false;
+const CARRY_PAGE_SIZE = 10;
+
+function _carrySortedExamples() {
+  let list = [..._carryExamples];
+  if (_carryFilterSameChain) list = list.filter(e => !e.crossChain);
+  if (_carryFilter) {
+    const q = _carryFilter.toLowerCase();
+    list = list.filter(e => e.borrowProto.toLowerCase().includes(q) || e.depositProto.toLowerCase().includes(q)
+      || e.borrowSymbol.toLowerCase().includes(q) || e.depositSymbol.toLowerCase().includes(q)
+      || e.borrowChain.toLowerCase().includes(q) || e.depositChain.toLowerCase().includes(q));
+  }
+  const col = _carrySort.col;
+  const dir = _carrySort.dir === 'asc' ? 1 : -1;
+  list.sort((a, b) => {
+    let va = a[col], vb = b[col];
+    if (typeof va === 'string') return dir * va.localeCompare(vb);
+    return dir * ((va || 0) - (vb || 0));
+  });
+  return list;
+}
+
+function carrySetSort(col) {
+  if (_carrySort.col === col) _carrySort.dir = _carrySort.dir === 'desc' ? 'asc' : 'desc';
+  else { _carrySort.col = col; _carrySort.dir = 'desc'; }
+  _carryPage = 0;
+  carryRenderTable();
+  document.querySelectorAll('#carry-table-head th[data-col]').forEach(th => {
+    const c = th.getAttribute('data-col');
+    const arrow = c === _carrySort.col ? (_carrySort.dir === 'desc' ? ' \u25BC' : ' \u25B2') : '';
+    th.innerHTML = (th.getAttribute('data-label') || '') + arrow;
+    th.style.color = c === _carrySort.col ? 'var(--accent)' : 'var(--text-tertiary)';
+  });
+}
+function carrySetPage(p) { _carryPage = p; carryRenderTable(); }
+let _carryFilterTimer = null;
+function carrySetFilter(val) {
+  _carryFilter = val;
+  _carryPage = 0;
+  clearTimeout(_carryFilterTimer);
+  _carryFilterTimer = setTimeout(() => carryRenderTable(), 400);
+}
+function carryToggleSameChain() {
+  _carryFilterSameChain = !_carryFilterSameChain;
+  _carryPage = 0;
+  carryRenderTable();
+  const btn = document.getElementById('carry-samechain-toggle');
+  if (btn) {
+    btn.style.borderColor = _carryFilterSameChain ? 'var(--accent)' : 'var(--border)';
+    btn.style.background = _carryFilterSameChain ? 'var(--accent-muted)' : 'var(--bg-primary)';
+    btn.style.color = _carryFilterSameChain ? 'var(--accent)' : 'var(--text-tertiary)';
+  }
+}
+
+function carryRenderTable() {
+  const tbody = document.getElementById('carry-table-body');
+  const pager = document.getElementById('carry-pager');
+  if (!tbody) return;
+
+  const sorted = _carrySortedExamples();
+  const totalPages = Math.ceil(sorted.length / CARRY_PAGE_SIZE);
+  const page = Math.max(0, Math.min(_carryPage, totalPages - 1));
+  const start = page * CARRY_PAGE_SIZE;
+  const pageItems = sorted.slice(start, start + CARRY_PAGE_SIZE);
+  const bestSpread = sorted.length > 0 ? Math.max(...sorted.map(e => e.spread)) : -1;
+
+  function esc2(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+  tbody.innerHTML = pageItems.length === 0
+    ? '<tr><td colspan="6" style="padding:16px;text-align:center;color:var(--text-tertiary);font-size:12px">No carry opportunities match filters</td></tr>'
+    : pageItems.map(e => {
+      const isBest = e.spread === bestSpread && bestSpread > 0;
+      return `<tr style="transition:background 0.1s" onmouseover="this.style.background='var(--bg-tertiary)'" onmouseout="this.style.background=''">
+        <td style="padding:8px 12px;border-bottom:1px solid var(--border-light)">
+          ${e.borrowUrl ? '<a href="' + esc2(e.borrowUrl) + '" target="_blank" style="color:var(--text-primary);text-decoration:none;border-bottom:1px dotted var(--text-tertiary)" onmouseover="this.style.color=\'var(--accent)\'" onmouseout="this.style.color=\'var(--text-primary)\'">' : ''}
+          <span style="font-weight:600;font-size:12px;text-transform:capitalize">${esc2(e.borrowProto)}</span>
+          <span style="font-size:10px;color:var(--text-tertiary);margin-left:4px">${esc2(e.borrowSymbol)}</span>
+          <span style="font-size:9px;color:var(--text-tertiary);margin-left:2px">${esc2(e.borrowChain)}</span>
+          ${e.borrowUrl ? '</a>' : ''}
+        </td>
+        <td style="padding:8px 12px;text-align:right;font-size:12px;font-family:var(--mono);color:var(--red);border-bottom:1px solid var(--border-light)">${e.borrowRate.toFixed(2)}%</td>
+        <td style="padding:8px 12px;text-align:center;border-bottom:1px solid var(--border-light)">
+          <span style="font-size:14px;color:var(--text-tertiary)">${e.crossChain ? '&#8644;' : '&#8594;'}</span>
+          ${e.crossChain ? '<div style="font-size:8px;color:var(--accent);font-weight:600">BRIDGE</div>' : ''}
+        </td>
+        <td style="padding:8px 12px;border-bottom:1px solid var(--border-light)">
+          ${e.depositUrl ? '<a href="' + esc2(e.depositUrl) + '" target="_blank" style="color:var(--text-primary);text-decoration:none;border-bottom:1px dotted var(--text-tertiary)" onmouseover="this.style.color=\'var(--accent)\'" onmouseout="this.style.color=\'var(--text-primary)\'">' : ''}
+          <span style="font-weight:600;font-size:12px;text-transform:capitalize">${esc2(e.depositProto)}</span>
+          <span style="font-size:10px;color:var(--text-tertiary);margin-left:4px">${esc2(e.depositSymbol)}</span>
+          <span style="font-size:9px;color:var(--text-tertiary);margin-left:2px">${esc2(e.depositChain)}</span>
+          ${e.depositUrl ? '</a>' : ''}
+        </td>
+        <td style="padding:8px 12px;text-align:right;font-size:12px;font-family:var(--mono);font-weight:600;color:var(--green);border-bottom:1px solid var(--border-light)">${e.depositRate.toFixed(2)}%</td>
+        <td style="padding:8px 12px;text-align:right;border-bottom:1px solid var(--border-light)">
+          <span style="font-size:13px;font-weight:700;font-family:var(--mono);color:var(--green);padding:2px 8px;border-radius:4px;${isBest ? 'background:var(--green-muted)' : ''}">+${e.spread.toFixed(2)}%</span>
+        </td>
+      </tr>`;
+    }).join('');
+
+  if (pager) {
+    if (totalPages > 1) {
+      pager.innerHTML = '<span style="font-size:11px;color:var(--text-tertiary)">' + sorted.length + ' opportunities &middot; Page ' + (page+1) + ' of ' + totalPages + '</span>'
+        + '<div style="display:flex;gap:4px">'
+        + '<button onclick="carrySetPage(' + (page-1) + ')" ' + (page===0?'disabled ':'') + 'style="padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:' + (page===0?'var(--bg-tertiary)':'var(--bg-primary)') + ';color:' + (page===0?'var(--text-tertiary)':'var(--text-primary)') + ';font-size:11px;cursor:' + (page===0?'default':'pointer') + '">&larr; Prev</button>'
+        + '<button onclick="carrySetPage(' + (page+1) + ')" ' + (page>=totalPages-1?'disabled ':'') + 'style="padding:4px 10px;border-radius:4px;border:1px solid var(--border);background:' + (page>=totalPages-1?'var(--bg-tertiary)':'var(--bg-primary)') + ';color:' + (page>=totalPages-1?'var(--text-tertiary)':'var(--text-primary)') + ';font-size:11px;cursor:' + (page>=totalPages-1?'default':'pointer') + '">Next &rarr;</button>'
+        + '</div>';
+      pager.style.display = 'flex';
+    } else {
+      pager.innerHTML = '<span style="font-size:11px;color:var(--text-tertiary)">' + sorted.length + ' opportunities</span>';
+      pager.style.display = 'block';
+    }
+  }
+  const hdr = document.getElementById('carry-count');
+  if (hdr) hdr.textContent = sorted.length + ' opportunities';
+}
+
+views['venture-defi-carry'] = async () => {
+  const d = await api('/api/venture/defi-carry');
+  if (!d || d.error) return `<div class="empty-state">DeFi Carry Trade data unavailable. ${d?.error || ''}</div>`;
+
+  _defiPools = (d.defiPools || []).map(p => ({ ...p, spread: p.apyBorrow > 0 ? p.apy - p.apyBorrow : null }));
+  const cbbtc = d.cbbtc;
+  const ibkr = d.ibkr || {};
+  const model = d.carryModel || {};
+
+  const fmtPct = (n) => n != null ? (n >= 0 ? '+' : '') + n.toFixed(2) + '%' : 'N/A';
+  const fmtUsd = (n) => n != null ? '$' + Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 }) : 'N/A';
+  const apyColor = (n) => n >= 7 ? 'var(--green)' : n >= 4 ? 'var(--yellow)' : n >= 0 ? 'var(--text-secondary)' : 'var(--red)';
+
+  // Carry spread bar width (clamped 0-100)
+  const spreadBarWidth = Math.min(100, Math.max(0, (model.blendedEstimate || 0) * 2));
+
+  return `
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;margin-bottom:24px">
+      <div class="ov-card" title="${esc((model.topDeFiName || '').replace(/\b\w/g, c => c.toUpperCase()))} — ${esc(model.topDeFiSymbol || '')}" style="cursor:default">
+        <div class="ov-label">Top DeFi Supply APY</div>
+        <div class="ov-val" style="color:${apyColor(model.topDeFiYield)}">${fmtPct(model.topDeFiYield)}</div>
+        <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc((model.topDeFiName || '').replace(/\b\w/g, c => c.toUpperCase()))} ${esc(model.topDeFiSymbol || '')}</div>
+      </div>
+      <div class="ov-card" title="${esc((model.cheapestBorrowName || '').replace(/\b\w/g, c => c.toUpperCase()))} — ${esc(model.cheapestBorrowSymbol || '')}" style="cursor:default">
+        <div class="ov-label">Cheapest Borrow APY</div>
+        <div class="ov-val" style="color:var(--red)">${model.cheapestBorrowRate != null ? model.cheapestBorrowRate.toFixed(2) + '%' : 'N/A'}</div>
+        <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc((model.cheapestBorrowName || '').replace(/\b\w/g, c => c.toUpperCase()))} ${esc(model.cheapestBorrowSymbol || '')}</div>
+      </div>
+      <div class="ov-card">
+        <div class="ov-label">IBKR NLV</div>
+        <div class="ov-val">${fmtUsd(ibkr.nlv)}</div>
+      </div>
+      <div class="ov-card">
+        <div class="ov-label">Blended Carry Est.</div>
+        <div class="ov-val" style="color:${apyColor(model.blendedEstimate)}">${fmtPct(model.blendedEstimate)}</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px">
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px">Leg A: DeFi Protocol Yields</span>
+          <span style="font-size:10px;color:var(--text-tertiary)">DefiLlama &middot; <span id="defi-pool-count">${_defiPools.length} pools</span></span>
+        </div>
+        <div style="padding:8px 12px;display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--border)">
+          <input id="defi-filter-input" type="text" placeholder="Filter protocol, asset, chain..." value="${esc(_defiFilter)}" oninput="defiSetFilter(this.value)"
+            style="flex:1;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:11px;outline:none">
+          <button id="defi-borrow-toggle" onclick="defiToggleBorrowOnly()" style="padding:4px 10px;border-radius:4px;border:1px solid ${_defiFilterBorrowOnly ? 'var(--accent)' : 'var(--border)'};background:${_defiFilterBorrowOnly ? 'var(--accent-muted)' : 'var(--bg-primary)'};color:${_defiFilterBorrowOnly ? 'var(--accent)' : 'var(--text-tertiary)'};font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap">Borrowable Only</button>
+        </div>
+        ${(() => {
+          const sorted = _defiSortedPools();
+          const totalPages = Math.ceil(sorted.length / DEFI_PAGE_SIZE);
+          const page = Math.max(0, Math.min(_defiPage, totalPages - 1));
+          const start = page * DEFI_PAGE_SIZE;
+          const pageItems = sorted.slice(start, start + DEFI_PAGE_SIZE);
+          // Find best values across ALL filtered results (not just current page)
+          const bestSupplyApy = sorted.length > 0 ? Math.max(...sorted.map(p => p.apy)) : -1;
+          const borrowable = sorted.filter(p => p.apyBorrow > 0);
+          const bestBorrowApy = borrowable.length > 0 ? Math.min(...borrowable.map(p => p.apyBorrow)) : -1;
+          const thStyle = 'padding:8px 12px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.3px;border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap;transition:color 0.1s';
+          const sortIcon = (col) => _defiSort.col === col ? (_defiSort.dir === 'desc' ? ' &#9660;' : ' &#9650;') : '';
+          const sortColor = (col) => _defiSort.col === col ? 'color:var(--accent)' : 'color:var(--text-tertiary)';
+          return `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+          <thead id="defi-table-head"><tr>
+            <th data-col="name" data-label="Protocol" style="${thStyle};text-align:left;${sortColor('name')}" onclick="defiSetSort('name')">Protocol${sortIcon('name')}</th>
+            <th data-col="symbol" data-label="Asset" style="${thStyle};text-align:left;${sortColor('symbol')}" onclick="defiSetSort('symbol')">Asset${sortIcon('symbol')}</th>
+            <th data-col="chain" data-label="Chain" style="${thStyle};text-align:left;${sortColor('chain')}" onclick="defiSetSort('chain')">Chain${sortIcon('chain')}</th>
+            <th data-col="totalSupply" data-label="Supply" style="${thStyle};text-align:right;${sortColor('totalSupply')}" onclick="defiSetSort('totalSupply')">Supply${sortIcon('totalSupply')}</th>
+            <th data-col="apy" data-label="Supply APY" style="${thStyle};text-align:right;${sortColor('apy')}" onclick="defiSetSort('apy')">Supply APY${sortIcon('apy')}</th>
+            <th data-col="apyBorrow" data-label="Borrow APY" style="${thStyle};text-align:right;${sortColor('apyBorrow')}" onclick="defiSetSort('apyBorrow')">Borrow APY${sortIcon('apyBorrow')}</th>
+            <th data-col="spread" data-label="Spread" style="${thStyle};text-align:right;${sortColor('spread')}" onclick="defiSetSort('spread')">Spread${sortIcon('spread')}</th>
+          </tr></thead>
+          <tbody id="defi-table-body"></tbody></table></div>
+          <div id="defi-pager" style="padding:8px 12px;display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--border)"></div>`;
+        })()}
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px">Leg B: IBKR Options Selling</span>
+          <span style="font-size:10px;color:var(--text-tertiary)">Paper account DU6484438</span>
+        </div>
+        <div style="padding:16px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div>
+            <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px">Net Liquidation</div>
+            <div style="font-size:20px;font-weight:700">${fmtUsd(ibkr.nlv)}</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px">Buying Power</div>
+            <div style="font-size:20px;font-weight:700">${fmtUsd(ibkr.buyingPower)}</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px">Margin Used</div>
+            <div style="font-size:16px;font-weight:600">${fmtUsd(ibkr.marginUsed)}</div>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px">Open Trades</div>
+            <div style="font-size:16px;font-weight:600">${ibkr.openTrades || 0}</div>
+          </div>
+          <div style="grid-column:span 2">
+            <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px">Period Return (${ibkr.snapshotCount || 0} snapshots)</div>
+            <div style="font-size:16px;font-weight:600;color:${ibkr.periodReturn >= 0 ? 'var(--green)' : 'var(--red)'}">${fmtPct(ibkr.periodReturn)}</div>
+          </div>
+        </div>
+        <div style="padding:0 16px 16px">
+          <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:8px">Active Strategies</div>
+          <div style="display:flex;flex-wrap:wrap;gap:4px">
+            ${['LT112','1-2-0','221','Strangles','Naked Puts','1x3 Ratio','Wheel','PMCC/LEAPS'].map(s =>
+              '<span style="font-size:10px;font-weight:600;padding:3px 8px;border-radius:4px;background:var(--accent-muted);color:var(--accent)">' + s + '</span>'
+            ).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    ${(() => {
+      _carryExamples = (d.carryExamples || []);
+      if (!_carryExamples.length) return '';
+      const cthStyle = 'padding:8px 12px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.3px;border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap;transition:color 0.1s';
+      const cSortColor = (col) => _carrySort.col === col ? 'color:var(--accent)' : 'color:var(--text-tertiary)';
+      const cSortIcon = (col) => _carrySort.col === col ? (_carrySort.dir === 'desc' ? ' &#9660;' : ' &#9650;') : '';
+      return `<div class="card" style="padding:0;overflow:hidden;margin-bottom:24px">
+        <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+          <span style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px">Active Carry Opportunities</span>
+          <span style="font-size:10px;color:var(--text-tertiary)">Auto-generated from live rates &middot; <span id="carry-count">${_carryExamples.length} opportunities</span></span>
+        </div>
+        <div style="padding:8px 12px;display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--border)">
+          <input id="carry-filter-input" type="text" placeholder="Filter protocol, asset, chain..." value="${esc(_carryFilter)}" oninput="carrySetFilter(this.value)"
+            style="flex:1;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:11px;outline:none">
+          <button id="carry-samechain-toggle" onclick="carryToggleSameChain()" style="padding:4px 10px;border-radius:4px;border:1px solid ${_carryFilterSameChain ? 'var(--accent)' : 'var(--border)'};background:${_carryFilterSameChain ? 'var(--accent-muted)' : 'var(--bg-primary)'};color:${_carryFilterSameChain ? 'var(--accent)' : 'var(--text-tertiary)'};font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap">Same Chain Only</button>
+        </div>
+        <div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse">
+          <thead id="carry-table-head"><tr>
+            <th data-col="borrowProto" data-label="Borrow From" style="${cthStyle};text-align:left;${cSortColor('borrowProto')}" onclick="carrySetSort('borrowProto')">Borrow From${cSortIcon('borrowProto')}</th>
+            <th data-col="borrowRate" data-label="Borrow Rate" style="${cthStyle};text-align:right;${cSortColor('borrowRate')}" onclick="carrySetSort('borrowRate')">Borrow Rate${cSortIcon('borrowRate')}</th>
+            <th style="padding:8px 4px;border-bottom:1px solid var(--border)"></th>
+            <th data-col="depositProto" data-label="Deposit Into" style="${cthStyle};text-align:left;${cSortColor('depositProto')}" onclick="carrySetSort('depositProto')">Deposit Into${cSortIcon('depositProto')}</th>
+            <th data-col="depositRate" data-label="Supply Rate" style="${cthStyle};text-align:right;${cSortColor('depositRate')}" onclick="carrySetSort('depositRate')">Supply Rate${cSortIcon('depositRate')}</th>
+            <th data-col="spread" data-label="Net Carry" style="${cthStyle};text-align:right;${cSortColor('spread')}" onclick="carrySetSort('spread')">Net Carry${cSortIcon('spread')}</th>
+          </tr></thead>
+          <tbody id="carry-table-body"></tbody>
+        </table></div>
+        <div id="carry-pager" style="padding:8px 12px;display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--border)"></div>
+      </div>`;
+    })()}
+
+    <div class="card" style="padding:16px;margin-bottom:24px">
+      <div style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.3px;margin-bottom:16px">Carry Spread Model</div>
+      <div style="display:grid;grid-template-columns:repeat(5, 1fr);gap:16px;margin-bottom:16px">
+        <div style="text-align:center">
+          <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;margin-bottom:4px">DeFi Avg Yield</div>
+          <div style="font-size:18px;font-weight:700;color:${apyColor(model.avgDeFiYield)}">${fmtPct(model.avgDeFiYield)}</div>
+          <div style="font-size:10px;color:var(--text-tertiary)">40% weight</div>
+        </div>
+        <div style="text-align:center;display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--text-tertiary)">+</div>
+        <div style="text-align:center">
+          <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;margin-bottom:4px">IBKR Return</div>
+          <div style="font-size:18px;font-weight:700;color:${apyColor(model.ibkrAnnualized)}">${fmtPct(model.ibkrAnnualized)}</div>
+          <div style="font-size:10px;color:var(--text-tertiary)">60% weight</div>
+        </div>
+        <div style="text-align:center;display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--text-tertiary)">=</div>
+        <div style="text-align:center">
+          <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;margin-bottom:4px">Blended Carry</div>
+          <div style="font-size:18px;font-weight:700;color:${apyColor(model.blendedEstimate)}">${fmtPct(model.blendedEstimate)}</div>
+          <div style="font-size:10px;color:var(--text-tertiary)">annualized</div>
+        </div>
+      </div>
+      <div style="background:var(--bg-tertiary);border-radius:6px;height:8px;overflow:hidden">
+        <div style="height:100%;width:${spreadBarWidth}%;background:${model.blendedEstimate >= 10 ? 'var(--green)' : model.blendedEstimate >= 0 ? 'var(--accent)' : 'var(--red)'};border-radius:6px;transition:width 0.3s"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:10px;color:var(--text-tertiary)">
+        <span>0%</span>
+        <span>Avg borrow ~${model.avgBorrowRate || 'N/A'}%</span>
+        <span>50%+</span>
+      </div>
+    </div>
+
+    <div style="font-size:11px;color:var(--text-tertiary);display:flex;align-items:center;gap:8px">
+      <span>Last updated: ${d.lastUpdated ? new Date(d.lastUpdated).toLocaleString('en-US', {timeZone:'America/New_York'}) : 'N/A'} ET</span>
+      <span style="opacity:0.5">&middot;</span>
+      <span>DefiLlama data cached 10 min</span>
+      <span style="opacity:0.5">&middot;</span>
+      <span>Preferred stablecoins (USDC, USDT, RLUSD, USDS, PYUSD, DAI) &middot; Borrowable pools >$50M supply</span>
+    </div>`;
+};
+
 let _gsaFilterShip = '';    // shipping filter
 let _gsaFilterCond = '';    // condition filter
 let _gsaFilterMinEdge = 0;  // minimum margin %
@@ -6376,6 +6788,16 @@ views['venture-realestate'] = async () => {
             l._segment = seg;
           });
 
+          // Status filter (must be declared before sorted)
+          const statusCounts = {};
+          listings.forEach(l => { const s = l.listingStatus || 'UNVERIFIED'; statusCounts[s] = (statusCounts[s]||0)+1; });
+          const activeFilter = (window._scanStatusFilter || {})[scanId] || 'active';
+          const filteredListings = activeFilter === 'all' ? listings : listings.filter(l => {
+            const s = (l.listingStatus || 'UNVERIFIED').toUpperCase();
+            if (activeFilter === 'active') return s === 'ACTIVE' || s === 'UNVERIFIED';
+            return s === activeFilter.toUpperCase();
+          });
+
           const sortKey = window._scanSorts[scanId] || 'score';
           const sorted = [...filteredListings].sort((a,b) => {
             if (sortKey==='score') return (b._score||0)-(a._score||0);
@@ -6393,15 +6815,6 @@ views['venture-realestate'] = async () => {
           card += '<div style="padding:0 20px 16px">';
           card += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px">';
           card += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">';
-          // Status counts
-          const statusCounts = {};
-          listings.forEach(l => { const s = l.listingStatus || 'UNVERIFIED'; statusCounts[s] = (statusCounts[s]||0)+1; });
-          const activeFilter = (window._scanStatusFilter || {})[scanId] || 'active';
-          const filteredListings = activeFilter === 'all' ? listings : listings.filter(l => {
-            const s = (l.listingStatus || 'UNVERIFIED').toUpperCase();
-            if (activeFilter === 'active') return s === 'ACTIVE' || s === 'UNVERIFIED';
-            return s === activeFilter.toUpperCase();
-          });
           card += '<div style="font-size:9px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px">Listings <span style="font-family:var(--mono);margin-left:4px;color:' + accent.color + '">' + filteredListings.length + '/' + listings.length + '</span></div>';
           card += '<span style="font-size:9px;color:var(--text-tertiary)">Status:</span>';
           const statusOpts = [['active','Active+Unverified'],['ACTIVE','Active Only'],['PENDING','Pending'],['SOLD','Sold'],['all','All']];
@@ -6440,7 +6853,7 @@ views['venture-realestate'] = async () => {
             const ls = (l.listingStatus||'UNVERIFIED').toUpperCase();
             const lsColor = ls==='ACTIVE'?'var(--green)':ls==='PENDING'?'var(--yellow)':ls==='SOLD'?'var(--red)':ls==='OFF_MARKET'?'var(--text-tertiary)':'var(--text-tertiary)';
             const lsLabel = ls==='NO_URL'?'No URL':ls==='UNVERIFIED'?'Unverified':ls.charAt(0)+ls.slice(1).toLowerCase();
-            let row = '<tr style="cursor:pointer" onclick="window._scanExpanded[\'' + rowId + '\']=!window._scanExpanded[\'' + rowId + '\'];renderView()" title="Click for rental analysis"><td style="text-align:center;white-space:nowrap"><span class="vc-score ' + (sc>=75?'hot':sc>=55?'warm':'cool') + '" title="Size:' + weights.size + ' HOA:' + weights.hoa + ' STR:' + weights.str + ' View:' + weights.view + ' Loc:' + weights.location + ' Val:' + weights.value + '">' + sc + '</span> <span style="font-size:9px;font-weight:700;color:' + tierColor + '">' + (l._tier||'?') + '</span></td><td style="text-align:center"><span style="font-size:9px;font-weight:600;color:' + lsColor + '">' + lsLabel + '</span></td><td class="text" style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="'+esc((l.building?l.building+' — ':'')+( l.address||''))+'">'+esc((l.address||'').substring(0,32))+(l.building?'<div style="font-size:9px;color:var(--text-tertiary);margin-top:1px">'+esc(l.building)+'</div>':'')+'</td><td class="text">'+esc(l.city||'')+'</td><td class="right" style="font-weight:600">'+ps+'</td><td class="right">'+ppsf+'</td><td class="text">'+(l.beds||'?')+'/'+(l.baths||'?')+'</td><td class="right">'+(l.sqft ? l.sqft.toLocaleString() : '--')+'</td><td class="right">'+(l.hoaFee!==undefined&&l.hoaFee!==null?'$'+l.hoaFee.toLocaleString():'--')+'</td><td class="text" style="font-size:10px">'+esc(l.view||'')+'</td><td style="text-align:center;font-size:10px">'+(l.strAllowed===true?'<span style="color:var(--green)">Yes</span>':l.strAllowed===false?'<span style="color:var(--red)">No</span>':'<span style="color:var(--text-tertiary)">?</span>')+'</td><td style="white-space:nowrap"><a href="'+(l.url||'#')+'" target="_blank" style="color:'+accent.color+';font-size:9px;text-decoration:none;font-weight:500;margin-right:6px" title="Original listing" onclick="event.stopPropagation()">Listing</a><a href="'+zUrl+'" target="_blank" style="color:var(--text-tertiary);font-size:9px;text-decoration:none;margin-right:6px" title="Zillow" onclick="event.stopPropagation()">Zillow</a><a href="'+paUrl+'" target="_blank" style="color:var(--text-tertiary);font-size:9px;text-decoration:none" title="Tax Records" onclick="event.stopPropagation()">Tax</a></td>' +
+            let row = '<tr style="cursor:pointer" onclick="window._scanExpanded[\'' + rowId + '\']=!window._scanExpanded[\'' + rowId + '\'];renderView()" title="Click row to expand rental analysis"><td style="text-align:center;white-space:nowrap"><span class="vc-score ' + (sc>=75?'hot':sc>=55?'warm':'cool') + '" title="Size:' + weights.size + ' HOA:' + weights.hoa + ' STR:' + weights.str + ' View:' + weights.view + ' Loc:' + weights.location + ' Val:' + weights.value + '">' + sc + '</span> <span style="font-size:9px;font-weight:700;color:' + tierColor + '">' + (l._tier||'?') + '</span></td><td style="text-align:center"><span style="font-size:9px;font-weight:600;color:' + lsColor + '">' + lsLabel + '</span></td><td class="text" style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="'+esc((l.building?l.building+' — ':'')+( l.address||''))+'">' + (l.url ? '<a href="' + esc(l.url) + '" target="_blank" onclick="event.stopPropagation()" style="color:var(--text-primary);text-decoration:none;border-bottom:1px dotted var(--text-tertiary)" onmouseover="this.style.color=\'var(--accent)\'" onmouseout="this.style.color=\'var(--text-primary)\'">' : '') + esc((l.address||'').substring(0,32)) + (l.url ? '</a>' : '') +(l.building?'<div style="font-size:9px;color:var(--text-tertiary);margin-top:1px">'+esc(l.building)+'</div>':'')+'</td><td class="text">'+esc(l.city||'')+'</td><td class="right" style="font-weight:600">'+ps+'</td><td class="right">'+ppsf+'</td><td class="text">'+(l.beds||'?')+'/'+(l.baths||'?')+'</td><td class="right">'+(l.sqft ? l.sqft.toLocaleString() : '--')+'</td><td class="right">'+(l.hoaFee!==undefined&&l.hoaFee!==null?'$'+l.hoaFee.toLocaleString():'--')+'</td><td class="text" style="font-size:10px">'+esc(l.view||'')+'</td><td style="text-align:center;font-size:10px">'+(l.strAllowed===true?'<span style="color:var(--green)">Yes</span>':l.strAllowed===false?'<span style="color:var(--red)">No</span>':'<span style="color:var(--text-tertiary)">?</span>')+'</td><td style="white-space:nowrap"><a href="'+(l.url||'#')+'" target="_blank" style="color:'+accent.color+';font-size:9px;text-decoration:none;font-weight:500;margin-right:6px" title="Original listing" onclick="event.stopPropagation()">Listing</a><a href="'+zUrl+'" target="_blank" style="color:var(--text-tertiary);font-size:9px;text-decoration:none;margin-right:6px" title="Zillow" onclick="event.stopPropagation()">Zillow</a><a href="'+paUrl+'" target="_blank" style="color:var(--text-tertiary);font-size:9px;text-decoration:none" title="Tax Records" onclick="event.stopPropagation()">Tax</a></td>' +
               '<td onclick="event.stopPropagation()"><select style="font-size:10px;padding:2px 4px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);cursor:pointer;font-family:var(--font)" onchange="window._reAction(this.value,\'' + scanId + '\',' + li + ',' + lp + ',\'' + addrEnc + '\',\'' + cityEnc + '\');this.selectedIndex=0"><option value="">--</option><option value="offer">Create Offer</option><option value="score">Set Score</option><option value="toured">Mark Toured</option><option value="watch">Add to Watchlist</option><option value="verify-str">Verify STR</option><option value="remove">Remove</option></select></td></tr>';
 
             // Expandable rental analysis row
@@ -8361,30 +8774,44 @@ views.nutrition = async () => {
 
 views.shopping = async () => {
   const d = await api('/api/shopping');
-  if (!d?.categories?.length) return '<div class="empty-state">No shopping list found. The agent creates it at Memory/Shopping-List.md in the Obsidian vault.</div>';
+  const completed = d?.completedPurchases || [];
+  if (!d?.categories?.length && !completed.length) return '<div class="empty-state">No shopping list found. The agent creates it at Memory/Shopping-List.md in the Obsidian vault.</div>';
 
   window._shopCategories = d.allCategories || d.categories.map(c => c.name);
   const totalItems = d.categories.reduce((s, c) => s + c.items.length, 0);
-  const checkedItems = d.categories.reduce((s, c) => s + c.items.filter(i => i.checked).length, 0);
-  const pct = totalItems ? Math.round(checkedItems / totalItems * 100) : 0;
+  const pct = totalItems > 0 ? Math.round(completed.length / (totalItems + completed.length) * 100) : (completed.length > 0 ? 100 : 0);
 
-  // Group categories into columns by type
-  const supplements = d.categories.filter(c => c.name.includes('Supplement') || c.name.includes('Lipid'));
-  const health = d.categories.filter(c => c.name.includes('Hair') || c.name.includes('Peptide'));
-  const nutrition = d.categories.filter(c => c.name.includes('Nutrition') || c.name.includes('Alternative'));
-  const groceries = d.categories.filter(c => c.name.includes('Grocer') || c.name.includes('Protein') || c.name.includes('Produce') || c.name.includes('Pantry') || c.name.includes('Refriger') || c.name.includes('Frozen'));
-  const other = d.categories.filter(c => !supplements.includes(c) && !health.includes(c) && !nutrition.includes(c) && !groceries.includes(c));
+  // Group categories into columns by type (single-pass to avoid duplicates)
+  const supplements = [], health = [], nutrition = [], groceries = [], other = [];
+  for (const c of d.categories) {
+    const n = c.name.toLowerCase();
+    if (n.includes('supplement') || n.includes('lipid')) supplements.push(c);
+    else if (n.includes('hair') || n.includes('peptide')) health.push(c);
+    else if (n.includes('nutrition') || n.includes('alternative')) nutrition.push(c);
+    else if (n.includes('grocer') || n.includes('protein') || n.includes('produce') || n.includes('pantry') || n.includes('refriger') || n.includes('frozen')) groceries.push(c);
+    else other.push(c);
+  }
 
   const prices = d.prices || {};
   const pricesUpdated = d.pricesLastUpdated;
 
   function renderItem(item) {
     const nameMatch = item.text.match(/^\*\*(.+?)\*\*/);
-    const name = nameMatch ? nameMatch[1] : item.text.split('\u2014')[0].split('\u00b7')[0].trim();
+    const rawName = nameMatch ? nameMatch[1] : item.text.split('\u2014')[0].split('\u00b7')[0].trim();
     const rest = nameMatch ? item.text.slice(nameMatch[0].length) : '';
+
+    // Extract dosage from name (e.g. "Berberine 550mg" → dose: "550mg")
+    const doseMatch = rawName.match(/\b(\d+[\d,]*(?:\.\d+)?\s*(?:mg|mcg|IU|g|oz|lb|ml|B CFU)(?:\/\w+)?(?:\s*(?:[-+]|to)\s*\d+[\d,]*(?:\.\d+)?\s*(?:mg|mcg|IU|g|oz|lb|ml|B CFU)(?:\/\w+)?)?)\b/i);
+    const dose = doseMatch ? doseMatch[1] : '';
+    const name = rawName;
 
     const brandMatch = rest.match(/^\s*[\u2014\u2013\-]+\s*([^·$~\[`]+)/);
     const brand = brandMatch ? brandMatch[1].trim() : '';
+
+    // Extract goal/reason from end of display text (after last ·)
+    const parts = rest.split('\u00b7').map(p => p.trim());
+    const goalCandidate = parts.length > 1 ? parts[parts.length - 1] : '';
+    const goal = goalCandidate && !goalCandidate.match(/^~?\$|^\[\[|^\s*$/) ? goalCandidate : '';
 
     const listedPriceMatch = item.text.match(/~?\$[\d,.]+(?:-[\d,.]+)?(?:\/[\w]+)?/i);
     const listedPrice = listedPriceMatch ? listedPriceMatch[0] : '';
@@ -8441,13 +8868,15 @@ views.shopping = async () => {
       <input type="checkbox" ${item.checked ? 'checked' : ''} style="margin-top:1px;cursor:pointer;accent-color:var(--accent);width:18px;height:18px;flex-shrink:0"
         onchange="toggleShoppingItem(${item.line}, this.checked)">
       <div style="flex:1;min-width:0">
-        <div style="display:flex;align-items:center;gap:6px">
-          <span style="font-size:13px;font-weight:600;flex:1;${item.checked ? 'text-decoration:line-through;color:var(--text-tertiary)' : ''}">${name}</span>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span style="font-size:13px;font-weight:600;${item.checked ? 'text-decoration:line-through;color:var(--text-tertiary)' : ''}">${esc(name)}</span>
+          ${dose ? `<span style="font-size:10px;font-weight:600;color:var(--accent);background:var(--accent-muted);padding:1px 6px;border-radius:10px;white-space:nowrap">${esc(dose)}</span>` : ''}
           ${isStar ? '<span title="High priority" style="font-size:11px">&#11088;</span>' : ''}
           ${isWarning ? '<span title="Warning" style="font-size:11px">&#9888;&#65039;</span>' : ''}
           ${isPending ? '<span title="Pending" style="font-size:11px">&#9203;</span>' : ''}
         </div>
-        ${brand ? `<div style="font-size:11px;color:var(--text-tertiary);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${brand}</div>` : ''}
+        ${brand ? `<div style="font-size:12px;color:var(--text-secondary);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500">${esc(brand)}</div>` : ''}
+        ${goal ? `<div style="font-size:11px;color:var(--text-tertiary);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(goal)}</div>` : ''}
         <div style="display:flex;align-items:center;gap:4px;margin-top:5px">
             <div style="display:flex;align-items:center;gap:4px;flex:1">
               ${listedPrice ? `<span style="font-size:12px;color:var(--accent);font-weight:500">${listedPrice}</span>` : ''}
@@ -8491,8 +8920,8 @@ views.shopping = async () => {
       <div style="display:flex;align-items:center;gap:12px">
         <button onclick="showShoppingAddModal()" style="padding:6px 14px;border-radius:6px;border:1px solid var(--accent);background:var(--accent-muted);color:var(--accent);font-size:12px;font-weight:600;cursor:pointer;transition:all 0.15s" onmouseover="this.style.background='var(--accent)';this.style.color='#fff'" onmouseout="this.style.background='var(--accent-muted)';this.style.color='var(--accent)'">+ Add Item</button>
         <div style="text-align:right">
-          <div style="font-size:22px;font-weight:700">${checkedItems}<span style="font-size:14px;color:var(--text-tertiary);font-weight:400">/${totalItems}</span></div>
-          <div style="font-size:11px;color:var(--text-tertiary)">completed</div>
+          <div style="font-size:22px;font-weight:700">${completed.length}<span style="font-size:14px;color:var(--text-tertiary);font-weight:400"> bought</span></div>
+          <div style="font-size:11px;color:var(--text-tertiary)">${totalItems} remaining</div>
         </div>
         <div style="width:48px;height:48px;border-radius:50%;background:conic-gradient(var(--accent) ${pct}%, var(--bg-tertiary) 0);display:flex;align-items:center;justify-content:center">
           <div style="width:38px;height:38px;border-radius:50%;background:var(--bg-primary);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600">${pct}%</div>
@@ -8506,6 +8935,44 @@ views.shopping = async () => {
       ${renderColumn('Groceries', groceries)}
       ${renderColumn('Other', other)}
     </div>
+    ${completed.length > 0 ? `
+    <div style="margin-top:32px;border-top:1px solid var(--border);padding-top:24px">
+      <div onclick="const b=document.getElementById('completedBody');const a=document.getElementById('completedArrow');const open=b.style.display==='none';b.style.display=open?'':'none';a.style.transform=open?'rotate(90deg)':'rotate(0deg)';localStorage.setItem('shopCompletedOpen',open?'1':'0')" style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;padding:4px 0;margin-bottom:12px">
+        <svg id="completedArrow" width="12" height="12" viewBox="0 0 12 12" fill="none" style="transition:transform 0.2s;transform:rotate(${localStorage.getItem('shopCompletedOpen')==='1'?'90deg':'0deg'});flex-shrink:0"><path d="M4 2L8 6L4 10" stroke="var(--text-tertiary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span style="font-size:13px;font-weight:600;color:var(--text-secondary);letter-spacing:0.2px">Completed Purchases</span>
+        <span style="font-size:10px;font-weight:600;color:var(--green);background:var(--green-muted);padding:2px 8px;border-radius:10px">${completed.length}</span>
+      </div>
+      <div id="completedBody" style="display:${localStorage.getItem('shopCompletedOpen')==='1'?'block':'none'}">
+        <div style="overflow-x:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg-secondary)">
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            <thead>
+              <tr>
+                <th style="padding:10px 14px;text-align:left;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-tertiary);border-bottom:1px solid var(--border);white-space:nowrap">Date</th>
+                <th style="padding:10px 14px;text-align:left;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-tertiary);border-bottom:1px solid var(--border)">Item</th>
+                <th style="padding:10px 14px;text-align:left;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-tertiary);border-bottom:1px solid var(--border)">Brand</th>
+                <th style="padding:10px 14px;text-align:left;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-tertiary);border-bottom:1px solid var(--border)">Category</th>
+                <th style="padding:10px 14px;text-align:right;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-tertiary);border-bottom:1px solid var(--border);white-space:nowrap">Est. Cost</th>
+                <th style="padding:10px 14px;width:36px;border-bottom:1px solid var(--border)"></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${completed.map((p, idx) => `<tr style="transition:background 0.1s" onmouseover="this.style.background='var(--bg-tertiary)'" onmouseout="this.style.background='transparent'">
+                <td style="padding:8px 14px;color:var(--text-tertiary);white-space:nowrap;border-bottom:1px solid var(--border-light);font-variant-numeric:tabular-nums">${p.date}</td>
+                <td style="padding:8px 14px;font-weight:500;color:var(--text-primary);border-bottom:1px solid var(--border-light)">${esc(p.item)}</td>
+                <td style="padding:8px 14px;color:var(--text-secondary);border-bottom:1px solid var(--border-light);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.brand)}</td>
+                <td style="padding:8px 14px;border-bottom:1px solid var(--border-light)"><span style="font-size:10px;font-weight:600;color:var(--accent);background:var(--accent-muted);padding:2px 7px;border-radius:4px;white-space:nowrap">${esc(p.category)}</span></td>
+                <td style="padding:8px 14px;text-align:right;color:var(--green);font-weight:500;white-space:nowrap;border-bottom:1px solid var(--border-light)">${esc(p.cost)}</td>
+                <td style="padding:8px 14px;border-bottom:1px solid var(--border-light)">
+                  <button onclick="event.stopPropagation();uncompleteShoppingItem(${p.line},'${esc(p.item)}')" title="Move back to active list"
+                    style="background:none;border:none;cursor:pointer;font-size:13px;color:var(--text-tertiary);padding:2px 5px;border-radius:4px;transition:all 0.15s;opacity:0.4;line-height:1"
+                    onmouseover="this.style.color='var(--accent)';this.style.opacity='1';this.style.background='var(--accent-muted)'" onmouseout="this.style.color='var(--text-tertiary)';this.style.opacity='0.4';this.style.background='none'">&#8634;</button>
+                </td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>` : ''}
     <div id="shopAddModal" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.6);display:none;align-items:center;justify-content:center" onclick="if(event.target===this)this.style.display='none'">
       <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;padding:24px;width:420px;max-width:90vw">
         <h3 style="margin:0 0 16px;font-size:15px;font-weight:700">Add Shopping Item</h3>
@@ -8974,6 +9441,12 @@ async function deleteShoppingItem(line, name) {
   renderView();
 }
 
+async function uncompleteShoppingItem(line, name) {
+  if (!confirm(`Move "${name}" back to active list? You can re-add it to the correct category using + Add Item.`)) return;
+  await post('/api/shopping/toggle', { line, checked: false });
+  renderView();
+}
+
 // --- Nutrition trend charts (SVG line charts) ---
 let _trendCacheKey = '';
 let _trendCacheHtml = '';
@@ -9356,6 +9829,7 @@ async function renderView() {
   }
 
   // Post-render hooks
+  if (currentView === 'venture-defi-carry') { defiRenderTable(); carryRenderTable(); }
   if (currentView === 'nutrition') { renderNutritionTrends(); renderNutritionMap(); }
   if (currentView === 'logs') refreshLogContent();
   if (currentView === 'messages') {

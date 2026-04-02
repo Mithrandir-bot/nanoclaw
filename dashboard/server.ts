@@ -1735,6 +1735,269 @@ function getVentureIbkr() {
   }
 }
 
+// --- DeFi-IBKR Carry Trade Venture ---
+
+let _defiYieldCache: { data: unknown; time: number } | null = null;
+const DEFI_CACHE_TTL = 10 * 60 * 1000; // 10 min
+const PROTOCOL_URLS: Record<string, string> = {
+  'aave-v3': 'https://app.aave.com/',
+  'compound-v3': 'https://app.compound.finance/markets',
+  'euler-v2': 'https://app.euler.finance/',
+  'morpho-v1': 'https://app.morpho.org/markets',
+  'sparklend': 'https://app.spark.fi/markets',
+  'curve-dex': 'https://lend.curve.fi/',
+  'venus-core-pool': 'https://app.venus.io/',
+  'justlend': 'https://justlend.org/',
+  'kamino-lend': 'https://app.kamino.finance/',
+  'tectonic': 'https://app.tectonic.finance/markets',
+  'hyperlend-pooled': 'https://app.hyperlend.finance/markets',
+  'neverland': 'https://app.neverland.money/markets',
+  'tydro': 'https://app.tydro.com/',
+  'dolomite': 'https://app.dolomite.io/',
+};
+
+interface DefiPool {
+  name: string; symbol: string; chain: string; tvl: number;
+  apy: number; apyBase: number; apyReward: number;
+  apyBorrow: number; totalSupply: number; totalBorrow: number;
+  project: string; pool: string;
+}
+
+async function getVentureDefiCarry() {
+  try {
+    // Leg A: DeFi yields from DefiLlama (top stablecoin pools by TVL)
+    let pools: DefiPool[] = [];
+
+    if (_defiYieldCache && Date.now() - _defiYieldCache.time < DEFI_CACHE_TTL) {
+      pools = _defiYieldCache.data as DefiPool[];
+    } else {
+      try {
+        // Fetch pools and lendBorrow data in parallel
+        const [poolsResp, lendResp] = await Promise.all([
+          fetch('https://yields.llama.fi/pools', { signal: AbortSignal.timeout(30000) }),
+          fetch('https://yields.llama.fi/lendBorrow', { signal: AbortSignal.timeout(30000) }).catch(() => null),
+        ]);
+        if (poolsResp.ok) {
+          const raw = await poolsResp.json() as { data: Array<Record<string, unknown>> };
+
+          // Build lendBorrow lookup by pool ID
+          const lendData: Record<string, { apyBaseBorrow: number; totalSupplyUsd: number; totalBorrowUsd: number }> = {};
+          if (lendResp?.ok) {
+            const lendRaw = await lendResp.json() as Array<Record<string, unknown>>;
+            for (const l of lendRaw) {
+              const pid = String(l.pool || '');
+              if (pid) lendData[pid] = {
+                apyBaseBorrow: Number(l.apyBaseBorrow) || 0,
+                totalSupplyUsd: Number(l.totalSupplyUsd) || 0,
+                totalBorrowUsd: Number(l.totalBorrowUsd) || 0,
+              };
+            }
+          }
+          // Filter: stablecoin pools, ensure key protocols (aave, morpho, euler) are included
+          // Preferred stablecoins — large, liquid, trusted issuers
+          const PREFERRED_SYMBOLS = /(USDC|USDT|RLUSD|USDS|PYUSD|DAI)/i;
+          // Established chains only — no small/new L1s
+          const ALLOWED_CHAINS = new Set(['Ethereum', 'Arbitrum', 'Base', 'Optimism', 'Polygon', 'BSC', 'Avalanche', 'Solana']);
+          // Established protocols only — no new/unaudited
+          const BLOCKED_PROTOCOLS = new Set(['tectonic', 'neverland', 'tydro', 'hyperlend-pooled']);
+
+          const allStable = (raw.data || [])
+            .filter(p => p.stablecoin && (Number(p.tvlUsd) || 0) > 10_000_000);
+
+          // Build pool list: all preferred-stablecoin borrowable pools with >$50M supply,
+          // plus top supply-only pools by TVL for yield context
+          const seenPools = new Set<string>();
+          const poolResults: Record<string, unknown>[] = [];
+
+          // First: all preferred-stablecoin pools with borrow rate data and >$25M total supply
+          // (includes both borrowable=true pools AND Morpho-style pools where borrowable=false
+          //  but apyBaseBorrow > 0, since Morpho has collateral-pair-specific borrowing)
+          for (const p of allStable) {
+            const pid = String(p.pool || '');
+            const sym = String(p.symbol || '');
+            const chain = String(p.chain || '');
+            const proj = String(p.project || '');
+            const lb = lendData[pid];
+            if (!lb || !lb.apyBaseBorrow || lb.apyBaseBorrow <= 0) continue;
+            if (lb.totalSupplyUsd < 25_000_000) continue;
+            if (!PREFERRED_SYMBOLS.test(sym)) continue;
+            if (!ALLOWED_CHAINS.has(chain)) continue;
+            if (BLOCKED_PROTOCOLS.has(proj)) continue;
+            if (seenPools.has(pid)) continue;
+            seenPools.add(pid);
+            poolResults.push(p);
+          }
+
+          // Then: top supply-only pools (no borrow data) for yield context, up to fill ~15 total
+          const supplyOnly = allStable
+            .filter(p => !seenPools.has(String(p.pool || ''))
+              && (Number(p.tvlUsd) || 0) > 100_000_000
+              && (Number(p.apy) || 0) > 0
+              && PREFERRED_SYMBOLS.test(String(p.symbol || ''))
+              && ALLOWED_CHAINS.has(String(p.chain || ''))
+              && !BLOCKED_PROTOCOLS.has(String(p.project || '')))
+            .sort((a, b) => (Number(b.tvlUsd) || 0) - (Number(a.tvlUsd) || 0))
+            .slice(0, Math.max(0, 15 - poolResults.length));
+          for (const p of supplyOnly) seenPools.add(String(p.pool || ''));
+
+          // Combine, sort borrowable first (by total supply), then supply-only (by TVL)
+          pools = [...poolResults, ...supplyOnly]
+            .sort((a, b) => {
+              const lbA = lendData[String(a.pool || '')];
+              const lbB = lendData[String(b.pool || '')];
+              const hasA = lbA && lbA.apyBaseBorrow > 0 ? 1 : 0;
+              const hasB = lbB && lbB.apyBaseBorrow > 0 ? 1 : 0;
+              if (hasA !== hasB) return hasB - hasA; // borrowable first
+              const sizeA = lbA?.totalSupplyUsd || Number(a.tvlUsd) || 0;
+              const sizeB = lbB?.totalSupplyUsd || Number(b.tvlUsd) || 0;
+              return sizeB - sizeA;
+            })
+            .map(p => {
+              const pid = String(p.pool || '');
+              const lb = lendData[pid];
+              return {
+                name: String(p.project || '').replace(/-/g, ' '),
+                symbol: String(p.symbol || ''),
+                chain: String(p.chain || ''),
+                tvl: Number(p.tvlUsd) || 0,
+                apy: Number(p.apy) || 0,
+                apyBase: Number(p.apyBase) || 0,
+                apyReward: Number(p.apyReward) || 0,
+                apyBorrow: lb?.apyBaseBorrow || 0,
+                totalSupply: lb?.totalSupplyUsd || 0,
+                totalBorrow: lb?.totalBorrowUsd || 0,
+                project: String(p.project || ''),
+                url: PROTOCOL_URLS[String(p.project || '')] || '',
+                pool: pid,
+              };
+            });
+          _defiYieldCache = { data: pools, time: Date.now() };
+        }
+      } catch (e) {
+        console.error('[defi-carry] DefiLlama API error:', e);
+        if (_defiYieldCache) pools = _defiYieldCache.data as DefiPool[];
+      }
+    }
+
+    // cbBTC carry vault (from cached monitor file)
+    const cbbtcMonitor = readFileSafe(path.join(GROUPS_DIR, 'crypto', 'cbbtc-carry-monitor.md'));
+    let cbbtc: { apy7d: number; apy30d: number; tvl: number; spread: number; liquidity: number } | null = null;
+    if (cbbtcMonitor) {
+      const apy7dMatch = cbbtcMonitor.match(/APY \(7d avg\).*?(\d+\.?\d*)%/);
+      const apy30dMatch = cbbtcMonitor.match(/APY \(30d avg\).*?(\d+\.?\d*)%/);
+      const tvlMatch = cbbtcMonitor.match(/Total Supply.*?\$(\d+\.?\d*[MKB]?)/);
+      const spreadMatch = cbbtcMonitor.match(/carry spread.*?([+-]\d+\.?\d*)%/i);
+      const liqMatch = cbbtcMonitor.match(/Available Liquidity.*?\$(\d+\.?\d*[MKB]?)/);
+      const parseTvl = (s: string) => {
+        if (!s) return 0;
+        const n = parseFloat(s);
+        if (s.endsWith('M')) return n * 1e6;
+        if (s.endsWith('K')) return n * 1e3;
+        if (s.endsWith('B')) return n * 1e9;
+        return n;
+      };
+      cbbtc = {
+        apy7d: apy7dMatch ? parseFloat(apy7dMatch[1]) : 0,
+        apy30d: apy30dMatch ? parseFloat(apy30dMatch[1]) : 0,
+        tvl: tvlMatch ? parseTvl(tvlMatch[1]) : 0,
+        spread: spreadMatch ? parseFloat(spreadMatch[1]) : 0,
+        liquidity: liqMatch ? parseTvl(liqMatch[1]) : 0,
+      };
+    }
+
+    // Leg B: IBKR summary (reuse existing data)
+    const ibkrDataDir = path.join(GROUPS_DIR, 'trading', 'trading-bot', 'data');
+    const readJson = (file: string) => {
+      const raw = readFileSafe(path.join(ibkrDataDir, file));
+      return raw ? JSON.parse(raw) : null;
+    };
+    const account = readJson('account-summary.json') || {};
+    const positionsData = readJson('positions.json') || { positions: [] };
+    const tradesData = readJson('trades.json') || { trades: [], summary: {} };
+    const snapshots = readJson('daily-snapshots.json') || { snapshots: [] };
+
+    // Calculate IBKR P&L metrics (annualized)
+    const snapshotList = ((snapshots.snapshots || []) as Array<{ nlv: number; date: string }>)
+      .sort((a, b) => a.date.localeCompare(b.date)); // ensure oldest first
+    let ibkrAnnualized = 0;
+    if (snapshotList.length >= 2) {
+      const first = snapshotList[0];
+      const last = snapshotList[snapshotList.length - 1];
+      const periodReturn = first.nlv > 0 ? ((last.nlv - first.nlv) / first.nlv) * 100 : 0;
+      const daysDiff = (new Date(last.date).getTime() - new Date(first.date).getTime()) / (1000 * 60 * 60 * 24);
+      ibkrAnnualized = daysDiff >= 1 ? (periodReturn / daysDiff) * 365 : 0;
+    }
+
+    // Generate carry trade examples: borrow from cheapest, deposit to highest yield
+    interface CarryExample {
+      borrowProto: string; borrowSymbol: string; borrowChain: string; borrowRate: number; borrowUrl: string;
+      depositProto: string; depositSymbol: string; depositChain: string; depositRate: number; depositUrl: string;
+      spread: number; crossChain: boolean;
+    }
+    const carryExamples: CarryExample[] = [];
+    const borrowPools2 = pools.filter(p => p.apyBorrow > 0);
+    const depositPools = pools.filter(p => p.apy > 0);
+
+    // For each borrow source, find best deposit destinations
+    for (const bp of borrowPools2) {
+      for (const dp of depositPools) {
+        if (bp.pool === dp.pool) continue; // can't borrow and deposit same pool
+        const spread = dp.apy - bp.apyBorrow;
+        if (spread <= 0) continue; // only positive carry
+        carryExamples.push({
+          borrowProto: bp.name, borrowSymbol: bp.symbol, borrowChain: bp.chain,
+          borrowRate: bp.apyBorrow, borrowUrl: bp.url,
+          depositProto: dp.name, depositSymbol: dp.symbol, depositChain: dp.chain,
+          depositRate: dp.apy, depositUrl: dp.url,
+          spread, crossChain: bp.chain !== dp.chain,
+        });
+      }
+    }
+    // Sort by spread descending
+    carryExamples.sort((a, b) => b.spread - a.spread);
+
+    // Build carry spread model
+    const topDeFiYield = pools.length > 0 ? Math.max(...pools.map(p => p.apy)) : 0;
+    const avgDeFiYield = pools.length > 0
+      ? pools.reduce((s, p) => s + p.apy, 0) / pools.length : 0;
+    const borrowPools = pools.filter(p => p.apyBorrow > 0);
+    const cheapestBorrow = borrowPools.length > 0
+      ? borrowPools.reduce((best, p) => p.apyBorrow < best.apyBorrow ? p : best, borrowPools[0]) : null;
+
+    return {
+      defiPools: pools,
+      carryExamples,
+      cbbtc,
+      ibkr: {
+        nlv: account.netLiquidation || account.nlv || account.NetLiquidation || 0,
+        buyingPower: account.buyingPower || account.BuyingPower || 0,
+        marginUsed: account.initialMargin || account.initMargin || account.InitMarginReq || 0,
+        openPositions: (positionsData.positions || []).length,
+        openTrades: (tradesData.summary || {}).openTrades || 0,
+        periodReturn: ibkrAnnualized,
+        snapshotCount: snapshotList.length,
+      },
+      carryModel: {
+        topDeFiYield: Math.round(topDeFiYield * 100) / 100,
+        topDeFiName: pools.length > 0 ? pools.reduce((best, p) => p.apy > best.apy ? p : best, pools[0]).name : '',
+        topDeFiSymbol: pools.length > 0 ? pools.reduce((best, p) => p.apy > best.apy ? p : best, pools[0]).symbol : '',
+        avgDeFiYield: Math.round(avgDeFiYield * 100) / 100,
+        cheapestBorrowRate: cheapestBorrow ? Math.round(cheapestBorrow.apyBorrow * 100) / 100 : null,
+        cheapestBorrowName: cheapestBorrow?.name || '',
+        cheapestBorrowSymbol: cheapestBorrow?.symbol || '',
+        avgBorrowRate: Math.round((borrowPools.length > 0
+          ? borrowPools.reduce((s, p) => s + p.apyBorrow, 0) / borrowPools.length : 3.5) * 100) / 100,
+        ibkrAnnualized: Math.round(ibkrAnnualized * 100) / 100,
+        blendedEstimate: Math.round((avgDeFiYield * 0.4 + ibkrAnnualized * 0.6) * 100) / 100,
+      },
+      lastUpdated: new Date().toISOString(),
+    };
+  } catch (err) {
+    console.error('[venture-defi-carry]', err);
+    return { defiPools: [], carryExamples: [], cbbtc: null, ibkr: {}, carryModel: {}, lastUpdated: null };
+  }
+}
+
 function getVentureGsa() {
   try {
     const scanPath = path.join(GROUPS_DIR, 'business-ideas', 'gsa-monitor', 'latest-scan.json');
@@ -1979,6 +2242,8 @@ function getVentureRealestate() {
       for (const sf of searchFiles) {
         try {
           const searchConfig = JSON.parse(readFileSafe(path.join(searchesDir, sf)));
+          // Skip non-search files (batch data, building groups, etc.)
+          if (!searchConfig.name || !searchConfig.status) continue;
           // Load results file
           const resultsPath = path.join(GROUPS_DIR, 'real-estate', searchConfig.results_file || `searches/${sf.replace('.json', '-results.json')}`);
           let results: Record<string, unknown> = { lastScan: null, totalScans: 0, totalFound: 0, totalAlerted: 0, listings: [] };
@@ -4947,12 +5212,23 @@ function getShoppingPrices(): { lastUpdated: string | null; items: Record<string
   return { lastUpdated: null, items: {} };
 }
 
-function getShoppingList(): { categories: Array<{ name: string; tag: string; items: Array<{ text: string; checked: boolean; line: number }> }> } {
+interface CompletedPurchase {
+  date: string;
+  item: string;
+  brand: string;
+  category: string;
+  cost: string;
+  line: number;
+}
+
+function getShoppingList(): { categories: Array<{ name: string; tag: string; items: Array<{ text: string; checked: boolean; line: number }> }>; completedPurchases?: CompletedPurchase[]; allCategories?: string[]; prices?: Record<string, ShoppingPriceEntry>; pricesLastUpdated?: string | null } {
   try {
     const content = fs.readFileSync(SHOPPING_LIST_PATH, 'utf-8');
     const lines = content.split('\n');
     const categories: Array<{ name: string; tag: string; items: Array<{ text: string; checked: boolean; line: number }> }> = [];
     let currentCategory: { name: string; tag: string; items: Array<{ text: string; checked: boolean; line: number }> } | null = null;
+    const completedPurchases: CompletedPurchase[] = [];
+    let inCompletedSection = false;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -4960,6 +5236,17 @@ function getShoppingList(): { categories: Array<{ name: string; tag: string; ite
       const catMatch = line.match(/^## (.+)/);
       if (catMatch) {
         const name = catMatch[1].replace(/[#`]/g, '').trim();
+
+        // Detect Completed Purchases section
+        if (name.includes('Completed Purchases')) {
+          inCompletedSection = true;
+          currentCategory = null;
+          continue;
+        }
+
+        // Any other ## header ends the completed section
+        if (inCompletedSection) inCompletedSection = false;
+
         // Skip non-item sections
         if (name.includes('Recently Purchased') || name.includes('Auto-Restock') || name.includes('Budget Summary') || name.includes('Links') || name.includes('Associations Map') || name === 'Tasks') {
           currentCategory = null;
@@ -4969,6 +5256,23 @@ function getShoppingList(): { categories: Array<{ name: string; tag: string; ite
         categories.push(currentCategory);
         continue;
       }
+
+      // Parse completed purchases table rows: | 2026-04-01 | Item | Brand | Category | ~$XX |
+      if (inCompletedSection) {
+        const tableRow = line.match(/^\s*\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(.+?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|/);
+        if (tableRow) {
+          completedPurchases.push({
+            date: tableRow[1],
+            item: tableRow[2].replace(/\*\*/g, '').trim(),
+            brand: tableRow[3].replace(/\*\*/g, '').trim(),
+            category: tableRow[4].trim(),
+            cost: tableRow[5].trim(),
+            line: i,
+          });
+        }
+        continue;
+      }
+
       // Subsection headers: ### Name
       const subMatch = line.match(/^### (.+)/);
       if (subMatch && currentCategory) {
@@ -4991,7 +5295,9 @@ function getShoppingList(): { categories: Array<{ name: string; tag: string; ite
       // Checklist items: table format (| - [ ] | **Item** | ... |)
       const tableItemMatch = line.match(/^\s*\| - \[([ xX])\] \| (.+)/);
       if (tableItemMatch && currentCategory) {
-        const cells = tableItemMatch[2].split('|').map(c => c.trim());
+        // Escape \| inside wiki links before splitting cells
+        const rawCells = tableItemMatch[2].replace(/\\\|/g, '\x00').split('|').map(c => c.replace(/\x00/g, '|').trim());
+        const cells = rawCells;
         const itemText = cells[0].replace(/\*\*/g, '');
         // Build clean display: item name + brand/replaces + price + store
         const isNutritionAlt = currentCategory.name.includes('Nutrition') || currentCategory.name.includes('Alternative');
@@ -5004,11 +5310,17 @@ function getShoppingList(): { categories: Array<{ name: string; tag: string; ite
           const where = cells[4] || '';
           display = `**${itemText}** — ${replaces} · ${why} · ${price} · ${where}`;
         } else {
-          // Supplement tables: Item | Brand | Est. Cost | Task | Source/Goal
+          // Supplement tables: Item | Brand | Est. Cost | Task | Source | Goal
           const brand = cells[1]?.replace(/\*\*/g, '') || '';
           const cost = cells[2] || '';
+          // Last non-empty cell is Goal; skip Task and Source (wiki links)
+          const trimmedCells = cells.filter(c => c.length > 0);
+          const lastCell = trimmedCells.length > 3 ? trimmedCells[trimmedCells.length - 1] : '';
+          const goal = lastCell.replace(/\[\[.*?\]\]/g, '').trim();
+          // Only show goal if it's actual text, not a wiki link remnant or price
+          const cleanGoal = goal && !goal.match(/^~?\$|^\s*$/) ? goal : '';
           display = brand ? `**${itemText}** — ${brand} · ${cost}` : `**${itemText}**`;
-          if (cells[3]) display += ` · ${cells[3]}`;
+          if (cleanGoal) display += ` · ${cleanGoal}`;
         }
         currentCategory.items.push({
           text: display,
@@ -5024,12 +5336,13 @@ function getShoppingList(): { categories: Array<{ name: string; tag: string; ite
     const allCategoryNames = categories.map(c => c.name);
     return {
       categories: categories.filter(c => c.items.length > 0),
+      completedPurchases,
       allCategories: allCategoryNames,
       prices: prices.items,
       pricesLastUpdated: prices.lastUpdated,
     };
   } catch {
-    return { categories: [], prices: {}, pricesLastUpdated: null };
+    return { categories: [], completedPurchases: [], prices: {}, pricesLastUpdated: null };
   }
 }
 
@@ -5042,14 +5355,108 @@ async function postShoppingToggle(req: http.IncomingMessage) {
   const lines = content.split('\n');
   if (line < 0 || line >= lines.length) throw new Error('invalid line');
 
-  // Verify the line still contains a checkbox before toggling (guards against line-number drift)
-  if (!lines[line].match(/- \[[ xX]\]/)) throw new Error('line does not contain a checkbox — file may have changed');
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); // YYYY-MM-DD
 
-  // Toggle the checkbox
   if (checked) {
-    lines[line] = lines[line].replace(/- \[ \]/, '- [x]');
+    // Move item from active section to Completed Purchases table
+    const activeLine = lines[line];
+
+    // Extract item details from the active line
+    let itemName = '';
+    let brand = '';
+    let cost = '';
+    let category = '';
+
+    // Find category by scanning backwards for ## header
+    for (let j = line - 1; j >= 0; j--) {
+      const catMatch = lines[j].match(/^## (.+)/);
+      if (catMatch) {
+        category = catMatch[1].replace(/[#`]/g, '').replace(/#\w+/g, '').replace(/\(.*?\)/g, '').trim();
+        // Shorten long category names
+        category = category.replace(/Supplements?\s*[—\-]+\s*/i, '').trim();
+        if (category.length > 30) category = category.substring(0, 30);
+        break;
+      }
+    }
+
+    // Parse table format: | - [ ] | **Item** | Brand | Cost | ... |
+    const tableMatch = activeLine.match(/^\s*\| - \[[ xX]\] \| (.+)/);
+    if (tableMatch) {
+      const rawCells = tableMatch[1].replace(/\\\|/g, '\x00').split('|').map(c => c.replace(/\x00/g, '|').trim());
+      itemName = rawCells[0]?.replace(/\*\*/g, '').trim() || '';
+      brand = rawCells[1]?.replace(/\*\*/g, '').replace(/\[\[.*?\]\]/g, '').trim() || '';
+      cost = rawCells[2]?.trim() || '';
+    } else {
+      // Standard markdown: - [ ] Item text
+      const stdMatch = activeLine.match(/^- \[[ xX]\] (.+)/);
+      if (stdMatch) {
+        itemName = stdMatch[1].replace(/\*\*/g, '').replace(/\s*[→\u2192]\s*\[\[.*?\]\]/, '').trim();
+      }
+    }
+
+    if (!itemName) throw new Error('Could not parse item name from line');
+
+    // Remove the active line
+    lines.splice(line, 1);
+
+    // Find "## Completed Purchases" section and append a new table row
+    let completedIdx = -1;
+    for (let j = 0; j < lines.length; j++) {
+      if (lines[j].match(/^## Completed Purchases/)) {
+        completedIdx = j;
+        break;
+      }
+    }
+
+    const newRow = `| ${today} | ${itemName} | ${brand} | ${category} | ${cost} |`;
+
+    if (completedIdx >= 0) {
+      // Find last table row in the completed section (before next ## or ---)
+      let insertAt = completedIdx + 1;
+      for (let j = completedIdx + 1; j < lines.length; j++) {
+        if (lines[j].match(/^\s*\|/) && !lines[j].match(/^\s*\|\s*Date\s*\|/) && !lines[j].match(/^\s*\|\s*-+/)) {
+          insertAt = j + 1;
+        } else if (lines[j].match(/^## /) || lines[j].match(/^---/)) {
+          break;
+        }
+      }
+      lines.splice(insertAt, 0, newRow);
+    } else {
+      // Create the section if it doesn't exist (before the final --- Owner block)
+      let insertAt = lines.length;
+      for (let j = lines.length - 1; j >= 0; j--) {
+        if (lines[j].match(/^\*\*Owner\*\*/) || lines[j].match(/^\*\*Managed by\*\*/)) {
+          // Find the --- before this block
+          for (let k = j - 1; k >= 0; k--) {
+            if (lines[k].match(/^---/)) { insertAt = k; break; }
+          }
+          break;
+        }
+      }
+      const section = [
+        '',
+        '## Completed Purchases',
+        '',
+        '| Date | Item | Brand | Category | Est. Cost |',
+        '|------|------|-------|----------|-----------|',
+        newRow,
+      ];
+      lines.splice(insertAt, 0, ...section);
+    }
   } else {
-    lines[line] = lines[line].replace(/- \[[xX]\]/, '- [ ]');
+    // Unchecking from completed: just remove the row (user can re-add via + Add Item)
+    // Verify the line is a completed purchases table row
+    const rowMatch = lines[line].match(/^\s*\|\s*\d{4}-\d{2}-\d{2}\s*\|/);
+    if (!rowMatch) {
+      // Fallback: might be a regular checkbox uncheck
+      if (lines[line].match(/- \[[xX]\]/)) {
+        lines[line] = lines[line].replace(/- \[[xX]\]/, '- [ ]');
+      } else {
+        throw new Error('line is not a completed purchase row or checkbox');
+      }
+    } else {
+      lines.splice(line, 1);
+    }
   }
 
   fs.writeFileSync(SHOPPING_LIST_PATH, lines.join('\n'));
@@ -5928,6 +6335,7 @@ const getRoutes: Record<string, Handler> = {
   '/api/venture/gsa': () => getVentureGsa(),
   '/api/venture/smb': () => getVentureSmb(),
   '/api/venture/realestate': () => getVentureRealestate(),
+  '/api/venture/defi-carry': () => getVentureDefiCarry(),
   '/api/docs': (p) => getDocs(p.get('folder') || undefined),
   '/api/doc': (p) => getDocContent(p.get('path') || ''),
   '/api/memory': (p) => getMemory(p.get('date') || undefined),
