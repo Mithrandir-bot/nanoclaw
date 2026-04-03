@@ -6550,13 +6550,13 @@ views['venture-realestate'] = async () => {
       <div class="vdash-stage" style="color:var(--accent);border-color:var(--accent)">Research</div>
     </div>
     <div class="vdash-metrics">
-      <div class="vm-stat"><div class="vm-val">${d.totalDeals}</div><div class="vm-label">Total Deals</div></div>
-      <div class="vm-stat"><div class="vm-val" style="color:var(--green)">${d.buyCount}</div><div class="vm-label">Buy Rated</div></div>
-      <div class="vm-stat"><div class="vm-val">${d.avgScore}<span style="font-size:12px;opacity:0.5">/100</span></div><div class="vm-label">Avg Score</div></div>
-      <div class="vm-stat"><div class="vm-val">${d.avgCapRate}%</div><div class="vm-label">Avg Cap Rate</div></div>
-      <div class="vm-stat"><div class="vm-val">${d.avgCashOnCash}%</div><div class="vm-label">Avg CoC</div></div>
-      <div class="vm-stat"><div class="vm-val">${pipeline.under_contract || 0}</div><div class="vm-label">Under Contract</div></div>
-      <div class="vm-stat"><div class="vm-val" style="color:var(--green)">${pipeline.closed || 0}</div><div class="vm-label">Closed</div></div>
+      <div class="vm-stat" title="Properties that have been through full deal analysis (comps, rental projections, scoring). Different from scan listings which are unanalyzed discoveries."><div class="vm-val">${d.totalDeals}</div><div class="vm-label">Total Deals</div></div>
+      <div class="vm-stat" title="Deals scoring 70+ out of 100 across location, returns, risk, and execution complexity. These are actionable — move quickly on BUY-rated deals."><div class="vm-val" style="color:var(--green)">${d.buyCount}</div><div class="vm-label">Buy Rated</div></div>
+      <div class="vm-stat" title="Average deal score (0-100) across all analyzed deals. Scored on 4 dimensions: Location & Fundamentals (25), Financial Returns (25), Risk Factors (25), Execution Complexity (25)."><div class="vm-val">${d.avgScore}<span style="font-size:12px;opacity:0.5">/100</span></div><div class="vm-label">Avg Score</div></div>
+      <div class="vm-stat" title="Capitalization Rate = Net Operating Income / Purchase Price. Target: 8%+. Measures unlevered return — how hard the property works independent of financing."><div class="vm-val">${d.avgCapRate}%</div><div class="vm-label">Avg Cap Rate</div></div>
+      <div class="vm-stat" title="Cash-on-Cash Return = Annual Pre-Tax Cash Flow / Total Cash Invested. Target: 12%+. Measures actual return on your out-of-pocket dollars after debt service."><div class="vm-val">${d.avgCashOnCash}%</div><div class="vm-label">Avg CoC</div></div>
+      <div class="vm-stat" title="Deals with an accepted offer currently in due diligence — inspections, title search, financing contingencies active."><div class="vm-val">${pipeline.under_contract || 0}</div><div class="vm-label">Under Contract</div></div>
+      <div class="vm-stat" title="Successfully closed acquisitions — title transferred, funding complete."><div class="vm-val" style="color:var(--green)">${pipeline.closed || 0}</div><div class="vm-label">Closed</div></div>
     </div>
     <div class="vdash-grid">
       <div class="vdash-panel">
@@ -6653,17 +6653,106 @@ views['venture-realestate'] = async () => {
       const totalAlerts = searches.reduce((sum, s) => sum + ((s.results || {}).totalAlerted || 0), 0);
       const totalScansRun = searches.reduce((sum, s) => sum + ((s.results || {}).totalScans || 0), 0);
 
+      // Verification + STR comp data
+      const verification = d.verification || { listings: [] };
+      const strComps = d.strComps || { listings: [] };
+      const vListings = verification.listings || [];
+      const strListings = strComps.listings || [];
+
+      // Build lookup maps by address+city
+      const vMap = {};
+      vListings.forEach(v => { vMap[(v.address||'').toLowerCase() + '|' + (v.city||'').toLowerCase()] = v; });
+      const strMap = {};
+      strListings.forEach(s => { strMap[(s.address||'').toLowerCase() + '|' + (s.city||'').toLowerCase()] = s; });
+
+      // Verification stats
+      const vHigh = vListings.filter(v => v.confidence === 'high').length;
+      const vMed = vListings.filter(v => v.confidence === 'medium').length;
+      const vLow = vListings.filter(v => v.confidence === 'low').length;
+      const vUnverified = vListings.filter(v => v.confidence === 'unverified').length;
+      const vFlagged = vListings.filter(v => (v.flags||[]).length > 0).length;
+      const strAnalyzed = strListings.filter(s => s.str_projection).length;
+      const strCashFlowPos = strListings.filter(s => s.investment_metrics && Number(s.investment_metrics.monthly_cashflow) > 0).length;
+      const strHighConf = strListings.filter(s => s.confidence === 'high').length;
+
       let html = '<div style="margin-bottom:20px">';
       html += '<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">';
       html += '<div style="font-size:15px;font-weight:700;letter-spacing:-0.3px">Property Scans</div>';
       html += '<span style="font-size:11px;color:var(--text-tertiary)">' + searches.length + ' configured</span>';
       html += '</div>';
       html += '<div class="vdash-metrics">';
-      html += '<div class="vm-stat"><div class="vm-val" style="color:var(--green)">' + totalActive + '</div><div class="vm-label">Active Scans</div></div>';
-      html += '<div class="vm-stat"><div class="vm-val">' + totalMatches + '</div><div class="vm-label">Total Matches</div></div>';
-      html += '<div class="vm-stat"><div class="vm-val">' + totalAlerts + '</div><div class="vm-label">Alerts Sent</div></div>';
-      html += '<div class="vm-stat"><div class="vm-val">' + totalScansRun + '</div><div class="vm-label">Scans Completed</div></div>';
+      html += '<div class="vm-stat" title="Number of property search configurations currently running on a daily schedule. Each scan checks multiple sources across all configured geographic segments."><div class="vm-val" style="color:var(--green)">' + totalActive + '</div><div class="vm-label">Active Scans</div></div>';
+      html += '<div class="vm-stat" title="Total unique listings discovered across all scans that match search criteria (beds, baths, price, view, STR policy). These are unanalyzed scan results — not full deal analyses."><div class="vm-val">' + totalMatches + '</div><div class="vm-label">Total Matches</div></div>';
+      html += '<div class="vm-stat" title="Number of new-listing alerts sent to Discord when a previously unseen property matching criteria is discovered. Deduped by URL to prevent repeat notifications."><div class="vm-val">' + totalAlerts + '</div><div class="vm-label">Alerts Sent</div></div>';
+      html += '<div class="vm-stat" title="Total scan executions across all search configs. Each scan browses Redfin/Zillow/Realtor.com via browser automation, verifies prices on detail pages, and cross-checks across sources."><div class="vm-val">' + totalScansRun + '</div><div class="vm-label">Scans Completed</div></div>';
       html += '</div>';
+
+      // ── Data Quality & STR Intelligence Summary ──
+      if (vListings.length > 0 || strListings.length > 0) {
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">';
+
+        // Verification Summary Card
+        html += '<div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px;border-top:3px solid var(--accent)">';
+        html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">';
+        html += '<div style="font-size:12px;font-weight:700;letter-spacing:-0.2px">Data Quality</div>';
+        if (verification.lastVerification) html += '<div style="font-size:9px;color:var(--text-tertiary);font-family:var(--mono)">Last: ' + new Date(verification.lastVerification).toLocaleString() + '</div>';
+        html += '</div>';
+        html += '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px">';
+        html += '<div style="text-align:center;padding:8px 4px;background:var(--bg-primary);border-radius:var(--radius-sm)" title="Score 90+. Confirmed on 3+ sources (Redfin, Zillow, Realtor.com, County Appraiser). Price, status, and key details all agree."><div style="font-family:var(--mono);font-size:16px;font-weight:700;color:var(--green)">' + vHigh + '</div><div style="font-size:8px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;margin-top:2px">High</div></div>';
+        html += '<div style="text-align:center;padding:8px 4px;background:var(--bg-primary);border-radius:var(--radius-sm)" title="Score 70-89. Confirmed on 2 sources with minor discrepancies. Data is reliable but may have small gaps (e.g., HOA not confirmed)."><div style="font-family:var(--mono);font-size:16px;font-weight:700;color:var(--yellow)">' + vMed + '</div><div style="font-size:8px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;margin-top:2px">Medium</div></div>';
+        html += '<div style="text-align:center;padding:8px 4px;background:var(--bg-primary);border-radius:var(--radius-sm)" title="Score 50-69. Only 1 source confirmed, or significant discrepancies found between sources. Verify manually before acting."><div style="font-family:var(--mono);font-size:16px;font-weight:700;color:var(--orange)">' + vLow + '</div><div style="font-size:8px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;margin-top:2px">Low</div></div>';
+        html += '<div style="text-align:center;padding:8px 4px;background:var(--bg-primary);border-radius:var(--radius-sm)" title="Score below 50. Could not verify on any secondary source. Data comes from a single scan only — treat with caution."><div style="font-family:var(--mono);font-size:16px;font-weight:700;color:var(--text-tertiary)">' + vUnverified + '</div><div style="font-size:8px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;margin-top:2px">Unverified</div></div>';
+        html += '<div style="text-align:center;padding:8px 4px;background:var(--bg-primary);border-radius:var(--radius-sm)" title="Listings with at least one discrepancy flag: price mismatch >3%, status conflict, STR policy disagreement, or sqft difference >5%. A listing can be High confidence AND flagged."><div style="font-family:var(--mono);font-size:16px;font-weight:700;color:var(--red)">' + vFlagged + '</div><div style="font-size:8px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;margin-top:2px">Flagged</div></div>';
+        html += '</div>';
+
+        // Confidence distribution bar
+        const vTotal = Math.max(1, vListings.length);
+        html += '<div style="display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--bg-primary)">';
+        if (vHigh > 0) html += '<div style="width:' + (vHigh/vTotal*100) + '%;background:var(--green)" title="High: ' + vHigh + '"></div>';
+        if (vMed > 0) html += '<div style="width:' + (vMed/vTotal*100) + '%;background:var(--yellow)" title="Medium: ' + vMed + '"></div>';
+        if (vLow > 0) html += '<div style="width:' + (vLow/vTotal*100) + '%;background:var(--orange)" title="Low: ' + vLow + '"></div>';
+        if (vUnverified > 0) html += '<div style="width:' + (vUnverified/vTotal*100) + '%;background:var(--bg-tertiary)" title="Unverified: ' + vUnverified + '"></div>';
+        html += '</div>';
+        html += '<div style="display:flex;justify-content:space-between;margin-top:6px;font-size:9px;color:var(--text-tertiary)">';
+        html += '<span>Sources: Redfin, Zillow, Realtor.com, County</span>';
+        html += '<span style="font-family:var(--mono)">' + vListings.length + ' verified</span>';
+        html += '</div>';
+        html += '</div>';
+
+        // STR Intelligence Card
+        html += '<div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px;border-top:3px solid var(--purple)">';
+        html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">';
+        html += '<div style="font-size:12px;font-weight:700;letter-spacing:-0.2px">STR Intelligence</div>';
+        if (strComps.lastAnalysis) html += '<div style="font-size:9px;color:var(--text-tertiary);font-family:var(--mono)">Last: ' + new Date(strComps.lastAnalysis).toLocaleString() + '</div>';
+        html += '</div>';
+        html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px">';
+        html += '<div style="text-align:center;padding:8px 4px;background:var(--bg-primary);border-radius:var(--radius-sm)" title="STR-eligible listings (strAllowed=true or unverified) that have Airbnb and/or VRBO comp data collected and projected."><div style="font-family:var(--mono);font-size:16px;font-weight:700">' + strAnalyzed + '</div><div style="font-size:8px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;margin-top:2px">Analyzed</div></div>';
+        html += '<div style="text-align:center;padding:8px 4px;background:var(--bg-primary);border-radius:var(--radius-sm)" title="Listings where projected monthly STR income exceeds all costs (mortgage, HOA, insurance, taxes, management, cleaning, platform fees). These are investable as-is."><div style="font-family:var(--mono);font-size:16px;font-weight:700;color:var(--green)">' + strCashFlowPos + '</div><div style="font-size:8px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;margin-top:2px">Cash Flow +</div></div>';
+        html += '<div style="text-align:center;padding:8px 4px;background:var(--bg-primary);border-radius:var(--radius-sm)" title="STR projections backed by 10+ Airbnb/VRBO comps within 1 mile. High confidence means the ADR and occupancy estimates are statistically reliable."><div style="font-family:var(--mono);font-size:16px;font-weight:700;color:var(--accent)">' + strHighConf + '</div><div style="font-size:8px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;margin-top:2px">High Conf</div></div>';
+        // Avg blended ADR across all STR listings
+        const allAdr = strListings.filter(s => s.str_projection?.blended?.adr).map(s => s.str_projection.blended.adr);
+        const avgAdr = allAdr.length ? Math.round(allAdr.reduce((a,b)=>a+b,0)/allAdr.length) : 0;
+        html += '<div style="text-align:center;padding:8px 4px;background:var(--bg-primary);border-radius:var(--radius-sm)" title="Average Daily Rate — blended 60% Airbnb / 40% VRBO weighting across all analyzed listings. Represents the average nightly price a comparable STR commands in the area."><div style="font-family:var(--mono);font-size:16px;font-weight:700">$' + avgAdr + '</div><div style="font-size:8px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;margin-top:2px">Avg ADR</div></div>';
+        html += '</div>';
+
+        // Platform breakdown
+        html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">';
+        const totalAirbnbComps = strListings.reduce((s,l) => s + (l.str_projection?.airbnb?.comps_found || 0), 0);
+        const totalVrboComps = strListings.reduce((s,l) => s + (l.str_projection?.vrbo?.comps_found || 0), 0);
+        const avgAirbnbAdr = (() => { const vals = strListings.filter(s => s.str_projection?.airbnb?.adr).map(s => s.str_projection.airbnb.adr); return vals.length ? Math.round(vals.reduce((a,b)=>a+b,0)/vals.length) : 0; })();
+        const avgVrboAdr = (() => { const vals = strListings.filter(s => s.str_projection?.vrbo?.adr).map(s => s.str_projection.vrbo.adr); return vals.length ? Math.round(vals.reduce((a,b)=>a+b,0)/vals.length) : 0; })();
+        html += '<div style="padding:8px 12px;background:var(--bg-primary);border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:space-between" title="Average nightly rate from Airbnb comparable listings within 1 mile of each property. Airbnb typically has higher volume but lower rates than VRBO due to service fees.">';
+        html += '<div><div style="font-size:10px;font-weight:600;color:var(--text-secondary)">Airbnb</div><div style="font-size:8px;color:var(--text-tertiary);margin-top:1px">' + totalAirbnbComps + ' comps</div></div>';
+        html += '<div style="font-family:var(--mono);font-size:14px;font-weight:700">$' + avgAirbnbAdr + '<span style="font-size:9px;font-weight:400;color:var(--text-tertiary)">/nt</span></div>';
+        html += '</div>';
+        html += '<div style="padding:8px 12px;background:var(--bg-primary);border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:space-between" title="Average nightly rate from VRBO comparable listings. VRBO rates are typically 10-20% higher than Airbnb due to lower platform fees and a family/vacation-oriented audience.">';
+        html += '<div><div style="font-size:10px;font-weight:600;color:var(--text-secondary)">VRBO</div><div style="font-size:8px;color:var(--text-tertiary);margin-top:1px">' + totalVrboComps + ' comps</div></div>';
+        html += '<div style="font-family:var(--mono);font-size:14px;font-weight:700">$' + avgVrboAdr + '<span style="font-size:9px;font-weight:400;color:var(--text-tertiary)">/nt</span></div>';
+        html += '</div>';
+        html += '</div>';
+        html += '</div>';
+        html += '</div>';
+      }
 
       html += searches.map((search, idx) => {
         const accent = scanAccents[idx % scanAccents.length];
@@ -6744,7 +6833,8 @@ views['venture-realestate'] = async () => {
             let score = 0;
             const sqft = l.sqft || 0;
             const hoa = l.hoaFee;
-            const ppsf = (l.price && sqft) ? l.price / sqft : 0;
+            const ppsf = (l.price && sqft > 0) ? l.price / sqft : 0;
+            l._ppsf = ppsf;
             const v = (l.view || '').toLowerCase();
             const seg = citySegment(l.city);
 
@@ -6803,7 +6893,18 @@ views['venture-realestate'] = async () => {
             if (sortKey==='score') return (b._score||0)-(a._score||0);
             if (sortKey==='price-asc') return (a.price||0)-(b.price||0);
             if (sortKey==='price-desc') return (b.price||0)-(a.price||0);
+            if (sortKey==='ppsf') return (a._ppsf||9999)-(b._ppsf||9999);
             if (sortKey==='sqft') return (b.sqft||0)-(a.sqft||0);
+            if (sortKey==='str-cf') {
+              const cfA = (() => { const sk = (a.address||'').toLowerCase()+'|'+(a.city||'').toLowerCase(); const sd = strMap[sk]; if (sd && sd.investment_metrics) return sd.investment_metrics.monthly_cashflow||0; const r = a.rental||{}; return (r.str||{}).monthly_cashflow||0; })();
+              const cfB = (() => { const sk = (b.address||'').toLowerCase()+'|'+(b.city||'').toLowerCase(); const sd = strMap[sk]; if (sd && sd.investment_metrics) return sd.investment_metrics.monthly_cashflow||0; const r = b.rental||{}; return (r.str||{}).monthly_cashflow||0; })();
+              return cfB-cfA;
+            }
+            if (sortKey==='str-cap') {
+              const capA = (() => { const sk = (a.address||'').toLowerCase()+'|'+(a.city||'').toLowerCase(); const sd = strMap[sk]; if (sd && sd.investment_metrics) return sd.investment_metrics.str_cap_rate||0; const r = a.rental||{}; return (r.str||{}).cap_rate||0; })();
+              const capB = (() => { const sk = (b.address||'').toLowerCase()+'|'+(b.city||'').toLowerCase(); const sd = strMap[sk]; if (sd && sd.investment_metrics) return sd.investment_metrics.str_cap_rate||0; const r = b.rental||{}; return (r.str||{}).cap_rate||0; })();
+              return capB-capA;
+            }
             return (b.foundAt||'').localeCompare(a.foundAt||'');
           });
           const totalPages = Math.max(1, Math.ceil(sorted.length / SCAN_PAGE_SIZE));
@@ -6823,8 +6924,8 @@ views['venture-realestate'] = async () => {
             card += '<button style="' + sbtn(isSel ? 'score' : '') + (isSel ? '' : '') + '" onclick="if(!window._scanStatusFilter)window._scanStatusFilter={};window._scanStatusFilter[\'' + scanId + '\']=\'' + val + '\';window._scanPages[\'' + scanId + '\']=1;renderView()">' + label + '</button>';
           });
           card += '<span style="font-size:9px;color:var(--text-tertiary);margin-left:8px">Sort:</span>';
-          ['score','date','price-asc','price-desc','sqft'].forEach((k,i) => {
-            const labels = ['Best Deal','Newest','Price Low','Price High','Largest'];
+          ['score','date','price-asc','price-desc','ppsf','sqft','str-cf','str-cap'].forEach((k,i) => {
+            const labels = ['Best Deal','Newest','Price Low','Price High','$/SF Low','Largest','STR Cash Flow','STR Cap Rate'];
             card += '<button style="' + sbtn(k) + '" onclick="window._scanSorts[\'' + scanId + '\']=\'' + k + '\';window._scanPages[\'' + scanId + '\']=1;renderView()">' + labels[i] + '</button>';
           });
           card += '</div>';
@@ -6837,7 +6938,7 @@ views['venture-realestate'] = async () => {
             card += '</div>';
           }
           card += '</div>';
-          card += '<table class="vdash-table"><tr><th>Score</th><th>Status</th><th>Address</th><th>City</th><th class="right">Price</th><th class="right">$/sf</th><th>Bed/Ba</th><th class="right">Sqft</th><th class="right">HOA</th><th>View</th><th>STR</th><th>Links</th><th>Action</th></tr>';
+          card += '<table class="vdash-table"><tr><th style="width:20px"></th><th>Score</th><th>Conf</th><th>Status</th><th>Address</th><th>City</th><th class="right">Price</th><th class="right">$/sf</th><th>Bed/Ba</th><th class="right">Sqft</th><th class="right">HOA</th><th>View</th><th>STR</th><th>Links</th><th>Action</th></tr>';
           card += pl.map((l, li) => {
             const lp=l.price||0; const ps = lp>=1000000?'$'+(lp/1000000).toFixed(1).replace(/\.0$/,'')+'M':lp>=1000?'$'+Math.round(lp/1000)+'K':'$'+lp;
             const ppsf = (lp && l.sqft) ? '$' + Math.round(lp/l.sqft) : '--';
@@ -6853,19 +6954,47 @@ views['venture-realestate'] = async () => {
             const ls = (l.listingStatus||'UNVERIFIED').toUpperCase();
             const lsColor = ls==='ACTIVE'?'var(--green)':ls==='PENDING'?'var(--yellow)':ls==='SOLD'?'var(--red)':ls==='OFF_MARKET'?'var(--text-tertiary)':'var(--text-tertiary)';
             const lsLabel = ls==='NO_URL'?'No URL':ls==='UNVERIFIED'?'Unverified':ls.charAt(0)+ls.slice(1).toLowerCase();
-            let row = '<tr style="cursor:pointer" onclick="window._scanExpanded[\'' + rowId + '\']=!window._scanExpanded[\'' + rowId + '\'];renderView()" title="Click row to expand rental analysis"><td style="text-align:center;white-space:nowrap"><span class="vc-score ' + (sc>=75?'hot':sc>=55?'warm':'cool') + '" title="Size:' + weights.size + ' HOA:' + weights.hoa + ' STR:' + weights.str + ' View:' + weights.view + ' Loc:' + weights.location + ' Val:' + weights.value + '">' + sc + '</span> <span style="font-size:9px;font-weight:700;color:' + tierColor + '">' + (l._tier||'?') + '</span></td><td style="text-align:center"><span style="font-size:9px;font-weight:600;color:' + lsColor + '">' + lsLabel + '</span></td><td class="text" style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="'+esc((l.building?l.building+' — ':'')+( l.address||''))+'">' + (l.url ? '<a href="' + esc(l.url) + '" target="_blank" onclick="event.stopPropagation()" style="color:var(--text-primary);text-decoration:none;border-bottom:1px dotted var(--text-tertiary)" onmouseover="this.style.color=\'var(--accent)\'" onmouseout="this.style.color=\'var(--text-primary)\'">' : '') + esc((l.address||'').substring(0,32)) + (l.url ? '</a>' : '') +(l.building?'<div style="font-size:9px;color:var(--text-tertiary);margin-top:1px">'+esc(l.building)+'</div>':'')+'</td><td class="text">'+esc(l.city||'')+'</td><td class="right" style="font-weight:600">'+ps+'</td><td class="right">'+ppsf+'</td><td class="text">'+(l.beds||'?')+'/'+(l.baths||'?')+'</td><td class="right">'+(l.sqft ? l.sqft.toLocaleString() : '--')+'</td><td class="right">'+(l.hoaFee!==undefined&&l.hoaFee!==null?'$'+l.hoaFee.toLocaleString():'--')+'</td><td class="text" style="font-size:10px">'+esc(l.view||'')+'</td><td style="text-align:center;font-size:10px">'+(l.strAllowed===true?'<span style="color:var(--green)">Yes</span>':l.strAllowed===false?'<span style="color:var(--red)">No</span>':'<span style="color:var(--text-tertiary)">?</span>')+'</td><td style="white-space:nowrap"><a href="'+(l.url||'#')+'" target="_blank" style="color:'+accent.color+';font-size:9px;text-decoration:none;font-weight:500;margin-right:6px" title="Original listing" onclick="event.stopPropagation()">Listing</a><a href="'+zUrl+'" target="_blank" style="color:var(--text-tertiary);font-size:9px;text-decoration:none;margin-right:6px" title="Zillow" onclick="event.stopPropagation()">Zillow</a><a href="'+paUrl+'" target="_blank" style="color:var(--text-tertiary);font-size:9px;text-decoration:none" title="Tax Records" onclick="event.stopPropagation()">Tax</a></td>' +
+            const isInactive = ls === 'SOLD' || ls === 'OFF_MARKET';
+            const rowOpacity = isInactive ? 'opacity:0.45;' : '';
+            const priceDecor = isInactive ? 'text-decoration:line-through;' : '';
+
+            // Lookup verification + STR data for this listing
+            const vKey = (l.address||'').toLowerCase() + '|' + (l.city||'').toLowerCase();
+            const vData = vMap[vKey];
+            const strData = strMap[vKey];
+            const conf = vData ? vData.confidence : null;
+            const confColor = conf === 'high' ? 'var(--green)' : conf === 'medium' ? 'var(--yellow)' : conf === 'low' ? 'var(--orange)' : 'var(--text-tertiary)';
+            const confMuted = conf === 'high' ? 'var(--green-muted)' : conf === 'medium' ? 'var(--yellow-muted)' : conf === 'low' ? 'var(--orange-muted)' : 'var(--bg-tertiary)';
+            const confLabel = conf ? conf.charAt(0).toUpperCase() + conf.slice(1) : '--';
+            const confSources = vData ? (vData.sources_checked || 1) : 0;
+            const confFlags = vData ? (vData.flags || []) : [];
+            const confTitle = conf ? confLabel + ' (' + confSources + ' sources' + (confFlags.length ? ', ' + confFlags.length + ' flags' : '') + ')' : 'Not yet verified';
+
+            // Determine expandability (rental analysis, verification, or STR comps)
+            const ra = l.rental || {};
+            const _hasRental = !!(ra.str || ra.ltr);
+            const _hasVerification = !!vData;
+            const _hasStrComps = !!(strData && strData.str_projection);
+            const _canExpand = _hasRental || _hasVerification || _hasStrComps;
+            const expandIcon = _canExpand ? (isExpanded ? '&#8722;' : '+') : '';
+            const expandStyle = _canExpand ? 'cursor:pointer;' : '';
+            const expandClick = _canExpand ? 'onclick="window._scanExpanded[\'' + rowId + '\']=!window._scanExpanded[\'' + rowId + '\'];renderView()"' : '';
+            let row = '<tr style="' + expandStyle + rowOpacity + '" ' + expandClick + ' title="' + (isInactive ? ls + ' — ' : '') + (_canExpand ? 'Click to ' + (isExpanded ? 'collapse' : 'expand') + ' details' : 'No detail data yet') + '"><td style="text-align:center;font-size:12px;font-weight:700;color:var(--text-tertiary);width:20px;user-select:none">' + expandIcon + '</td><td style="text-align:center;white-space:nowrap"><span class="vc-score ' + (sc>=75?'hot':sc>=55?'warm':'cool') + '" title="Size:' + weights.size + ' HOA:' + weights.hoa + ' STR:' + weights.str + ' View:' + weights.view + ' Loc:' + weights.location + ' Val:' + weights.value + '">' + sc + '</span> <span style="font-size:9px;font-weight:700;color:' + tierColor + '">' + (l._tier||'?') + '</span></td>' +
+            '<td style="text-align:center" title="' + confTitle + '"><span style="font-size:8px;font-weight:700;padding:2px 6px;border-radius:8px;text-transform:uppercase;letter-spacing:0.3px;background:' + confMuted + ';color:' + confColor + ';border:1px solid ' + confColor + '33">' + confLabel + '</span>' + (confSources > 0 ? '<div style="font-size:8px;color:var(--text-tertiary);margin-top:1px">' + confSources + 'src' + (confFlags.length ? ' / ' + confFlags.length + 'fl' : '') + '</div>' : '') + '</td>' +
+            '<td style="text-align:center"><span style="font-size:9px;font-weight:600;color:' + lsColor + '">' + lsLabel + '</span></td><td class="text" style="max-width:180px;overflow:hidden;text-overflow:ellipsis" title="'+esc((l.building?l.building+' — ':'')+( l.address||''))+'">' + (l.url ? '<a href="' + esc(l.url) + '" target="_blank" onclick="event.stopPropagation()" style="color:var(--text-primary);text-decoration:none;border-bottom:1px dotted var(--text-tertiary)" onmouseover="this.style.color=\'var(--accent)\'" onmouseout="this.style.color=\'var(--text-primary)\'">' : '') + esc((l.address||'').substring(0,32)) + (l.url ? '</a>' : '') +(l.building?'<div style="font-size:9px;color:var(--text-tertiary);margin-top:1px">'+esc(l.building)+'</div>':'')+'</td><td class="text">'+esc(l.city||'')+'</td><td class="right" style="font-weight:600;'+priceDecor+'">'+ps+'</td><td class="right" style="'+priceDecor+'">'+ppsf+'</td><td class="text">'+(l.beds||'?')+'/'+(l.baths||'?')+'</td><td class="right">'+(l.sqft ? l.sqft.toLocaleString() : '--')+'</td><td class="right">'+(l.hoaFee!==undefined&&l.hoaFee!==null?'$'+l.hoaFee.toLocaleString():'--')+'</td><td class="text" style="font-size:10px">'+esc(l.view||'')+'</td><td style="text-align:center;font-size:10px">'+(l.strAllowed===true?'<span style="color:var(--green)">Yes</span>':l.strAllowed===false?'<span style="color:var(--red)">No</span>':'<span style="color:var(--text-tertiary)">?</span>')+'</td><td style="white-space:nowrap"><a href="'+(l.url||'#')+'" target="_blank" style="color:'+accent.color+';font-size:9px;text-decoration:none;font-weight:500;margin-right:6px" title="Original listing" onclick="event.stopPropagation()">Listing</a><a href="'+zUrl+'" target="_blank" style="color:var(--text-tertiary);font-size:9px;text-decoration:none;margin-right:6px" title="Zillow" onclick="event.stopPropagation()">Zillow</a><a href="'+paUrl+'" target="_blank" style="color:var(--text-tertiary);font-size:9px;text-decoration:none" title="Tax Records" onclick="event.stopPropagation()">Tax</a></td>' +
               '<td onclick="event.stopPropagation()"><select style="font-size:10px;padding:2px 4px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);cursor:pointer;font-family:var(--font)" onchange="window._reAction(this.value,\'' + scanId + '\',' + li + ',' + lp + ',\'' + addrEnc + '\',\'' + cityEnc + '\');this.selectedIndex=0"><option value="">--</option><option value="offer">Create Offer</option><option value="score">Set Score</option><option value="toured">Mark Toured</option><option value="watch">Add to Watchlist</option><option value="verify-str">Verify STR</option><option value="remove">Remove</option></select></td></tr>';
 
-            // Expandable rental analysis row
-            const ra = l.rental || {};
-            if (ra.str || ra.ltr) {
+            // Expandable detail row — shows rental analysis, verification, and/or STR projections
+            if (_hasRental || _hasVerification || _hasStrComps) {
               const $ = v => (v !== null && v !== undefined) ? (v === 0 ? '$0' : v < 0 ? '-$' + Math.abs(v).toLocaleString() : '$' + v.toLocaleString()) : '--';
               const pct = v => (v !== null && v !== undefined) ? v.toFixed(1) + '%' : '--';
               const cfColor = v => v > 0 ? 'color:var(--green)' : v < 0 ? 'color:var(--red)' : '';
               const ltr = ra.ltr || {};
               const str = ra.str || {};
 
-              row += '<tr id="' + rowId + '" style="display:' + (isExpanded ? 'table-row' : 'none') + ';background:var(--bg-tertiary)"><td colspan="13" style="padding:12px 16px">';
+              row += '<tr id="' + rowId + '" style="display:' + (isExpanded ? 'table-row' : 'none') + ';background:var(--bg-tertiary)"><td colspan="15" style="padding:12px 16px">';
+
+              if (_hasRental) {
               row += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;font-size:11px">';
 
               // Column 1: Financing
@@ -6888,8 +7017,8 @@ views['venture-realestate'] = async () => {
                 row += '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 12px;color:var(--text-secondary)">';
                 row += '<span style="color:var(--text-tertiary)">Monthly Rent</span><span style="font-family:var(--mono);text-align:right">' + $(ltr.monthly_rent) + '</span>';
                 row += '<span style="color:var(--text-tertiary)">Source</span><span style="font-size:9px;color:var(--accent)">' + esc(ltr.source || '') + '</span>';
-                row += '<span style="color:var(--text-tertiary)">Vacancy</span><span style="font-family:var(--mono);text-align:right">' + (ltr.vacancy_pct * 100) + '%</span>';
-                row += '<span style="color:var(--text-tertiary)">Management</span><span style="font-family:var(--mono);text-align:right">' + (ltr.mgmt_pct * 100) + '%</span>';
+                row += '<span style="color:var(--text-tertiary)">Vacancy</span><span style="font-family:var(--mono);text-align:right">' + Math.round(ltr.vacancy_pct * 100) + '%</span>';
+                row += '<span style="color:var(--text-tertiary)">Management</span><span style="font-family:var(--mono);text-align:right">' + Math.round(ltr.mgmt_pct * 100) + '%</span>';
                 row += '<span style="color:var(--text-tertiary)">NOI</span><span style="font-family:var(--mono);text-align:right">' + $(ltr.noi) + '/yr</span>';
                 row += '<span style="color:var(--text-tertiary)">Cap Rate</span><span style="font-family:var(--mono);text-align:right;' + (ltr.cap_rate >= 5 ? 'color:var(--green)' : '') + '">' + pct(ltr.cap_rate) + '</span>';
                 row += '<span style="color:var(--text-tertiary)">Cash Flow</span><span style="font-family:var(--mono);text-align:right;' + cfColor(ltr.monthly_cashflow) + '">' + $(ltr.monthly_cashflow) + '/mo</span>';
@@ -6902,22 +7031,159 @@ views['venture-realestate'] = async () => {
                 row += '</div>';
               }
 
-              // Column 3: Short-Term Rental
+              // Column 3: Short-Term Rental (original single-source data)
               row += '<div>';
               row += '<div style="font-size:9px;font-weight:700;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">Short-Term Rental</div>';
               row += '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 12px;color:var(--text-secondary)">';
               row += '<span style="color:var(--text-tertiary)">Nightly ADR</span><span style="font-family:var(--mono);text-align:right">$' + (str.adr || 0) + '</span>';
-              row += '<span style="color:var(--text-tertiary)">Occupancy</span><span style="font-family:var(--mono);text-align:right">' + ((str.occupancy || 0) * 100) + '%</span>';
+              row += '<span style="color:var(--text-tertiary)">Occupancy</span><span style="font-family:var(--mono);text-align:right">' + Math.round((str.occupancy || 0) * 100) + '%</span>';
               row += '<span style="color:var(--text-tertiary)">Gross Monthly</span><span style="font-family:var(--mono);text-align:right">' + $(str.gross_monthly) + '</span>';
               row += '<span style="color:var(--text-tertiary)">Source</span><span style="font-size:9px;color:var(--accent)">' + esc(str.source || '') + '</span>';
-              row += '<span style="color:var(--text-tertiary)">Management</span><span style="font-family:var(--mono);text-align:right">' + ((str.mgmt_pct || 0) * 100) + '%</span>';
+              row += '<span style="color:var(--text-tertiary)">Management</span><span style="font-family:var(--mono);text-align:right">' + Math.round((str.mgmt_pct || 0) * 100) + '%</span>';
               row += '<span style="color:var(--text-tertiary)">NOI</span><span style="font-family:var(--mono);text-align:right">' + $(str.noi) + '/yr</span>';
               row += '<span style="color:var(--text-tertiary)">Cap Rate</span><span style="font-family:var(--mono);text-align:right;' + (str.cap_rate >= 5 ? 'color:var(--green)' : '') + '">' + pct(str.cap_rate) + '</span>';
               row += '<span style="color:var(--text-tertiary)">Cash Flow</span><span style="font-family:var(--mono);text-align:right;' + cfColor(str.monthly_cashflow) + '">' + $(str.monthly_cashflow) + '/mo</span>';
               row += '<span style="color:var(--text-tertiary);font-weight:600">Cash-on-Cash</span><span style="font-family:var(--mono);text-align:right;font-weight:600;' + cfColor(str.cash_on_cash) + '">' + pct(str.cash_on_cash) + '</span>';
               row += '</div></div>';
 
-              row += '</div></td></tr>';
+              row += '</div>';
+              } // end _hasRental
+
+              // ── Verification & STR Intelligence Section ──
+              const _vd = vData;
+              const _sd = strData;
+              if (_vd || _sd) {
+                row += '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;display:grid;grid-template-columns:' + (_vd && _sd ? '1fr 2fr' : '1fr') + ';gap:16px">';
+
+                // Verification breakdown
+                if (_vd) {
+                  const _vconf = _vd.confidence || 'unverified';
+                  const _vcColor = _vconf === 'high' ? 'var(--green)' : _vconf === 'medium' ? 'var(--yellow)' : _vconf === 'low' ? 'var(--orange)' : 'var(--text-tertiary)';
+                  row += '<div>';
+                  row += '<div style="font-size:9px;font-weight:700;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">Source Verification</div>';
+                  row += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
+                  row += '<span style="font-size:9px;font-weight:700;padding:2px 8px;border-radius:8px;background:' + _vcColor + '22;color:' + _vcColor + ';border:1px solid ' + _vcColor + '44;text-transform:uppercase">' + _vconf + '</span>';
+                  row += '<span style="font-family:var(--mono);font-size:12px;font-weight:700">' + (_vd.score || 0) + '<span style="font-size:9px;color:var(--text-tertiary)">/100</span></span>';
+                  row += '<span style="font-size:9px;color:var(--text-tertiary)">' + (_vd.sources_checked || 0) + ' sources checked</span>';
+                  row += '</div>';
+
+                  // Verified fields
+                  const vfList = _vd.verified_fields || [];
+                  if (vfList.length) {
+                    row += '<div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:6px">';
+                    vfList.forEach(f => { row += '<span style="font-size:8px;padding:1px 6px;border-radius:6px;background:var(--green-muted);color:var(--green);font-weight:600">' + f + '</span>'; });
+                    row += '</div>';
+                  }
+
+                  // Flags
+                  const _vFlags = _vd.flags || [];
+                  if (_vFlags.length) {
+                    row += '<div style="margin-top:4px">';
+                    _vFlags.forEach(fl => {
+                      const flColor = fl.severity === 'high' ? 'var(--red)' : fl.severity === 'medium' ? 'var(--yellow)' : 'var(--text-tertiary)';
+                      row += '<div style="font-size:9px;display:flex;align-items:center;gap:4px;padding:2px 0">';
+                      row += '<span style="color:' + flColor + ';font-weight:700;font-size:8px;text-transform:uppercase">' + esc(String(fl.severity || '')) + '</span>';
+                      row += '<span style="color:var(--text-secondary)">' + esc(String(fl.field || '')) + ': ';
+                      row += esc(String(fl.primary)) + ' vs ' + esc(String(fl.secondary));
+                      if (fl.diff_pct) row += ' (' + Math.abs(fl.diff_pct) + '% diff)';
+                      row += '</span></div>';
+                    });
+                    row += '</div>';
+                  }
+
+                  // Best price
+                  if (_vd.best_price && _vd.best_price.all_prices && _vd.best_price.all_prices.length > 1 && _vd.best_price.median_price > 0) {
+                    row += '<div style="margin-top:6px;font-size:9px;color:var(--text-tertiary)">Median price: <span style="font-family:var(--mono);color:var(--text-secondary)">$' + (_vd.best_price.median_price||0).toLocaleString() + '</span>';
+                    if (_vd.best_price.spread_pct > 0) row += ' (spread: ' + _vd.best_price.spread_pct + '%)';
+                    row += '</div>';
+                  }
+                  row += '</div>';
+                }
+
+                // STR Projection (Airbnb + VRBO)
+                if (_sd && _sd.str_projection) {
+                  const sp = _sd.str_projection;
+                  const bl = sp.blended || {};
+                  const im = _sd.investment_metrics || {};
+                  const ab = sp.airbnb || {};
+                  const vb = sp.vrbo || {};
+                  row += '<div>';
+                  row += '<div style="font-size:9px;font-weight:700;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;border-bottom:1px solid var(--border);padding-bottom:4px">STR Projection (Airbnb + VRBO)</div>';
+
+                  // Platform comparison
+                  row += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">';
+                  // Airbnb
+                  row += '<div style="padding:6px 10px;background:var(--bg-primary);border-radius:var(--radius-sm);border-left:2px solid var(--accent)">';
+                  row += '<div style="font-size:8px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;margin-bottom:4px">Airbnb (' + (ab.comps_found||0) + ' comps)</div>';
+                  row += '<div style="font-family:var(--mono);font-size:13px;font-weight:700">$' + Math.round(ab.adr||0) + '<span style="font-size:9px;font-weight:400;color:var(--text-tertiary)">/nt</span></div>';
+                  row += '<div style="font-size:9px;color:var(--text-tertiary)">Occ: ' + Math.round(ab.occupancy_est||0) + '%</div>';
+                  row += '</div>';
+                  // VRBO
+                  row += '<div style="padding:6px 10px;background:var(--bg-primary);border-radius:var(--radius-sm);border-left:2px solid var(--purple)">';
+                  row += '<div style="font-size:8px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;margin-bottom:4px">VRBO (' + (vb.comps_found||0) + ' comps)</div>';
+                  row += '<div style="font-family:var(--mono);font-size:13px;font-weight:700">$' + Math.round(vb.adr||0) + '<span style="font-size:9px;font-weight:400;color:var(--text-tertiary)">/nt</span></div>';
+                  row += '<div style="font-size:9px;color:var(--text-tertiary)">Occ: ' + Math.round(vb.occupancy_est||0) + '%</div>';
+                  row += '</div>';
+                  // Blended
+                  row += '<div style="padding:6px 10px;background:var(--bg-primary);border-radius:var(--radius-sm);border-left:2px solid var(--green)">';
+                  row += '<div style="font-size:8px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;margin-bottom:4px">Blended (60/40)</div>';
+                  row += '<div style="font-family:var(--mono);font-size:13px;font-weight:700">$' + Math.round(bl.adr||0) + '<span style="font-size:9px;font-weight:400;color:var(--text-tertiary)">/nt</span></div>';
+                  row += '<div style="font-size:9px;color:var(--text-tertiary)">Occ: ' + Math.round(bl.occupancy||0) + '% | RevPAR: $' + Math.round(bl.revpar||0) + '</div>';
+                  row += '</div>';
+                  row += '</div>';
+
+                  // Seasonality mini-chart (bar chart of monthly net)
+                  const seasons = sp.seasonality || [];
+                  if (seasons.length === 12) {
+                    const maxGross = Math.max(...seasons.map(s => s.gross || 0), 1);
+                    row += '<div style="margin-bottom:10px">';
+                    row += '<div style="font-size:8px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px">Monthly Revenue (Seasonality)</div>';
+                    row += '<div style="display:flex;align-items:flex-end;gap:2px;height:48px" role="img" aria-label="Monthly revenue chart showing peak season Dec-Apr, shoulder May Oct-Nov, off-peak Jun-Sep">';
+                    const monthLabels = ['J','F','M','A','M','J','J','A','S','O','N','D'];
+                    seasons.forEach((s, mi) => {
+                      const barH = Math.max(2, Math.round((s.gross||0) / maxGross * 44));
+                      const isPeak = [12,1,2,3,4].includes(s.month);
+                      const isShoulder = [5,10,11].includes(s.month);
+                      const barColor = isPeak ? 'var(--green)' : isShoulder ? 'var(--yellow)' : 'var(--text-tertiary)';
+                      row += '<div style="flex:1;display:flex;flex-direction:column;align-items:center" title="' + monthLabels[mi] + ': $' + (s.gross||0).toLocaleString() + ' gross / $' + (s.net||0).toLocaleString() + ' net">';
+                      row += '<div style="width:100%;height:' + barH + 'px;background:' + barColor + '44;border-top:2px solid ' + barColor + ';border-radius:1px 1px 0 0"></div>';
+                      row += '<div style="font-size:7px;color:var(--text-tertiary);margin-top:2px">' + monthLabels[mi] + '</div>';
+                      row += '</div>';
+                    });
+                    row += '</div>';
+                    row += '<div style="display:flex;gap:12px;margin-top:4px;font-size:8px;color:var(--text-tertiary)">';
+                    row += '<span><span style="display:inline-block;width:8px;height:3px;background:var(--green);border-radius:1px;margin-right:3px"></span>Peak (Dec-Apr)</span>';
+                    row += '<span><span style="display:inline-block;width:8px;height:3px;background:var(--yellow);border-radius:1px;margin-right:3px"></span>Shoulder</span>';
+                    row += '<span><span style="display:inline-block;width:8px;height:3px;background:var(--text-tertiary);border-radius:1px;margin-right:3px"></span>Off-Peak</span>';
+                    row += '</div>';
+                    row += '</div>';
+                  }
+
+                  // Investment metrics
+                  row += '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px">';
+                  const imCfColor = (im.monthly_cashflow||0) > 0 ? 'var(--green)' : (im.monthly_cashflow||0) < 0 ? 'var(--red)' : 'var(--text-secondary)';
+                  row += '<div style="text-align:center;padding:6px 4px;background:var(--bg-primary);border-radius:var(--radius-sm)"><div style="font-family:var(--mono);font-size:12px;font-weight:700">$' + (bl.annual_gross||0).toLocaleString() + '</div><div style="font-size:7px;color:var(--text-tertiary);text-transform:uppercase;margin-top:1px">Gross/yr</div></div>';
+                  row += '<div style="text-align:center;padding:6px 4px;background:var(--bg-primary);border-radius:var(--radius-sm)"><div style="font-family:var(--mono);font-size:12px;font-weight:700">$' + (bl.annual_net||0).toLocaleString() + '</div><div style="font-size:7px;color:var(--text-tertiary);text-transform:uppercase;margin-top:1px">Net STR/yr</div></div>';
+                  row += '<div style="text-align:center;padding:6px 4px;background:var(--bg-primary);border-radius:var(--radius-sm)"><div style="font-family:var(--mono);font-size:12px;font-weight:700;color:' + imCfColor + '">$' + Math.abs(im.monthly_cashflow||0).toLocaleString() + '</div><div style="font-size:7px;color:var(--text-tertiary);text-transform:uppercase;margin-top:1px">' + ((im.monthly_cashflow||0) >= 0 ? 'CF/mo' : 'Loss/mo') + '</div></div>';
+                  row += '<div style="text-align:center;padding:6px 4px;background:var(--bg-primary);border-radius:var(--radius-sm)"><div style="font-family:var(--mono);font-size:12px;font-weight:700;' + ((im.cash_on_cash||0) > 0 ? 'color:var(--green)' : (im.cash_on_cash||0) < 0 ? 'color:var(--red)' : '') + '">' + (im.cash_on_cash||0) + '%</div><div style="font-size:7px;color:var(--text-tertiary);text-transform:uppercase;margin-top:1px">CoC Return</div></div>';
+                  row += '<div style="text-align:center;padding:6px 4px;background:var(--bg-primary);border-radius:var(--radius-sm)"><div style="font-family:var(--mono);font-size:12px;font-weight:700">$' + (im.break_even_adr||0) + '</div><div style="font-size:7px;color:var(--text-tertiary);text-transform:uppercase;margin-top:1px">Break-Even ADR</div></div>';
+                  row += '</div>';
+
+                  // Confidence + comp quality
+                  row += '<div style="display:flex;justify-content:space-between;margin-top:6px;font-size:9px;color:var(--text-tertiary)">';
+                  const _sConf = _sd.confidence || 'no_data';
+                  const _scColor = _sConf === 'high' ? 'var(--green)' : _sConf === 'medium' ? 'var(--yellow)' : _sConf === 'low' ? 'var(--orange)' : 'var(--text-tertiary)';
+                  row += '<span>STR Confidence: <span style="color:' + _scColor + ';font-weight:600;text-transform:uppercase">' + _sConf + '</span> (' + (sp.total_comps||0) + ' comps)</span>';
+                  if (sp.avg_rating) row += '<span>Avg Rating: ' + sp.avg_rating + '</span>';
+                  if ((sp.superhost_pct ?? 0) > 0) row += '<span>Superhosts: ' + sp.superhost_pct + '%</span>';
+                  row += '</div>';
+                  row += '</div>';
+                }
+
+                row += '</div>';
+              }
+
+              row += '</td></tr>';
             }
             return row;
           }).join('');
@@ -6933,16 +7199,19 @@ views['venture-realestate'] = async () => {
       return html;
     })()}
     ${(() => {
-      if (!deals.length) return '<div class="vdash-panel" style="padding:40px;text-align:center"><div style="font-size:14px;color:var(--text-tertiary);margin-bottom:8px">No deals yet</div><div style="font-size:12px;color:var(--text-tertiary)">Submit properties in the #real-estate Discord channel for analysis</div></div>';
-      const totalPages = Math.ceil(deals.length / RE_PAGE_SIZE);
+      // Only show Deals table when there are actually scored/analyzed deals
+      const scoredDeals = deals.filter(d => typeof d.score === 'number' && d.score > 0);
+      if (!scoredDeals.length) return '';
+      const showDeals = scoredDeals;
+      const totalPages = Math.ceil(showDeals.length / RE_PAGE_SIZE);
       if (_rePage > totalPages && totalPages > 0) _rePage = totalPages;
       const start = (_rePage - 1) * RE_PAGE_SIZE;
-      const pageDeals = deals.slice(start, start + RE_PAGE_SIZE);
+      const pageDeals = showDeals.slice(start, start + RE_PAGE_SIZE);
       return '<div class="vdash-panel" style="margin-bottom:20px">' +
       '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">' +
-        '<div class="vp-title" style="margin:0;border:0;padding:0">Deals <span class="count">' + deals.length + '</span></div>' +
+        '<div class="vp-title" style="margin:0;border:0;padding:0">Analyzed Deals <span class="count">' + showDeals.length + '</span></div>' +
         '<div style="display:flex;align-items:center;gap:8px;font-size:11px">' +
-          '<span style="color:var(--text-tertiary);font-family:var(--mono)">' + (start+1) + '-' + Math.min(start+RE_PAGE_SIZE, deals.length) + ' of ' + deals.length + '</span>' +
+          '<span style="color:var(--text-tertiary);font-family:var(--mono)">' + (start+1) + '-' + Math.min(start+RE_PAGE_SIZE, showDeals.length) + ' of ' + showDeals.length + '</span>' +
           '<button style="padding:3px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer;font-family:var(--font);font-size:11px;opacity:' + (_rePage <= 1 ? '0.3' : '1') + '" ' + (_rePage <= 1 ? 'disabled' : 'onclick="_rePage--;renderView()"') + '>&lsaquo; Prev</button>' +
           '<span style="font-family:var(--mono);color:var(--text-tertiary)">' + _rePage + '/' + totalPages + '</span>' +
           '<button style="padding:3px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);cursor:pointer;font-family:var(--font);font-size:11px;opacity:' + (_rePage >= totalPages ? '0.3' : '1') + '" ' + (_rePage >= totalPages ? 'disabled' : 'onclick="_rePage++;renderView()"') + '>Next &rsaquo;</button>' +
@@ -6953,7 +7222,7 @@ views['venture-realestate'] = async () => {
           pageDeals.map(deal => {
             const r = deal.rental || {};
             const arv = deal.arv || {};
-            const arvMid = arv.mid || arv.high || arv.low || 0;
+            const arvMid = arv.mid ?? arv.high ?? arv.low ?? 0;
             const scoreClass = (deal.score||0) >= 70 ? 'hot' : (deal.score||0) >= 40 ? 'warm' : 'cool';
             const stageColors = {lead:'var(--text-tertiary)',analyzing:'var(--accent)',watch:'var(--yellow)',offer:'var(--orange)',under_contract:'var(--purple)',closed:'var(--green)',passed:'var(--red)'};
             const stageColor = stageColors[deal.stage] || 'var(--text-tertiary)';

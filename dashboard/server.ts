@@ -2256,6 +2256,20 @@ function getVentureRealestate() {
       }
     }
 
+    // Load verification data
+    let verification: Record<string, unknown> = { lastVerification: null, totalVerified: 0, listings: [] };
+    const verificationPath = path.join(searchesDir, 'coastal-condos-verification.json');
+    if (fs.existsSync(verificationPath)) {
+      try { verification = JSON.parse(readFileSafe(verificationPath)); } catch {}
+    }
+
+    // Load STR comps data
+    let strComps: Record<string, unknown> = { lastAnalysis: null, totalAnalyzed: 0, listings: [] };
+    const strCompsPath = path.join(searchesDir, 'coastal-condos-str-comps.json');
+    if (fs.existsSync(strCompsPath)) {
+      try { strComps = JSON.parse(readFileSafe(strCompsPath)); } catch {}
+    }
+
     return {
       deals,
       pipeline,
@@ -2268,6 +2282,8 @@ function getVentureRealestate() {
       ventureFrontmatter: ventFm,
       ventureBody: ventBody,
       searches,
+      verification,
+      strComps,
     };
   } catch (err) {
     console.error('[venture-realestate]', err);
