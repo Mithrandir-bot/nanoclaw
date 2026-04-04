@@ -964,6 +964,7 @@ async function main(): Promise<void> {
     addTaskComment,
   });
   queue.setProcessMessagesFn(processGroupMessages);
+  queue.startSessionWatchdog();
   recoverPendingMessages();
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');

@@ -2256,6 +2256,29 @@ function getVentureRealestate() {
       }
     }
 
+    // Sanitize listing statuses: if notes or fields indicate sold/off-market, don't show as ACTIVE
+    const soldPatterns = [
+      /\bSTATUS:\s*(?:sold|off[\s-]?market)/i,
+      /\bsold\s+(?:on|in|at)\s+(?:both\s+)?(?:redfin|zillow|realtor)/i,
+      /\bsold\s+in\s+\d{4}\b/i,
+      /\boff[\s-]?market,?\s*sold\b/i,
+    ];
+    for (const search of searches) {
+      const results = (search as any).results;
+      if (results?.listings) {
+        for (const l of results.listings) {
+          const s = (l.listingStatus || '').toUpperCase();
+          if (s === 'ACTIVE' || s === 'UNVERIFIED') {
+            const notes = l.notes || '';
+            const notesMatch = soldPatterns.some((p: RegExp) => p.test(notes));
+            if (notesMatch || (l.soldDate && l.soldPrice)) {
+              l.listingStatus = l.soldPrice ? 'SOLD' : 'OFF_MARKET';
+            }
+          }
+        }
+      }
+    }
+
     // Load verification data
     let verification: Record<string, unknown> = { lastVerification: null, totalVerified: 0, listings: [] };
     const verificationPath = path.join(searchesDir, 'coastal-condos-verification.json');
@@ -3996,6 +4019,31 @@ async function postAccountingScanEmail(_req?: http.IncomingMessage) {
       const vendorMatch = from.match(/^"?([^"<]+)/);
       vendor = vendorMatch ? vendorMatch[1].trim() : from;
     }
+
+    // Skip newsletters and non-transactional emails — they often contain dollar amounts
+    // that the scanner incorrectly picks up as expenses
+    const isNewsletter = (() => {
+      const subjectLower = subject.toLowerCase();
+      const fromLower = from.toLowerCase();
+      // Common newsletter signals in subject or sender
+      const newsletterPatterns = [
+        /\bunsubscribe\b/i, /\bnewsletter\b/i, /\bbullet friday\b/i,
+        /\bweekly digest\b/i, /\bdaily briefing\b/i, /\bopen letter\b/i,
+      ];
+      if (newsletterPatterns.some(p => p.test(subjectLower) || p.test(snippet.toLowerCase()))) return true;
+      // If the body has a prominent unsubscribe link and no receipt/invoice keywords in subject
+      const hasUnsubscribe = plainBody.toLowerCase().includes('unsubscribe') || plainBody.toLowerCase().includes('email preferences');
+      const subjectLooksTransactional = /receipt|invoice|payment received|order confirm|billing|your.*statement|charge/i.test(subjectLower);
+      if (hasUnsubscribe && !subjectLooksTransactional) return true;
+      // Known newsletter senders
+      const newsletterSenders = ['substack', 'beehiiv', 'mailchimp', 'convertkit', 'buttondown', 'revue'];
+      if (newsletterSenders.some(s => fromLower.includes(s) || (plainBody.toLowerCase().includes(s)))) {
+        // Only skip if the subject doesn't look like a receipt
+        if (!subjectLooksTransactional) return true;
+      }
+      return false;
+    })();
+    if (isNewsletter) continue;
 
     if (amount > 0) {
       // Duplicate detection: skip if an entry with same date, amount, AND similar vendor exists
@@ -6505,12 +6553,25 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Serve static assets (always accessible — no auth needed for map data)
+  // Serve static assets (always accessible — no auth needed for map data and images)
   if (pathname === '/world-map.json') {
     const mapPath = path.join(import.meta.dirname, 'world-map.json');
     if (fs.existsSync(mapPath)) {
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
       res.end(fs.readFileSync(mapPath));
+    } else {
+      res.writeHead(404); res.end('Not found');
+    }
+    return;
+  }
+
+  if (pathname?.startsWith('/assets/')) {
+    const assetPath = path.join(import.meta.dirname, '..', pathname);
+    if (fs.existsSync(assetPath)) {
+      const ext = path.extname(assetPath).toLowerCase();
+      const mimeTypes: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
+      res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream', 'Cache-Control': 'public, max-age=86400' });
+      res.end(fs.readFileSync(assetPath));
     } else {
       res.writeHead(404); res.end('Not found');
     }

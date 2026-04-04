@@ -5,6 +5,12 @@ import path from 'path';
 import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
 import { logger } from './logger.js';
 
+const SESSION_WATCHDOG_INTERVAL = 60_000; // Check every 60s
+const SESSION_MAX_BYTES = parseInt(
+  process.env.MAX_SESSION_BYTES || '524288',
+  10,
+); // Same 512KB threshold as rotation
+
 interface QueuedTask {
   id: string;
   groupJid: string;
@@ -385,6 +391,51 @@ export class GroupQueue {
       }
       // If neither pending, skip this group
     }
+  }
+
+  /**
+   * Periodically check session file sizes for active containers.
+   * If a session exceeds the threshold, send a _close sentinel so the
+   * container winds down gracefully before the session becomes unusable.
+   */
+  startSessionWatchdog(): void {
+    setInterval(() => {
+      for (const [jid, state] of this.groups) {
+        if (!state.active || !state.groupFolder) continue;
+
+        const sessionDir = path.join(
+          DATA_DIR,
+          'sessions',
+          state.groupFolder,
+          '.claude',
+          'projects',
+          '-workspace-group',
+        );
+
+        try {
+          if (!fs.existsSync(sessionDir)) continue;
+          const files = fs.readdirSync(sessionDir).filter((f) => f.endsWith('.jsonl'));
+          for (const f of files) {
+            const stat = fs.statSync(path.join(sessionDir, f));
+            if (stat.size > SESSION_MAX_BYTES) {
+              logger.warn(
+                {
+                  group: state.groupFolder,
+                  sessionFile: f,
+                  size: stat.size,
+                  threshold: SESSION_MAX_BYTES,
+                },
+                'Active session exceeds size threshold — sending close signal to container',
+              );
+              this.closeStdin(jid);
+              break; // One close signal is enough
+            }
+          }
+        } catch {
+          // Non-critical — skip this cycle
+        }
+      }
+    }, SESSION_WATCHDOG_INTERVAL);
   }
 
   async shutdown(_gracePeriodMs: number): Promise<void> {
