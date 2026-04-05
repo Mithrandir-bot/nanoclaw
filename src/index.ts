@@ -7,6 +7,7 @@ import {
   DATA_DIR,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
+  TELEGRAM_BOT_POOL,
   TRIGGER_PATTERN,
 } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
@@ -775,6 +776,12 @@ async function main(): Promise<void> {
   if (channels.length === 0) {
     logger.fatal('No channels connected');
     process.exit(1);
+  }
+
+  // Initialize Telegram bot pool for agent swarm (each subagent gets its own bot identity)
+  if (TELEGRAM_BOT_POOL.length > 0) {
+    const { initBotPool } = await import('./channels/telegram.js');
+    await initBotPool(TELEGRAM_BOT_POOL);
   }
 
   // Find the Discord channel for thread operations

@@ -187,13 +187,36 @@ Before recommending tools, services, or integrations, check this list. These are
 
 Files you create are saved in `/workspace/group/`. Use this for notes, research, or anything that should persist.
 
-## Cross-Channel Knowledge
+## Vault-First Knowledge Rule
 
-The Obsidian vault at `/workspace/extra/obsidian-vault` contains research, notes, and analysis from all channels. Before searching the web or asking the user for context, check if relevant knowledge already exists:
+Before starting any research, analysis, or task:
 
-1. **Research Digest**: `/workspace/extra/obsidian-vault/AI-Research/Research-Digest.md` — latest AI research findings, updated by #ai-research
-2. **Vault search**: `grep -rl "topic" /workspace/extra/obsidian-vault/` — find notes on any topic across the vault
-3. **Channel history**: `/workspace/group/conversations/` — your own channel's past transcripts
+1. **Search the vault first** — `grep -rl "keyword" /workspace/extra/obsidian-vault/` to find existing notes on the topic
+2. **Read what's there** — build on existing knowledge rather than starting from scratch
+3. **Always save findings back** — write results to the appropriate vault location
+4. **Link related notes** — if your work relates to existing notes, reference them with `[[wikilinks]]`
+
+This applies to you AND every sub-agent you spawn. The vault is the shared brain across all channels.
+
+### Cross-Channel Sources
+
+- **Research Digest**: `/workspace/extra/obsidian-vault/AI-Research/Research-Digest.md` — latest AI research findings
+- **Vault search**: `grep -rl "topic" /workspace/extra/obsidian-vault/` — find notes on any topic
+- **Channel history**: `/workspace/group/conversations/` — your own channel's past transcripts
+
+## Cross-Linking Rule
+
+Every note you create or update must be densely linked using Obsidian `[[wikilinks]]`. When mentioning a person, project, meeting, or file that exists in the vault, link to it. When it doesn't have a note yet, create the `[[wikilink]]` anyway — it becomes a placeholder that gets filled in later. Every note is a node in a graph. The more links, the easier it is to find context later.
+
+## Daily Notes
+
+After handling any significant interaction (research completed, analysis delivered, task finished), append a timestamped log entry to today's daily note at `/workspace/extra/obsidian-vault/Daily/YYYY-MM-DD.md`:
+
+```
+- 2:30 PM — Completed competitive analysis for trading strategies → [[Trading/Competitive-Analysis]]
+```
+
+Create the daily note if it doesn't exist. Always append, never overwrite. Use `[[wikilinks]]` to link to all relevant notes.
 
 ## Session Start Checklist
 

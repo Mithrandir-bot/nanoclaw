@@ -239,6 +239,7 @@ async function runTask(
   let costUsd = 0;
   let inputTokens = 0;
   let outputTokens = 0;
+  let runModel: string | null = task.model || null;
 
   try {
     const output = await runContainerAgent(
@@ -271,6 +272,9 @@ async function runTask(
           inputTokens = streamedOutput.usage.inputTokens;
           outputTokens = streamedOutput.usage.outputTokens;
         }
+        if (streamedOutput.model) {
+          runModel = streamedOutput.model;
+        }
         if (streamedOutput.status === 'success') {
           deps.queue.notifyIdle(task.chat_jid);
         }
@@ -293,6 +297,9 @@ async function runTask(
       costUsd = output.usage.costUsd;
       inputTokens = output.usage.inputTokens;
       outputTokens = output.usage.outputTokens;
+    }
+    if (output.model) {
+      runModel = output.model;
     }
 
     logger.info(
@@ -323,6 +330,7 @@ async function runTask(
     cost_usd: costUsd,
     input_tokens: inputTokens,
     output_tokens: outputTokens,
+    model: runModel,
   });
 
   // Auto-detect questions/blockers in task output and flag for review

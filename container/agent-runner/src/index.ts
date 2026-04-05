@@ -36,6 +36,7 @@ interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  model?: string;
   usage?: {
     inputTokens: number;
     outputTokens: number;
@@ -433,11 +434,19 @@ function waitForIpcMessage(): Promise<string | null> {
  * Also pipes IPC messages into the stream during the query.
  */
 /**
- * Estimate API cost from token counts (Opus 4.6 pricing as of 2026-03).
- * Opus: $15/MTok input, $75/MTok output, $1.875/MTok cache read, $18.75/MTok cache write
+ * Estimate API cost from token counts using per-model pricing (as of 2026-03).
+ * Opus:   $15 in / $75 out / $1.875 cache read / $18.75 cache write per MTok
+ * Sonnet: $3 in / $15 out / $0.30 cache read / $3.75 cache write per MTok
+ * Haiku:  $0.80 in / $4 out / $0.08 cache read / $1.00 cache write per MTok
  */
-function estimateCost(inputTokens: number, outputTokens: number, cacheRead: number, cacheWrite: number): number {
-  return (inputTokens * 15 + outputTokens * 75 + cacheRead * 1.875 + cacheWrite * 18.75) / 1_000_000;
+function estimateCost(inputTokens: number, outputTokens: number, cacheRead: number, cacheWrite: number, model?: string): number {
+  let inRate = 15, outRate = 75, cacheReadRate = 1.875, cacheWriteRate = 18.75;
+  if (model?.includes('sonnet')) {
+    inRate = 3; outRate = 15; cacheReadRate = 0.30; cacheWriteRate = 3.75;
+  } else if (model?.includes('haiku')) {
+    inRate = 0.80; outRate = 4; cacheReadRate = 0.08; cacheWriteRate = 1.00;
+  }
+  return (inputTokens * inRate + outputTokens * outRate + cacheRead * cacheReadRate + cacheWrite * cacheWriteRate) / 1_000_000;
 }
 
 async function runQuery(
@@ -507,10 +516,13 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  const activeModel = process.env.CLAUDE_MODEL || 'claude-opus-4-6';
+  log(`Model: ${activeModel}`);
+
   for await (const message of query({
     prompt: stream,
     options: {
-      model: process.env.CLAUDE_MODEL || 'claude-opus-4-6',
+      model: activeModel,
       cwd: '/workspace/group',
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
@@ -604,12 +616,13 @@ async function runQuery(
         error: isApiTimeout ? 'API request timed out (session may be too large)'
           : isRateLimit ? 'API rate limit reached, will retry'
           : undefined,
+        model: activeModel,
         usage: {
           inputTokens: totalInputTokens,
           outputTokens: totalOutputTokens,
           cacheReadTokens,
           cacheWriteTokens,
-          costUsd: totalCostUsd || estimateCost(totalInputTokens, totalOutputTokens, cacheReadTokens, cacheWriteTokens),
+          costUsd: totalCostUsd || estimateCost(totalInputTokens, totalOutputTokens, cacheReadTokens, cacheWriteTokens, activeModel),
         },
       });
     }

@@ -202,13 +202,13 @@ async function main() {
   // Now backfill task_run_logs: match task runs to sessions by timestamp overlap
   // Get all task runs and sessions table
   const taskRuns = db.prepare(`
-    SELECT trl.rowid, trl.task_id, trl.run_at, trl.duration_ms, trl.cost_usd, trl.input_tokens,
+    SELECT trl.id, trl.task_id, trl.run_at, trl.duration_ms, trl.cost_usd, trl.input_tokens,
            st.group_folder
     FROM task_run_logs trl
     JOIN scheduled_tasks st ON trl.task_id = st.id
-    WHERE COALESCE(trl.cost_usd, 0) = 0
+    WHERE COALESCE(trl.cost_usd, 0) = 0 OR trl.model IS NULL
   `).all() as Array<{
-    rowid: number; task_id: string; run_at: string; duration_ms: number;
+    id: number; task_id: string; run_at: string; duration_ms: number;
     cost_usd: number; input_tokens: number; group_folder: string;
   }>;
 
@@ -216,7 +216,7 @@ async function main() {
 
   const updateRun = db.prepare(`
     UPDATE task_run_logs SET cost_usd = ?, input_tokens = ?, output_tokens = ?, model = ?
-    WHERE rowid = ?
+    WHERE id = ?
   `);
 
   let backfilled = 0;
@@ -228,15 +228,17 @@ async function main() {
     const runEndISO = new Date(runEnd + 60000).toISOString();
 
     const session = db.prepare(`
-      SELECT * FROM usage_by_session
+      SELECT model, cost_usd, input_tokens, output_tokens FROM usage_by_session
       WHERE group_folder = ?
         AND first_timestamp >= ? AND first_timestamp <= ?
       ORDER BY ABS(julianday(first_timestamp) - julianday(?))
       LIMIT 1
-    `).get(run.group_folder, runStartISO, runEndISO, run.run_at) as SessionUsage | undefined;
+    `).get(run.group_folder, runStartISO, runEndISO, run.run_at) as {
+      model: string; cost_usd: number; input_tokens: number; output_tokens: number;
+    } | undefined;
 
     if (session) {
-      updateRun.run(session.costUsd, session.inputTokens, session.outputTokens, session.model, run.rowid);
+      updateRun.run(session.cost_usd, session.input_tokens, session.output_tokens, session.model, run.id);
       backfilled++;
     }
   }

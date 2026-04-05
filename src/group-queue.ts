@@ -414,7 +414,9 @@ export class GroupQueue {
 
         try {
           if (!fs.existsSync(sessionDir)) continue;
-          const files = fs.readdirSync(sessionDir).filter((f) => f.endsWith('.jsonl'));
+          const files = fs
+            .readdirSync(sessionDir)
+            .filter((f) => f.endsWith('.jsonl'));
           for (const f of files) {
             const stat = fs.statSync(path.join(sessionDir, f));
             if (stat.size > SESSION_MAX_BYTES) {

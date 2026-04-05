@@ -48,6 +48,7 @@ export interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  model?: string;
   usage?: {
     inputTokens: number;
     outputTokens: number;

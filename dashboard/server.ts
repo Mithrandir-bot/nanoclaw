@@ -634,13 +634,15 @@ function getTasks() {
            COALESCE(trl.cost_usd, 0) as cost_usd,
            COALESCE(trl.input_tokens, 0) as input_tokens,
            COALESCE(trl.output_tokens, 0) as output_tokens,
-           st.group_folder, st.prompt
+           trl.model as run_model,
+           st.group_folder, st.prompt, st.model as task_model
     FROM task_run_logs trl JOIN scheduled_tasks st ON trl.task_id = st.id
     ORDER BY trl.run_at DESC LIMIT 30
   `).all() as Array<{
     task_id: string; run_at: string; duration_ms: number; status: string;
     error: string | null; result: string | null; cost_usd: number;
-    input_tokens: number; output_tokens: number; group_folder: string; prompt: string;
+    input_tokens: number; output_tokens: number; run_model: string | null;
+    group_folder: string; prompt: string; task_model: string | null;
   }>;
 
   const reviews = loadReviews();
@@ -676,14 +678,15 @@ function getTasks() {
   }
 
   // Get last run cost/duration per task
-  const lastRunByTask: Record<string, { cost_usd: number; duration_ms: number; input_tokens: number; output_tokens: number }> = {};
+  const lastRunByTask: Record<string, { cost_usd: number; duration_ms: number; input_tokens: number; output_tokens: number; model: string | null }> = {};
   const lastRuns = db.prepare(`
     SELECT task_id, COALESCE(cost_usd, 0) as cost_usd, duration_ms,
-           COALESCE(input_tokens, 0) as input_tokens, COALESCE(output_tokens, 0) as output_tokens
+           COALESCE(input_tokens, 0) as input_tokens, COALESCE(output_tokens, 0) as output_tokens,
+           model
     FROM task_run_logs WHERE id IN (
       SELECT MAX(id) FROM task_run_logs GROUP BY task_id
     )
-  `).all() as Array<{ task_id: string; cost_usd: number; duration_ms: number; input_tokens: number; output_tokens: number }>;
+  `).all() as Array<{ task_id: string; cost_usd: number; duration_ms: number; input_tokens: number; output_tokens: number; model: string | null }>;
   for (const r of lastRuns) lastRunByTask[r.task_id] = r;
 
   // Batch-fetch all associations for all tasks in two queries
@@ -717,6 +720,7 @@ function getTasks() {
       lastRunCost: lastRunByTask[t.id]?.cost_usd || 0,
       lastRunDuration: lastRunByTask[t.id]?.duration_ms || 0,
       lastRunTokens: lastRunByTask[t.id] ? (lastRunByTask[t.id].input_tokens + lastRunByTask[t.id].output_tokens) : 0,
+      lastRunModel: lastRunByTask[t.id]?.model || t.model || null,
       unread: unreadCounts[t.id] || 0,
       comments: taskCommentsByTask[t.id] || [],
       isRunning,
@@ -753,13 +757,14 @@ function getTaskDetail(taskId: string) {
     SELECT id, run_at, duration_ms, status, result, error,
            COALESCE(cost_usd, 0) as cost_usd,
            COALESCE(input_tokens, 0) as input_tokens,
-           COALESCE(output_tokens, 0) as output_tokens
+           COALESCE(output_tokens, 0) as output_tokens,
+           model
     FROM task_run_logs WHERE task_id = ?
     ORDER BY run_at DESC LIMIT 50
   `).all(taskId) as Array<{
     id: number; run_at: string; duration_ms: number; status: string;
     result: string | null; error: string | null; cost_usd: number;
-    input_tokens: number; output_tokens: number;
+    input_tokens: number; output_tokens: number; model: string | null;
   }>;
 
   // Comments
