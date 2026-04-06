@@ -120,8 +120,15 @@ export class TelegramChannel implements Channel {
       }
 
       // Store chat metadata for discovery
-      const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(chatJid, timestamp, chatName, 'telegram', isGroup);
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        chatName,
+        'telegram',
+        isGroup,
+      );
 
       // Only deliver full message for registered groups
       const group = this.opts.registeredGroups()[chatJid];
@@ -178,7 +185,10 @@ export class TelegramChannel implements Channel {
         );
         return `/workspace/group/uploads/${safeName}`;
       } catch (err) {
-        logger.error({ fileId, fileName, err }, 'Failed to download Telegram file');
+        logger.error(
+          { fileId, fileName, err },
+          'Failed to download Telegram file',
+        );
         return null;
       }
     };
@@ -197,8 +207,15 @@ export class TelegramChannel implements Channel {
         'Unknown';
       const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
 
-      const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        undefined,
+        'telegram',
+        isGroup,
+      );
       this.opts.onMessage(chatJid, {
         id: ctx.message.message_id.toString(),
         chat_jid: chatJid,
@@ -219,17 +236,29 @@ export class TelegramChannel implements Channel {
       const photos = ctx.message.photo;
       const largest = photos[photos.length - 1]; // Last is highest res
       const fileName = `photo-${Date.now()}.jpg`;
-      const containerPath = await downloadTelegramFile(largest.file_id, fileName, group.folder);
+      const containerPath = await downloadTelegramFile(
+        largest.file_id,
+        fileName,
+        group.folder,
+      );
 
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
-      const senderName = ctx.from?.first_name || ctx.from?.username || 'Unknown';
+      const senderName =
+        ctx.from?.first_name || ctx.from?.username || 'Unknown';
       const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
       const content = containerPath
         ? `[Photo: ${containerPath}]${caption}`
         : `[Photo — download failed]${caption}`;
 
-      const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        undefined,
+        'telegram',
+        isGroup,
+      );
       this.opts.onMessage(chatJid, {
         id: ctx.message.message_id.toString(),
         chat_jid: chatJid,
@@ -253,7 +282,11 @@ export class TelegramChannel implements Channel {
       let content: string;
 
       if (fileId && (doc?.file_size ?? 0) <= 50_000_000) {
-        const containerPath = await downloadTelegramFile(fileId, fileName, group.folder);
+        const containerPath = await downloadTelegramFile(
+          fileId,
+          fileName,
+          group.folder,
+        );
         const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
         content = containerPath
           ? `[Document: ${containerPath}]${caption}`
@@ -263,9 +296,17 @@ export class TelegramChannel implements Channel {
       }
 
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
-      const senderName = ctx.from?.first_name || ctx.from?.username || 'Unknown';
-      const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+      const senderName =
+        ctx.from?.first_name || ctx.from?.username || 'Unknown';
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        undefined,
+        'telegram',
+        isGroup,
+      );
       this.opts.onMessage(chatJid, {
         id: ctx.message.message_id.toString(),
         chat_jid: chatJid,
@@ -289,7 +330,11 @@ export class TelegramChannel implements Channel {
       let content: string;
 
       if (fileId && (video?.file_size ?? 0) <= 50_000_000) {
-        const containerPath = await downloadTelegramFile(fileId, fileName, group.folder);
+        const containerPath = await downloadTelegramFile(
+          fileId,
+          fileName,
+          group.folder,
+        );
         const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
         content = containerPath
           ? `[Video: ${containerPath}]${caption}`
@@ -299,9 +344,17 @@ export class TelegramChannel implements Channel {
       }
 
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
-      const senderName = ctx.from?.first_name || ctx.from?.username || 'Unknown';
-      const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+      const senderName =
+        ctx.from?.first_name || ctx.from?.username || 'Unknown';
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        undefined,
+        'telegram',
+        isGroup,
+      );
       this.opts.onMessage(chatJid, {
         id: ctx.message.message_id.toString(),
         chat_jid: chatJid,
@@ -321,15 +374,27 @@ export class TelegramChannel implements Channel {
 
       const voice = ctx.message.voice;
       const fileName = `voice-${Date.now()}.ogg`;
-      const containerPath = await downloadTelegramFile(voice.file_id, fileName, group.folder);
+      const containerPath = await downloadTelegramFile(
+        voice.file_id,
+        fileName,
+        group.folder,
+      );
       const content = containerPath
         ? `[Voice message: ${containerPath}]`
         : '[Voice message — download failed]';
 
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
-      const senderName = ctx.from?.first_name || ctx.from?.username || 'Unknown';
-      const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+      const senderName =
+        ctx.from?.first_name || ctx.from?.username || 'Unknown';
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        undefined,
+        'telegram',
+        isGroup,
+      );
       this.opts.onMessage(chatJid, {
         id: ctx.message.message_id.toString(),
         chat_jid: chatJid,
@@ -349,16 +414,28 @@ export class TelegramChannel implements Channel {
 
       const audio = ctx.message.audio;
       const fileName = audio?.file_name || `audio-${Date.now()}.mp3`;
-      const containerPath = await downloadTelegramFile(audio.file_id, fileName, group.folder);
+      const containerPath = await downloadTelegramFile(
+        audio.file_id,
+        fileName,
+        group.folder,
+      );
       const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
       const content = containerPath
         ? `[Audio: ${containerPath}]${caption}`
         : `[Audio: ${fileName} — download failed]${caption}`;
 
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
-      const senderName = ctx.from?.first_name || ctx.from?.username || 'Unknown';
-      const isGroup = ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+      const senderName =
+        ctx.from?.first_name || ctx.from?.username || 'Unknown';
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        undefined,
+        'telegram',
+        isGroup,
+      );
       this.opts.onMessage(chatJid, {
         id: ctx.message.message_id.toString(),
         chat_jid: chatJid,
@@ -533,7 +610,10 @@ export async function sendPoolMessage(
       'Pool message sent',
     );
   } catch (err) {
-    logger.error({ chatId, sender, poolIndex: idx, err }, 'Failed to send pool message');
+    logger.error(
+      { chatId, sender, poolIndex: idx, err },
+      'Failed to send pool message',
+    );
   }
 }
 

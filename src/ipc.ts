@@ -99,7 +99,12 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 ) {
                   // Route to pool bot when sender is specified and target is Telegram
                   if (data.sender && data.chatJid.startsWith('tg:')) {
-                    await sendPoolMessage(data.chatJid, data.text, data.sender, sourceGroup);
+                    await sendPoolMessage(
+                      data.chatJid,
+                      data.text,
+                      data.sender,
+                      sourceGroup,
+                    );
                   } else {
                     await deps.sendMessage(data.chatJid, data.text);
                   }

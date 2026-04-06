@@ -40,6 +40,9 @@
     --orange: #d9480f; --orange-muted: rgba(217,72,15,0.08);
     --grp-trading: #c96820; --grp-crypto: #1d8e55; --grp-contacts: #b84d63; --grp-realestate: #2d7ed6;
   }
+  [data-theme="light"] .cal-event {
+    background-color: color-mix(in srgb, var(--grp-clr, var(--accent)) 12%, white);
+  }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: var(--font); background: var(--bg-primary); color: var(--text-primary);
@@ -254,13 +257,33 @@
   .cal-cell { border-right: 1px solid var(--border-light); border-bottom: 1px solid var(--border-light);
     padding: 1px; min-height: 26px; position: relative; overflow: hidden; }
   .cal-cell:last-child { border-right: none; }
-  .cal-event { font-size: 9px; padding: 1px 3px; border-radius: 2px; margin-bottom: 1px;
+  .cal-event { font-size: 10px; font-weight: 500; padding: 2px 4px; border-radius: 3px; margin-bottom: 2px;
     cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    transition: all var(--transition); line-height: 1.3; }
-  .cal-event:hover { filter: brightness(1.2); z-index: 1; position: relative; overflow: visible; white-space: normal; }
-  .cal-event.nanoclaw { background: var(--accent-muted); color: var(--accent); border-left: 2px solid var(--accent); }
-  .cal-event.systemd { background: var(--yellow-muted); color: var(--yellow); border-left: 2px solid var(--yellow); }
-  .cal-event.paused { opacity: 0.4; }
+    transition: transform 0.1s ease, filter 0.1s ease; line-height: 1.2;
+    background-color: color-mix(in srgb, var(--grp-clr, var(--accent)) 20%, rgba(255,255,255,0.05));
+    color: var(--grp-clr, var(--accent)); border-left: 3px solid var(--grp-clr, var(--accent));
+    text-shadow: 0 1px 2px rgba(0,0,0,0.5); }
+  .cal-event:hover { filter: brightness(1.2); z-index: 10; position: relative;
+    transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.5); }
+  .cal-event:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .cal-event.systemd { border-left-style: dashed; opacity: 0.8; }
+  .cal-event.paused { opacity: 0.3; }
+  .cal-event.grp-main { --grp-clr: #58a6ff; }
+  .cal-event.grp-ai-research { --grp-clr: #bc8cff; }
+  .cal-event.grp-business-ideas { --grp-clr: #d29922; }
+  .cal-event.grp-health-wellness { --grp-clr: #3fb950; }
+  .cal-event.grp-trading { --grp-clr: #f78166; }
+  .cal-event.grp-crypto { --grp-clr: #30b9af; }
+  .cal-event.grp-keyrocker { --grp-clr: #f692ce; }
+  .cal-event.grp-real-estate { --grp-clr: #8b949e; }
+  .cal-event.cal-dimmed { opacity: 0.15; }
+  .cal-legend { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; }
+  .cal-legend-item { display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 11px;
+    color: var(--text-secondary); transition: opacity 0.15s; padding: 3px 8px;
+    background: var(--bg-tertiary); border-radius: 4px; border: 1px solid transparent; }
+  .cal-legend-item:hover { border-color: var(--border); }
+  .cal-legend-item.dimmed { opacity: 0.3; }
+  .cal-legend-dot { width: 8px; height: 8px; border-radius: 50%; }
 
   /* Schedule editor modal */
   .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8);
@@ -1330,16 +1353,17 @@ function cleanTaskDesc(t) {
   if (!t) return t;
   return t.replace(/^You are (?:a |the )[^.]+\.\s*/i, '').replace(/^Your (?:job|task) is to\s*/i, '');
 }
-function taskTitle(prompt) {
-  if (!prompt) return 'Untitled Task';
-  let t = prompt;
-  // Extract role name before stripping — use as fallback title
+function taskTitle(label) {
+  if (!label) return 'Untitled Task';
+  // If label is a clean name (not a raw prompt), return it directly
+  if (!label.match(/^You are /i) && !label.match(/^Your (?:job|task) is to/i) && label.length < 80 && !label.includes('\n')) {
+    return label.replace(/\.$/, '');
+  }
+  let t = label;
   const roleMatch = t.match(/^You are (?:a |the )([^.]+)\./i);
   const roleName = roleMatch ? roleMatch[1].trim() : null;
-  // Strip preamble like "You are the X. Your task is to..."
   t = t.replace(/^You are (?:a |the )[^.]+\.\s*/i, '');
   t = t.replace(/^Your (?:job|task) is to\s*/i, '');
-  // Take first sentence or first line
   const firstLine = t.split('\n')[0].trim();
   if (!firstLine && roleName) return roleName;
   const firstSentence = firstLine.split(/\.\s/)[0];
@@ -3396,13 +3420,14 @@ views.services = async () => {
   return html;
 };
 
+let _logFilter = '';
+let _logLines = '100';
 views.logs = async () => {
   return `
     <div class="log-bar">
-      <input type="text" id="logFilter" placeholder="Filter logs..." oninput="debouncedLogRefresh()">
-      <select id="logLines" onchange="refreshLogContent()">
-        <option value="50">50</option><option value="100" selected>100</option>
-        <option value="200">200</option><option value="500">500</option>
+      <input type="text" id="logFilter" placeholder="Filter logs..." value="${esc(_logFilter)}" oninput="_logFilter=this.value;debouncedLogRefresh()">
+      <select id="logLines" onchange="_logLines=this.value;refreshLogContent()">
+        ${['50','100','200','500'].map(v => `<option value="${v}"${_logLines===v?' selected':''}>${v}</option>`).join('')}
       </select>
     </div>
     <div class="log-viewer" id="logContent">Loading...</div>`;
@@ -3471,8 +3496,9 @@ views.calendar = async () => {
       grid += `<div class="cal-cell"${isNowCell?' style="background:rgba(94,106,210,0.06)"':''}>
         ${events.map(e => {
           const evTitle = taskTitle(e.label);
-          return `<div class="cal-event ${e.source}${e.status==='paused'?' paused':''}"
-          title="${esc(evTitle)}" onclick="openScheduleEditor('${e.id}')">${esc(evTitle.substring(0,22))}</div>`;
+          const grpClass = 'grp-' + (e.group || 'main').replace(/\s+/g, '-');
+          return `<div class="cal-event ${e.source} ${grpClass}${e.status==='paused'?' paused':''}"
+          data-group="${esc(e.group||'main')}" title="${esc(evTitle)} (${e.group||'main'})" onclick="openScheduleEditor('${e.id}')">${esc(evTitle)}</div>`;
         }).join('')}
       </div>`;
     }
@@ -3492,6 +3518,14 @@ views.calendar = async () => {
       </div>
       <div class="cal-title">${weekLabel}</div>
       <span class="text-dim">${activeItems.length} scheduled</span>
+    </div>
+    <div class="cal-legend" id="calLegend">
+      ${[
+        {g:'main',c:'#58a6ff',l:'Main'},{g:'ai-research',c:'#bc8cff',l:'AI Research'},
+        {g:'business-ideas',c:'#d29922',l:'Business'},{g:'health-wellness',c:'#3fb950',l:'Health'},
+        {g:'trading',c:'#f78166',l:'Trading'},{g:'crypto',c:'#30b9af',l:'Crypto'},
+        {g:'keyrocker',c:'#f692ce',l:'Keyrocker'},{g:'real-estate',c:'#8b949e',l:'Real Estate'}
+      ].map(x => `<div class="cal-legend-item" data-filter="${x.g}" onclick="toggleCalFilter('${x.g}')"><div class="cal-legend-dot" style="background:${x.c}"></div>${x.l}</div>`).join('')}
     </div>
     <div class="cal-week">${grid}</div>
     <div class="cal-list">
@@ -3537,31 +3571,71 @@ function getWeekStart(date, offset) {
   return d;
 }
 
+let calFilterGroup = sessionStorage.getItem('calFilterGroup') || null;
+window.toggleCalFilter = (group) => {
+  calFilterGroup = calFilterGroup === group ? null : group;
+  sessionStorage.setItem('calFilterGroup', calFilterGroup || '');
+  applyCalFilter();
+};
+function applyCalFilter() {
+  document.querySelectorAll('.cal-event').forEach(el => {
+    el.classList.toggle('cal-dimmed', calFilterGroup && el.dataset.group !== calFilterGroup);
+  });
+  document.querySelectorAll('.cal-legend-item').forEach(el => {
+    el.classList.toggle('dimmed', calFilterGroup && el.dataset.filter !== calFilterGroup);
+  });
+}
+
+let _openModalTaskId = null;
 window.openScheduleEditor = (taskId) => {
+  _openModalTaskId = taskId;
   const modal = document.getElementById('scheduleModal');
-  // Fetch task details from the calendar data
   api('/api/calendar').then(items => {
     const task = items.find(i => i.id === taskId);
     if (!task || task.source !== 'nanoclaw') return;
 
+    const grpColor = GROUP_COLORS[task.group] || 'var(--text-tertiary)';
+    const promptPreview = esc(task.prompt || '').replace(/\n/g, '<br>');
+    const links = [];
+    if (task.ventureFile) links.push(`<span class="badge" style="font-size:10px;background:var(--purple-muted);color:var(--purple)">Venture: ${esc(task.ventureFile)}</span>`);
+    if (task.projectFile) links.push(`<span class="badge" style="font-size:10px;background:var(--accent-muted);color:var(--accent)">Project: ${esc(task.projectFile)}</span>`);
+
     modal.innerHTML = `<div class="modal-overlay" onclick="if(event.target===this)closeModal()">
-      <div class="modal">
-        <h3>Edit Schedule</h3>
-        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;max-height:60px;overflow:hidden">${esc(task.label)}</div>
-        <div class="field">
-          <label>Group</label>
-          <div style="font-size:13px;color:var(--text-secondary)">${esc(task.group)}</div>
+      <div class="modal" onclick="event.stopPropagation()" style="width:560px;max-height:85vh;overflow-y:auto">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+          <div style="width:10px;height:10px;border-radius:50%;background:${grpColor};flex-shrink:0"></div>
+          <h3 style="margin:0;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(taskTitle(task.label))}">${esc(taskTitle(task.label))}</h3>
+          <span class="badge ${task.status==='active'?'green':'yellow'}" style="font-size:10px">${task.status}</span>
         </div>
-        <div class="field">
-          <label>Current Schedule</label>
-          <div style="font-size:13px"><span class="badge accent">${task.scheduleHuman}</span> <span class="mono text-dim">${task.schedule}</span></div>
+
+        <div style="display:flex;gap:12px;margin-bottom:14px;flex-wrap:wrap">
+          <div style="font-size:11px;color:var(--text-tertiary)">Group: <span style="color:${grpColor};font-weight:500">${esc(task.group)}</span></div>
+          ${task.model ? `<div style="font-size:11px;color:var(--text-tertiary)">Model: <span style="color:var(--text-secondary)">${esc(task.model)}</span></div>` : ''}
+          ${task.category ? `<div style="font-size:11px;color:var(--text-tertiary)">Category: <span style="color:var(--text-secondary)">${esc(task.category)}</span></div>` : ''}
         </div>
+
+        ${links.length ? `<div style="margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap">${links.join('')}</div>` : ''}
+
         <div class="field">
-          <label>New Cron Expression</label>
+          <label>Description</label>
+          <div style="font-size:11px;color:var(--text-secondary);max-height:200px;overflow-y:auto;padding:8px;background:var(--bg-tertiary);border-radius:4px;border:1px solid var(--border-light);line-height:1.5;white-space:pre-wrap;font-family:var(--mono)">${promptPreview}</div>
+        </div>
+
+        <div class="field">
+          <label>Schedule</label>
+          <div style="font-size:13px;margin-bottom:4px"><span class="badge accent">${task.scheduleHuman}</span> <span class="mono text-dim">${task.schedule}</span></div>
+          <div style="font-size:11px;color:var(--text-tertiary)">
+            ${task.lastRun ? `Last run: ${new Date(task.lastRun).toLocaleString()}` : 'Never run'}
+            ${task.nextRun ? ` | Next: ${new Date(task.nextRun).toLocaleString()}` : ''}
+          </div>
+        </div>
+
+        <div class="field" style="border-top:1px solid var(--border-light);padding-top:12px;margin-top:8px">
+          <label>Edit Schedule</label>
           <input type="text" id="newCron" value="${task.schedule}" placeholder="0 7 * * *" oninput="previewCron()">
           <div class="help">
             Format: minute hour day-of-month month day-of-week<br>
-            Examples: <code>0 7 * * *</code> (daily 7am) &middot; <code>0 7 * * 1-5</code> (weekdays 7am) &middot; <code>0 12 * * 0</code> (Sundays noon) &middot; <code>*/30 * * * *</code> (every 30min)
+            Examples: <code>0 7 * * *</code> (daily 7am) &middot; <code>0 7 * * 1-5</code> (weekdays) &middot; <code>0 12 * * 0</code> (Sundays noon)
           </div>
           <div class="preview" id="cronPreview"></div>
         </div>
@@ -3570,11 +3644,9 @@ window.openScheduleEditor = (taskId) => {
           <div style="display:flex;gap:4px;flex-wrap:wrap">
             <button class="btn" onclick="setCron('0 7 * * *')">Daily 7am</button>
             <button class="btn" onclick="setCron('0 8 * * *')">Daily 8am</button>
-            <button class="btn" onclick="setCron('0 9 * * *')">Daily 9am</button>
             <button class="btn" onclick="setCron('0 7 * * 1-5')">Weekdays 7am</button>
-            <button class="btn" onclick="setCron('0 12 * * 0')">Sundays noon</button>
+            <button class="btn" onclick="setCron('0 12 * * 0')">Sun noon</button>
             <button class="btn" onclick="setCron('0 */6 * * *')">Every 6h</button>
-            <button class="btn" onclick="setCron('0 1 * * *')">Daily 1am</button>
           </div>
         </div>
         <div class="actions">
@@ -3612,6 +3684,7 @@ window.previewCron = () => {
 };
 
 window.closeModal = () => {
+  _openModalTaskId = null;
   document.getElementById('scheduleModal').innerHTML = '';
 };
 
@@ -10124,6 +10197,7 @@ async function renderView() {
   }
 
   // Post-render hooks
+  if (currentView === 'schedule' && typeof applyCalFilter === 'function') applyCalFilter();
   if (currentView === 'venture-defi-carry') { defiRenderTable(); carryRenderTable(); }
   if (currentView === 'nutrition') { renderNutritionTrends(); renderNutritionMap(); }
   if (currentView === 'logs') refreshLogContent();
@@ -10200,9 +10274,10 @@ function startPolling() {
   renderView();
   updateNavCounts();
   timers.push(setInterval(() => {
-    // Skip re-render if user is typing in an input or textarea
+    // Skip re-render if user is typing in an input/textarea or a modal is open
     const active = document.activeElement;
     if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
+    if (_openModalTaskId) return;
     renderView();
   }, 10000));
   // Always keep footer updated

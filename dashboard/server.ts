@@ -1158,7 +1158,15 @@ function describeCron(expr: string): string {
 
   // Day of week patterns
   if (dow === '*' && dom === '*') return `Daily ${time}`.trim();
-  if (dow === '1-5') return `Weekdays ${time}`.trim();
+  if (dow === '1-5' || dow === '2-6') return `Weekdays ${time}`.trim();
+
+  // Day ranges: "0-5" → "Sun-Fri"
+  if (dow.includes('-')) {
+    const [start, end] = dow.split('-').map(d => d.trim());
+    const startName = dayNames[start] || start;
+    const endName = dayNames[end] || end;
+    return `${startName}-${endName} ${time}`.trim();
+  }
 
   // Comma-separated days: "1,3,5" → "Mon/Wed/Fri"
   if (dow.includes(',')) {
@@ -1172,12 +1180,19 @@ function describeCron(expr: string): string {
   return `${expr} (${time})`.trim();
 }
 
-function getNextOccurrences(cronExpr: string, count: number): string[] {
+function getNextOccurrences(cronExpr: string, days: number): string[] {
   try {
-    const interval = CronExpressionParser.parse(cronExpr, { tz: TZ });
+    // Start from beginning of today so same-day past occurrences are included
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const cutoff = new Date(startOfDay.getTime() + days * 86400000);
+    const interval = CronExpressionParser.parse(cronExpr, { tz: TZ, currentDate: startOfDay });
     const results: string[] = [];
-    for (let i = 0; i < count; i++) {
-      results.push(interval.next().toISOString());
+    for (let i = 0; i < 500; i++) { // safety cap
+      const next = interval.next();
+      const d = next.toDate();
+      if (d > cutoff) break;
+      results.push(next.toISOString());
     }
     return results;
   } catch {
@@ -1188,21 +1203,23 @@ function getNextOccurrences(cronExpr: string, count: number): string[] {
 function getCalendar() {
   // 1. SQLite scheduled tasks
   const tasks = db.prepare(`
-    SELECT id, group_folder, prompt, schedule_type, schedule_value, next_run, last_run, status, created_at
+    SELECT id, group_folder, name, prompt, schedule_type, schedule_value, next_run, last_run, status, created_at,
+           venture_file, project_file, model, category
     FROM scheduled_tasks ORDER BY next_run ASC
   `).all() as Array<{
-    id: string; group_folder: string; prompt: string; schedule_type: string;
+    id: string; group_folder: string; name: string | null; prompt: string; schedule_type: string;
     schedule_value: string; next_run: string | null; last_run: string | null;
-    status: string; created_at: string;
+    status: string; created_at: string; venture_file: string | null; project_file: string | null;
+    model: string | null; category: string | null;
   }>;
 
   const calendarTasks = tasks.map(t => {
-    const nextOccurrences = t.schedule_type === 'cron' ? getNextOccurrences(t.schedule_value, 14) : [];
+    const nextOccurrences = t.schedule_type === 'cron' ? getNextOccurrences(t.schedule_value, 14) : []; // 14 days of occurrences
     return {
       id: t.id,
       source: 'nanoclaw' as const,
       group: t.group_folder,
-      label: t.prompt.substring(0, 120).split('\n')[0],
+      label: t.name || t.prompt.substring(0, 120).split('\n')[0],
       type: t.schedule_type,
       schedule: t.schedule_value,
       scheduleHuman: t.schedule_type === 'cron' ? describeCron(t.schedule_value) : 'One-time',
@@ -1210,6 +1227,11 @@ function getCalendar() {
       lastRun: t.last_run,
       status: t.status,
       nextOccurrences,
+      prompt: t.prompt,
+      ventureFile: t.venture_file,
+      projectFile: t.project_file,
+      model: t.model,
+      category: t.category,
     };
   });
 
