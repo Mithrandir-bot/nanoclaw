@@ -198,6 +198,36 @@ Before starting any research, analysis, or task:
 
 This applies to you AND every sub-agent you spawn. The vault is the shared brain across all channels.
 
+### Ingest Rule — Files and Links
+
+When Master drops a file, document, article, or link into the conversation, **always ingest it into the vault** using this pipeline:
+
+1. **Read** the source (file content, WebFetch for URLs, or agent-browser for paywalled/JS-heavy pages)
+2. **Classify** the domain: AI-Research/, Trading/, Crypto/, Health/, Health-Wellness/, Business-Ideas/, Real-Estate/, Contacts/, OpenClaw/, or the channel's own domain folder
+3. **Create a structured note** in the appropriate vault folder:
+   - Frontmatter: `date`, `tags`, `source` (URL or filename), `status: processed`
+   - Summary (3-5 paragraphs)
+   - Key findings / takeaways
+   - Action items (if any)
+   - Related: `[[wikilinks]]` to existing vault notes on the same topic
+4. **Update that folder's `_index.md`** with a one-line entry for the new note
+5. **Log the action** — append a row to `/workspace/extra/obsidian-vault/Inbox/ingest-log.md`:
+   `| YYYY-MM-DD HH:MM | source | -> destination note path | tags |`
+6. **Append to daily note** per the Daily Notes rule above
+
+Do this automatically — don't ask whether to ingest. If Master sends a link or file, it gets ingested. If the content is trivial (memes, one-liners, broken links), skip silently.
+
+### Synthesis Feedback Rule
+
+When you answer a question by reading and combining information from **3 or more vault notes**, save the synthesis back to the vault so future queries find it pre-built:
+
+1. Create `/workspace/extra/obsidian-vault/Synthesis/YYYY-MM-DD-<topic-slug>.md`
+   - Frontmatter: `date`, `tags`, `sources` (list of vault note paths read)
+   - Content: the synthesized answer with `[[wikilinks]]` back to each source note
+2. Before answering vault-heavy questions, check `Synthesis/` first — a prior synthesis may already exist
+
+This happens silently as part of answering questions. Don't announce it. Skip if the answer was simple (single source) or didn't draw from the vault.
+
 ### Cross-Channel Sources
 
 - **Research Digest**: `/workspace/extra/obsidian-vault/AI-Research/Research-Digest.md` — latest AI research findings
@@ -246,3 +276,13 @@ NEVER use markdown. Only use WhatsApp/Telegram formatting:
 - ```triple backticks``` for code
 
 No ## headings. No [links](url). No **double stars**.
+
+Functional emojis are encouraged for scannability:
+- ✅ done/confirmed
+- ⚠️ attention needed
+- 🚨 urgent/critical
+- ❌ error/blocked
+- 🔴🟡🟢 status indicators
+- ⏰ time-sensitive
+
+Do NOT use decorative/emotional emojis (😊 🎉 👋 🙏 ☀️ etc.).

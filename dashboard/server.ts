@@ -1742,10 +1742,34 @@ function getVentureIbkr() {
     // Performance metrics (TWR, Sharpe, Sortino, Max DD, CVaR, monthly returns)
     const perfRaw = readJson('performance-metrics.json') || {};
 
+    // Enrich positions with trade entry dates from fills
+    const allTrades = tradesData.trades || [];
+    const positions = positionsData.positions || [];
+    if (allTrades.length && positions.length) {
+      // Build map: conid → earliest fill date
+      const entryDateByConid: Record<string, string> = {};
+      for (const t of allTrades) {
+        const conid = String((t as any).conid || '');
+        const fillTime = (t as any).fillTime;
+        if (conid && fillTime) {
+          const dateStr = new Date(fillTime).toISOString().slice(0, 10);
+          if (!entryDateByConid[conid] || dateStr < entryDateByConid[conid]) {
+            entryDateByConid[conid] = dateStr;
+          }
+        }
+      }
+      for (const p of positions) {
+        const conid = String((p as any).conid || '');
+        if (conid && entryDateByConid[conid]) {
+          (p as any).entryDate = entryDateByConid[conid];
+        }
+      }
+    }
+
     return {
       account,
-      positions: positionsData.positions || [],
-      trades: tradesData.trades || [],
+      positions,
+      trades: allTrades,
       tradeSummary: tradesData.summary || {},
       greeks,
       risk,

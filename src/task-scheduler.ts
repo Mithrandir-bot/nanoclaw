@@ -451,6 +451,35 @@ async function runTask(
 
 let schedulerRunning = false;
 
+/**
+ * Heal active cron/interval tasks that have a NULL next_run.
+ * This can happen if the process crashes between task completion
+ * and the next_run update, or due to cron-parser edge cases.
+ * Runs at startup and periodically during the scheduler loop.
+ */
+function healStuckTasks(): number {
+  const allTasks = getAllTasks();
+  let healed = 0;
+  for (const task of allTasks) {
+    if (
+      task.status === 'active' &&
+      (task.schedule_type === 'cron' || task.schedule_type === 'interval') &&
+      !task.next_run
+    ) {
+      const nextRun = computeNextRun(task);
+      if (nextRun) {
+        updateTask(task.id, { next_run: nextRun });
+        healed++;
+        logger.warn(
+          { taskId: task.id, nextRun },
+          'Healed stuck task with NULL next_run',
+        );
+      }
+    }
+  }
+  return healed;
+}
+
 export function startSchedulerLoop(deps: SchedulerDependencies): void {
   if (schedulerRunning) {
     logger.debug('Scheduler loop already running, skipping duplicate start');
@@ -459,8 +488,27 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
   schedulerRunning = true;
   logger.info('Scheduler loop started');
 
+  // Heal any stuck tasks on startup
+  const healedOnStart = healStuckTasks();
+  if (healedOnStart > 0) {
+    logger.info(
+      { count: healedOnStart },
+      'Healed stuck tasks on scheduler startup',
+    );
+  }
+
+  let loopCount = 0;
   const loop = async () => {
     try {
+      // Periodic heal check every 60 loops (~1 hour at default poll interval)
+      loopCount++;
+      if (loopCount % 60 === 0) {
+        const healed = healStuckTasks();
+        if (healed > 0) {
+          logger.info({ count: healed }, 'Periodic heal: fixed stuck tasks');
+        }
+      }
+
       const dueTasks = getDueTasks();
       if (dueTasks.length > 0) {
         logger.info({ count: dueTasks.length }, 'Found due tasks');

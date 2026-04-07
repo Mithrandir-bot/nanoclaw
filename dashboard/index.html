@@ -4597,22 +4597,41 @@ views['venture-ibkr'] = async () => {
   });
 
   // Active Positions Table (grouped by strategy)
+  // Shared cell style constants for consistent formatting
+  const _hPad = 'padding:6px 8px';
+  const _lPad = 'padding:4px 8px';
+  const _mono = 'font-family:var(--mono)';
+  const _fmtDollar = (v) => {
+    const abs = Math.abs(v);
+    return (v < 0 ? '-' : '') + '$' + abs.toLocaleString(undefined, {minimumFractionDigits: abs >= 10000 ? 0 : 2, maximumFractionDigits: abs >= 10000 ? 0 : 2});
+  };
+  const _fmtPnlPct = (pnl, cost) => {
+    if (!cost || cost === 0) return '--';
+    const pct = (pnl / Math.abs(cost)) * 100;
+    return (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%';
+  };
+  const _pnlPctColor = (pnl, cost) => {
+    if (!cost || cost === 0) return 'var(--text-tertiary)';
+    const pct = (pnl / Math.abs(cost)) * 100;
+    return pct > 0 ? 'var(--green)' : pct < 0 ? 'var(--red)' : 'var(--text-tertiary)';
+  };
   const posTable = `<div class="card" style="padding:0;overflow:hidden">
     <div style="padding:10px 12px;font-weight:600;font-size:13px;border-bottom:1px solid var(--border)">Active Positions (${positions.length} legs, ${Object.keys(posGroups).length} strategies)</div>
-    ${positions.length ? `<table style="width:100%;border-collapse:collapse;font-size:11px">
+    ${positions.length ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px">
       <thead><tr style="background:var(--bg-secondary)">
-        <th style="padding:6px 8px;text-align:left">Symbol</th>
-        <th style="padding:6px 8px;text-align:center">Side</th>
-        <th style="padding:6px 8px;text-align:center">Expiry</th>
-        <th style="padding:6px 8px;text-align:right">Qty</th>
-        <th style="padding:6px 8px;text-align:right">Cost</th>
-        <th style="padding:6px 8px;text-align:right">Value</th>
-        <th style="padding:6px 8px;text-align:right">P&L</th>
-        <th style="padding:6px 8px;text-align:right">Delta</th>
-        <th style="padding:6px 8px;text-align:right">Theta</th>
-        <th style="padding:6px 8px;text-align:right">DTE</th>
-        <th style="padding:6px 8px;text-align:right">DIT</th>
-        <th style="padding:6px 8px;text-align:right">IV</th>
+        <th style="${_hPad};text-align:left" title="Contract symbol, put/call, and strike price">Symbol</th>
+        <th style="${_hPad};text-align:center" title="LONG (positive qty) or SHORT (negative qty)">Side</th>
+        <th style="${_hPad};text-align:center" title="Option expiration date (MM/DD)">Expiry</th>
+        <th style="${_hPad};text-align:right" title="Number of contracts. Negative = short position">Qty</th>
+        <th style="${_hPad};text-align:right" title="Total cost basis: avgCost x abs(qty). For shorts, this is the credit received">Cost</th>
+        <th style="${_hPad};text-align:right" title="Current market value: marketPrice x qty x multiplier">Value</th>
+        <th style="${_hPad};text-align:right" title="Unrealized P&L from IBKR (current value minus cost basis)">P&L</th>
+        <th style="${_hPad};text-align:right" title="P&L as % of cost basis: unrealizedPnl / abs(cost) x 100">P&L %</th>
+        <th style="${_hPad};text-align:right" title="Position delta: per-contract delta x qty. Positive = bullish, negative = bearish">Delta</th>
+        <th style="${_hPad};text-align:right" title="Position theta: per-contract theta x qty. Positive = collecting time decay daily">Theta</th>
+        <th style="${_hPad};text-align:right" title="Days to expiration. Red < 7d, yellow < 21d">DTE</th>
+        <th style="${_hPad};text-align:right" title="Days in trade: calendar days since fill date. Shows -- if no matching trade found">DIT</th>
+        <th style="${_hPad};text-align:right" title="Implied volatility as a percentage">IV</th>
       </tr></thead>
       <tbody>${Object.entries(posGroups).map(([strat, group], gi) => {
         const sc = stratColors[strat] || '#666';
@@ -4623,7 +4642,6 @@ views['venture-ibkr'] = async () => {
         // Strategy-level aggregate metrics
         const gDelta = group.totalDelta;
         const gTheta = group.totalTheta;
-        const gVega = group.totalVega;
         const gPnl = group.totalPnl;
         const gMktVal = group.totalMktValue;
         const gAvgCost = group.totalAvgCost;
@@ -4632,9 +4650,9 @@ views['venture-ibkr'] = async () => {
         const gDte = dtes.length ? Math.min(...dtes) : '-';
         const expiries = [...new Set(group.positions.map(p => p.expiry).filter(Boolean))];
         const gExpiry = expiries.length === 1 ? expiries[0].slice(4,6) + '/' + expiries[0].slice(6) : expiries.length > 1 ? 'Mixed' : '';
-        const hSt = 'padding:6px 8px;font-family:var(--mono);font-size:11px;font-weight:600';
+        const hSt = `${_hPad};${_mono};font-size:11px;font-weight:600`;
         const groupHeader = `<tr style="background:${sc}0c;border-bottom:1px solid var(--border);cursor:pointer" onclick="window._ibkrCollapsed['${gid}']=!window._ibkrCollapsed['${gid}'];document.querySelectorAll('.${gid}').forEach(r=>r.style.display=window._ibkrCollapsed['${gid}']?'none':'');this.querySelector('.pg-arrow').innerHTML=window._ibkrCollapsed['${gid}']?'&#9654;':'&#9660;'">
-          <td style="padding:6px 8px;white-space:nowrap">
+          <td style="${_hPad};white-space:nowrap">
             <span class="pg-arrow" style="font-size:10px;color:var(--text-tertiary);display:inline-block;width:12px">${arrow}</span>
             <span class="badge" style="background:${sc}22;color:${sc};font-size:9px">${esc(strat)}</span>
             <span style="font-size:10px;color:var(--text-tertiary);margin-left:4px">${group.positions.length} legs</span>
@@ -4642,9 +4660,10 @@ views['venture-ibkr'] = async () => {
           <td style="${hSt};text-align:center;color:var(--text-tertiary);font-size:9px">--</td>
           <td style="${hSt};text-align:center;color:var(--text-tertiary);font-size:10px">${gExpiry}</td>
           <td style="${hSt};text-align:right;color:var(--text-tertiary)">${gQty}</td>
-          <td style="${hSt};text-align:right;color:var(--text-tertiary)">$${gAvgCost.toFixed(0)}</td>
-          <td style="${hSt};text-align:right;color:${pnlColor(gMktVal)}">$${gMktVal.toFixed(0)}</td>
+          <td style="${hSt};text-align:right;color:var(--text-tertiary)">${_fmtDollar(gAvgCost)}</td>
+          <td style="${hSt};text-align:right;color:var(--text-tertiary)">${_fmtDollar(gMktVal)}</td>
           <td style="${hSt};text-align:right;color:${pnlColor(gPnl)}">${fmtPnl(gPnl)}</td>
+          <td style="${hSt};text-align:right;color:${_pnlPctColor(gPnl, gAvgCost)}">${_fmtPnlPct(gPnl, gAvgCost)}</td>
           <td style="${hSt};text-align:right">${gDelta >= 0 ? '+' : ''}${gDelta.toFixed(3)}</td>
           <td style="${hSt};text-align:right;color:${gTheta >= 0 ? 'var(--green)' : 'var(--red)'}">${gTheta >= 0 ? '+' : ''}${gTheta.toFixed(3)}</td>
           <td style="${hSt};text-align:right;color:${(gDte||0) <= 7 ? 'var(--red)' : (gDte||0) <= 21 ? 'var(--yellow)' : 'var(--text-secondary)'}">${gDte || '-'}</td>
@@ -4652,26 +4671,28 @@ views['venture-ibkr'] = async () => {
           <td style="${hSt};text-align:right;color:var(--text-tertiary);font-size:10px">--</td>
         </tr>`;
         const legs = group.positions.map(p => {
-          const dit = p.entryDate ? Math.round((Date.now() - new Date(p.entryDate).getTime()) / 86400000) : (p.dte ? Math.max(0, 90 - (p.dte || 0)) : '-');
-          // Position-level Greeks: raw per-contract × quantity
-          // Short put: negative delta × negative qty = positive (bullish)
-          // Short put: negative theta × negative qty = positive (collecting decay)
+          const dit = p.entryDate ? Math.max(0, Math.round((Date.now() - new Date(p.entryDate + 'T00:00:00').getTime()) / 86400000)) : '--';
           const qty = p.quantity || 0;
           const posDelta = (p.delta || 0) * qty;
           const posTheta = (p.theta || 0) * qty;
+          const legCost = (p.avgCost || 0) * Math.abs(qty);
+          const legValue = p.marketValue || 0;
+          const legPnl = p.unrealizedPnl || 0;
+          const lSt = `${_lPad};${_mono}`;
           return `<tr class="${gid}" style="border-bottom:1px solid var(--border-light);display:${legDisplay}">
           <td style="padding:4px 8px 4px 28px;font-weight:500;font-size:11px">${esc(p.symbol)}${p.right ? ' ' + p.right : ''}${p.strike ? ' ' + p.strike : ''}</td>
-          <td style="padding:4px 8px;text-align:center;font-size:9px;color:${p.quantity > 0 ? 'var(--green)' : 'var(--red)'}">${p.quantity > 0 ? 'LONG' : 'SHORT'}</td>
-          <td style="padding:4px 8px;text-align:center;font-size:10px;color:var(--text-tertiary)">${p.expiry ? p.expiry.slice(4,6) + '/' + p.expiry.slice(6) : ''}</td>
-          <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">${p.quantity}</td>
-          <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">$${(p.avgCost || 0).toFixed(2)}</td>
-          <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">$${((p.marketPrice || 0) * (p.multiplier || 1)).toFixed(2)}</td>
-          <td style="padding:4px 8px;text-align:right;font-family:var(--mono);color:${pnlColor(p.unrealizedPnl || 0)}">${fmtPnl(p.unrealizedPnl || 0)}</td>
-          <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">${posDelta >= 0 ? '+' : ''}${posDelta.toFixed(3)}</td>
-          <td style="padding:4px 8px;text-align:right;font-family:var(--mono);color:${posTheta >= 0 ? 'var(--green)' : 'var(--red)'}">${posTheta >= 0 ? '+' : ''}${posTheta.toFixed(3)}</td>
-          <td style="padding:4px 8px;text-align:right;color:${(p.dte||0) <= 7 ? 'var(--red)' : (p.dte||0) <= 21 ? 'var(--yellow)' : 'var(--text-secondary)'}">${p.dte || '-'}</td>
-          <td style="padding:4px 8px;text-align:right;font-size:10px;color:var(--text-tertiary)">${dit}d</td>
-          <td style="padding:4px 8px;text-align:right;font-family:var(--mono);font-size:10px;color:var(--text-tertiary)">${p.iv ? (p.iv * 100).toFixed(0) + '%' : '-'}</td>
+          <td style="${_lPad};text-align:center;font-size:9px;color:${qty > 0 ? 'var(--green)' : 'var(--red)'}">${qty > 0 ? 'LONG' : 'SHORT'}</td>
+          <td style="${_lPad};text-align:center;font-size:10px;color:var(--text-tertiary)">${p.expiry ? p.expiry.slice(4,6) + '/' + p.expiry.slice(6) : ''}</td>
+          <td style="${lSt};text-align:right">${qty}</td>
+          <td style="${lSt};text-align:right">${_fmtDollar(legCost)}</td>
+          <td style="${lSt};text-align:right">${_fmtDollar(legValue)}</td>
+          <td style="${lSt};text-align:right;color:${pnlColor(legPnl)}">${fmtPnl(legPnl)}</td>
+          <td style="${lSt};text-align:right;color:${_pnlPctColor(legPnl, legCost)}">${_fmtPnlPct(legPnl, legCost)}</td>
+          <td style="${lSt};text-align:right">${posDelta >= 0 ? '+' : ''}${posDelta.toFixed(3)}</td>
+          <td style="${lSt};text-align:right;color:${posTheta >= 0 ? 'var(--green)' : 'var(--red)'}">${posTheta >= 0 ? '+' : ''}${posTheta.toFixed(3)}</td>
+          <td style="${_lPad};text-align:right;color:${(p.dte||0) <= 7 ? 'var(--red)' : (p.dte||0) <= 21 ? 'var(--yellow)' : 'var(--text-secondary)'}">${p.dte || '-'}</td>
+          <td style="${_lPad};text-align:right;font-size:10px;color:var(--text-tertiary)">${dit === '--' ? '--' : dit + 'd'}</td>
+          <td style="${_lPad};text-align:right;${_mono};font-size:10px;color:var(--text-tertiary)">${p.iv ? (p.iv * 100).toFixed(1) + '%' : '-'}</td>
         </tr>`;
         }).join('');
         return groupHeader + legs;
@@ -4680,21 +4701,21 @@ views['venture-ibkr'] = async () => {
         const tPnl = Object.values(posGroups).reduce((s, g) => s + g.totalPnl, 0);
         const tDelta = Object.values(posGroups).reduce((s, g) => s + g.totalDelta, 0);
         const tTheta = Object.values(posGroups).reduce((s, g) => s + g.totalTheta, 0);
-        const tVega = Object.values(posGroups).reduce((s, g) => s + g.totalVega, 0);
         const tMktVal = Object.values(posGroups).reduce((s, g) => s + g.totalMktValue, 0);
         const tAvgCost = Object.values(posGroups).reduce((s, g) => s + g.totalAvgCost, 0);
         const tQty = positions.reduce((s, p) => s + Math.abs(p.quantity || 0), 0);
         const allDtes = positions.map(p => p.dte).filter(d => d != null && d > 0);
         const tDte = allDtes.length ? Math.min(...allDtes) : '-';
-        const tSt = 'padding:7px 8px;font-family:var(--mono);font-size:11px;font-weight:700';
+        const tSt = `padding:7px 8px;${_mono};font-size:11px;font-weight:700`;
         return `<tr style="background:var(--bg-secondary);border-top:2px solid var(--border)">
           <td style="${tSt};color:var(--text-primary)">TOTAL (${positions.length} legs)</td>
           <td style="${tSt};text-align:center;color:var(--text-tertiary);font-size:9px">--</td>
           <td style="${tSt};text-align:center;color:var(--text-tertiary)">--</td>
           <td style="${tSt};text-align:right">${tQty}</td>
-          <td style="${tSt};text-align:right">$${tAvgCost.toFixed(0)}</td>
-          <td style="${tSt};text-align:right;color:${pnlColor(tMktVal)}">$${tMktVal.toFixed(0)}</td>
+          <td style="${tSt};text-align:right">${_fmtDollar(tAvgCost)}</td>
+          <td style="${tSt};text-align:right;color:var(--text-tertiary)">${_fmtDollar(tMktVal)}</td>
           <td style="${tSt};text-align:right;color:${pnlColor(tPnl)}">${fmtPnl(tPnl)}</td>
+          <td style="${tSt};text-align:right;color:${_pnlPctColor(tPnl, tAvgCost)}">${_fmtPnlPct(tPnl, tAvgCost)}</td>
           <td style="${tSt};text-align:right">${tDelta >= 0 ? '+' : ''}${tDelta.toFixed(3)}</td>
           <td style="${tSt};text-align:right;color:${tTheta >= 0 ? 'var(--green)' : 'var(--red)'}">${tTheta >= 0 ? '+' : ''}${tTheta.toFixed(3)}</td>
           <td style="${tSt};text-align:right;color:${(tDte||0) <= 7 ? 'var(--red)' : (tDte||0) <= 21 ? 'var(--yellow)' : 'var(--text-secondary)'}">${tDte}</td>
@@ -4702,7 +4723,7 @@ views['venture-ibkr'] = async () => {
           <td style="${tSt};text-align:right;color:var(--text-tertiary)">--</td>
         </tr>`;
       })()}</tbody>
-    </table>` : '<div style="padding:24px;text-align:center;color:var(--text-tertiary)">No open positions</div>'}
+    </table></div>` : '<div style="padding:24px;text-align:center;color:var(--text-tertiary)">No open positions</div>'}
   </div>`;
 
   // Strategy Performance Table with P&L Attribution (Tier 2)
@@ -4711,11 +4732,11 @@ views['venture-ibkr'] = async () => {
     <div style="padding:10px 12px;font-weight:600;font-size:13px;border-bottom:1px solid var(--border)">Strategy Performance</div>
     ${stratEntries.length ? `<table style="width:100%;border-collapse:collapse;font-size:11px">
       <thead><tr style="background:var(--bg-secondary)">
-        <th style="padding:6px 8px;text-align:left">Strategy</th>
-        <th style="padding:6px 8px;text-align:right">Trades</th>
-        <th style="padding:6px 8px;text-align:right">Win %</th>
-        <th style="padding:6px 8px;text-align:right">P&L</th>
-        <th style="padding:6px 8px;text-align:right">Avg Hold</th>
+        <th style="padding:6px 8px;text-align:left" title="Strategy classification (LT112, 1_2_0, 221, STRANGLE, etc.)">Strategy</th>
+        <th style="padding:6px 8px;text-align:right" title="Total number of closed trades for this strategy">Trades</th>
+        <th style="padding:6px 8px;text-align:right" title="Percentage of trades closed at a profit. Green >= 60%, yellow >= 40%, red < 40%">Win %</th>
+        <th style="padding:6px 8px;text-align:right" title="Total realized P&L across all closed trades for this strategy">P&L</th>
+        <th style="padding:6px 8px;text-align:right" title="Average number of days positions were held before closing">Avg Hold</th>
       </tr></thead>
       <tbody>${stratEntries.map(([name, s]) => `<tr style="border-bottom:1px solid var(--border-light)">
         <td style="padding:5px 8px"><span class="badge" style="background:${(stratColors[name]||'#666')}22;color:${stratColors[name]||'#666'};font-size:9px">${esc(name)}</span></td>
@@ -4730,16 +4751,17 @@ views['venture-ibkr'] = async () => {
   // Greeks Exposure Table
   const gPortfolio = greeks.portfolio || {};
   const gByExpiry = greeks.byExpiry || {};
-  const expiryKeys = Object.keys(gByExpiry).sort();
+  const _nullExpiry = gByExpiry['null'] || gByExpiry['undefined'];
+  const expiryKeys = Object.keys(gByExpiry).filter(k => k && k !== 'null' && k !== 'undefined').sort();
   const greeksTable = `<div class="card" style="padding:0;overflow:hidden">
     <div style="padding:10px 12px;font-weight:600;font-size:13px;border-bottom:1px solid var(--border)">Greeks Exposure</div>
     <table style="width:100%;border-collapse:collapse;font-size:11px">
       <thead><tr style="background:var(--bg-secondary)">
-        <th style="padding:6px 8px;text-align:left">Expiry</th>
-        <th style="padding:6px 8px;text-align:right">Delta</th>
-        <th style="padding:6px 8px;text-align:right">Gamma</th>
-        <th style="padding:6px 8px;text-align:right">Theta</th>
-        <th style="padding:6px 8px;text-align:right">Vega</th>
+        <th style="padding:6px 8px;text-align:left" title="Expiration cycle grouping positions by expiry date">Expiry</th>
+        <th style="padding:6px 8px;text-align:right" title="Net delta: sum of (per-contract delta x qty x multiplier) for all positions in this expiry. Measures directional exposure in $/point">Delta</th>
+        <th style="padding:6px 8px;text-align:right" title="Net gamma: rate of delta change per 1-point move in underlying. Higher = delta shifts faster">Gamma</th>
+        <th style="padding:6px 8px;text-align:right" title="Net theta: daily time decay in dollars. Positive = collecting decay (short options), negative = paying decay (long options)">Theta</th>
+        <th style="padding:6px 8px;text-align:right" title="Net vega: P&L change per 1% move in implied volatility. Positive = long vol, negative = short vol">Vega</th>
       </tr></thead>
       <tbody>${expiryKeys.map(exp => {
         const g = gByExpiry[exp];
@@ -4750,7 +4772,13 @@ views['venture-ibkr'] = async () => {
           <td style="padding:5px 8px;text-align:right;font-family:var(--mono);color:${(g.theta||0) > 0 ? 'var(--green)' : 'var(--red)'}">${(g.theta||0).toFixed(1)}</td>
           <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${(g.vega||0).toFixed(1)}</td>
         </tr>`;
-      }).join('')}
+      }).join('')}${_nullExpiry ? `<tr style="border-bottom:1px solid var(--border-light)">
+          <td style="padding:5px 8px;font-family:var(--mono);color:var(--text-tertiary)">LEAPS/Other</td>
+          <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${(_nullExpiry.delta||0).toFixed(1)}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${(_nullExpiry.gamma||0).toFixed(2)}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:var(--mono);color:${(_nullExpiry.theta||0) > 0 ? 'var(--green)' : 'var(--red)'}">${(_nullExpiry.theta||0).toFixed(1)}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${(_nullExpiry.vega||0).toFixed(1)}</td>
+        </tr>` : ''}
       <tr style="background:var(--bg-secondary);font-weight:600">
         <td style="padding:5px 8px">Portfolio Total</td>
         <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${(gPortfolio.netDelta||0).toFixed(1)}</td>
@@ -4830,32 +4858,77 @@ views['venture-ibkr'] = async () => {
     if (!tradeGroups[tn]) tradeGroups[tn] = { legs: [], strategy: t.strategy || 'OTHER', netCost: t.tradeNetCost || 0, totalComm: t.tradeCommission || 0, totalFees: t.tradeFees || 0 };
     tradeGroups[tn].legs.push(t);
   });
-  const tradeNums = Object.keys(tradeGroups).sort((a,b) => Number(a) - Number(b));
+  const allTradeNums = Object.keys(tradeGroups).sort((a,b) => Number(a) - Number(b));
 
   if (!window._journalCollapsed) window._journalCollapsed = {};
+  if (!window._journalFilter) window._journalFilter = 'all';
+
+  // Apply time filter to trade groups
+  const _jfNow = Date.now();
+  const _jfCutoff = (() => {
+    const f = window._journalFilter;
+    if (f === 'all') return 0;
+    if (f === '1') return _jfNow - 1 * 86400000;
+    if (f === '7') return _jfNow - 7 * 86400000;
+    if (f === '30') return _jfNow - 30 * 86400000;
+    if (f === '90') return _jfNow - 90 * 86400000;
+    if (f === 'ytd') return new Date(new Date().getFullYear(), 0, 1).getTime();
+    if (f === 'lastyear') { const y = new Date().getFullYear() - 1; return new Date(y, 0, 1).getTime(); }
+    const custom = parseInt(f);
+    if (custom > 0) return _jfNow - custom * 86400000;
+    return 0;
+  })();
+  // For "lastyear", also set an upper cutoff
+  const _jfUpperCutoff = window._journalFilter === 'lastyear' ? new Date(new Date().getFullYear(), 0, 1).getTime() : Infinity;
+  const tradeNums = allTradeNums.filter(tn => {
+    if (_jfCutoff === 0 && _jfUpperCutoff === Infinity) return true;
+    const g = tradeGroups[tn];
+    const ft = g.legs[0] && g.legs[0].fillTime;
+    if (!ft) return true;
+    return ft >= _jfCutoff && ft < _jfUpperCutoff;
+  });
+  const filteredLegs = tradeNums.reduce((s, tn) => s + tradeGroups[tn].legs.length, 0);
 
   const journal = trades.length ? `<div class="card" style="padding:0;overflow:hidden;margin-top:16px">
-    <div style="padding:10px 12px;font-weight:600;font-size:13px;border-bottom:1px solid var(--border)">Trade Journal (${trades.length} legs in ${tradeNums.length} trades)</div>
+    <div style="padding:10px 12px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)">
+      <span style="font-weight:600;font-size:13px">Trade Journal (${filteredLegs} legs in ${tradeNums.length} trades${tradeNums.length < allTradeNums.length ? ' of ' + allTradeNums.length + ' total' : ''})</span>
+      <span style="display:flex;align-items:center;gap:6px">
+        <select id="_jf_select" style="font-size:10px;padding:3px 6px;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer"
+          onchange="if(this.value==='custom'){document.getElementById('_jf_custom').style.display='inline-block';document.getElementById('_jf_custom').focus();}else{document.getElementById('_jf_custom').style.display='none';window._journalFilter=this.value;renderView();}">
+          <option value="all"${window._journalFilter==='all'?' selected':''}>All Time</option>
+          <option value="1"${window._journalFilter==='1'?' selected':''}>Last 1 Day</option>
+          <option value="7"${window._journalFilter==='7'?' selected':''}>Last 7 Days</option>
+          <option value="30"${window._journalFilter==='30'?' selected':''}>Last 30 Days</option>
+          <option value="90"${window._journalFilter==='90'?' selected':''}>Last 90 Days</option>
+          <option value="ytd"${window._journalFilter==='ytd'?' selected':''}>YTD</option>
+          <option value="lastyear"${window._journalFilter==='lastyear'?' selected':''}>Last Year</option>
+          <option value="custom"${!['all','1','7','30','90','ytd','lastyear'].includes(window._journalFilter)?' selected':''}>Custom...</option>
+        </select>
+        <input id="_jf_custom" type="number" min="1" placeholder="days" style="display:${!['all','1','7','30','90','ytd','lastyear'].includes(window._journalFilter)?'inline-block':'none'};width:60px;font-size:10px;padding:3px 6px;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm)"
+          value="${!['all','1','7','30','90','ytd','lastyear'].includes(window._journalFilter)?window._journalFilter:''}"
+          onkeydown="if(event.key==='Enter'&&this.value>0){window._journalFilter=this.value;renderView();}">
+      </span>
+    </div>
     <div style="overflow-x:auto">
       <table style="width:100%;border-collapse:collapse;font-size:11px;min-width:1100px">
         <thead><tr style="background:var(--bg-secondary);position:sticky;top:0;z-index:1">
-          <th style="padding:6px 6px;text-align:left;min-width:40px">Trade</th>
-          <th style="padding:6px 6px;text-align:center">Strategy</th>
-          <th style="padding:6px 6px;text-align:center">Side</th>
-          <th style="padding:6px 6px;text-align:left">Symbol</th>
-          <th style="padding:6px 6px;text-align:right">Strike</th>
-          <th style="padding:6px 6px;text-align:center">R</th>
-          <th style="padding:6px 6px;text-align:center">Expiry</th>
-          <th style="padding:6px 6px;text-align:right">Qty</th>
-          <th style="padding:6px 6px;text-align:right">Fill Price</th>
-          <th style="padding:6px 6px;text-align:right">Unit Cost</th>
-          <th style="padding:6px 6px;text-align:right">Total Cost</th>
-          <th style="padding:6px 6px;text-align:right">Comm</th>
-          <th style="padding:6px 6px;text-align:right">Fees</th>
-          <th style="padding:6px 6px;text-align:center">Type</th>
-          <th style="padding:6px 6px;text-align:center">TIF</th>
-          <th style="padding:6px 6px;text-align:left;min-width:130px">Fill Time</th>
-          <th style="padding:6px 6px;text-align:center">Status</th>
+          <th style="padding:6px 6px;text-align:left;min-width:40px" title="Trade group number. Multi-leg trades share the same number">Trade</th>
+          <th style="padding:6px 6px;text-align:center" title="Strategy classification assigned to this trade group">Strategy</th>
+          <th style="padding:6px 6px;text-align:center" title="BUY or SELL direction of this leg">Side</th>
+          <th style="padding:6px 6px;text-align:left" title="Underlying contract symbol">Symbol</th>
+          <th style="padding:6px 6px;text-align:right" title="Option strike price">Strike</th>
+          <th style="padding:6px 6px;text-align:center" title="Right: P (put) or C (call)">R</th>
+          <th style="padding:6px 6px;text-align:center" title="Option expiration date">Expiry</th>
+          <th style="padding:6px 6px;text-align:right" title="Number of contracts filled">Qty</th>
+          <th style="padding:6px 6px;text-align:right" title="Average fill price per contract (in points)">Fill Price</th>
+          <th style="padding:6px 6px;text-align:right" title="Cost per contract: fill price x multiplier">Unit Cost</th>
+          <th style="padding:6px 6px;text-align:right" title="Total cost for all contracts: unit cost x qty. Negative = credit received">Total Cost</th>
+          <th style="padding:6px 6px;text-align:right" title="IBKR commission charged for this leg">Comm</th>
+          <th style="padding:6px 6px;text-align:right" title="Exchange and regulatory fees">Fees</th>
+          <th style="padding:6px 6px;text-align:center" title="Order type: LMT (limit), MKT (market), STP (stop)">Type</th>
+          <th style="padding:6px 6px;text-align:center" title="Time in force: DAY, GTC (good til cancelled), IOC (immediate or cancel)">TIF</th>
+          <th style="padding:6px 6px;text-align:left;min-width:130px" title="Date and time the order was filled">Fill Time</th>
+          <th style="padding:6px 6px;text-align:center" title="Order status: filled, open, cancelled">Status</th>
         </tr></thead>
         <tbody>${tradeNums.map(tn => {
           const g = tradeGroups[tn];
@@ -4919,12 +4992,14 @@ views['venture-ibkr'] = async () => {
           }).join('');
           return header + legs;
         }).join('')}${(() => {
-          // Grand total
-          const totalLegs = trades.length;
-          const totalNetCost = Object.values(tradeGroups).reduce((s,g) => s + g.netCost, 0);
-          const totalComm = trades.reduce((s,t) => s + (t.commission||0), 0);
-          const totalFees = trades.reduce((s,t) => s + (t.fees||0), 0);
-          const totalQtyAll = trades.reduce((s,t) => s + Math.abs(t.quantity||0), 0);
+          // Grand total (filtered)
+          const _filteredGroups = tradeNums.map(tn => tradeGroups[tn]);
+          const _filteredTrades = _filteredGroups.flatMap(g => g.legs);
+          const totalLegs = _filteredTrades.length;
+          const totalNetCost = _filteredGroups.reduce((s,g) => s + g.netCost, 0);
+          const totalComm = _filteredTrades.reduce((s,t) => s + (t.commission||0), 0);
+          const totalFees = _filteredTrades.reduce((s,t) => s + (t.fees||0), 0);
+          const totalQtyAll = _filteredTrades.reduce((s,t) => s + Math.abs(t.quantity||0), 0);
           const tSt = 'padding:7px 6px;font-family:var(--mono);font-size:11px;font-weight:700';
           const netColor = totalNetCost <= 0 ? 'var(--green)' : 'var(--red)';
           return '<tr style="background:var(--bg-secondary);border-top:2px solid var(--border)">'+
@@ -5054,9 +5129,9 @@ views['venture-ibkr'] = async () => {
     <div style="font-weight:600;font-size:13px;margin-bottom:8px">Monthly Returns (%)</div>
     <table style="width:100%;border-collapse:collapse;font-size:10px">
       <thead><tr style="background:var(--bg-secondary)">
-        <th style="padding:4px 6px;text-align:left">Year</th>
-        ${months.map(m => `<th style="padding:4px 3px;text-align:center;width:7%">${m}</th>`).join('')}
-        <th style="padding:4px 6px;text-align:right">YTD</th>
+        <th style="padding:4px 6px;text-align:left" title="Calendar year">Year</th>
+        ${months.map(m => `<th style="padding:4px 3px;text-align:center;width:7%" title="Monthly return % for ${m}. Green = positive, red = negative. Intensity reflects magnitude">${m}</th>`).join('')}
+        <th style="padding:4px 6px;text-align:right" title="Year-to-date cumulative return: sum of all monthly returns">YTD</th>
       </tr></thead>
       <tbody>${Object.entries(monthlyByYear).sort().map(([year, mos]) => {
         const ytd = Object.values(mos).reduce((s, v) => s + v, 0);
@@ -5089,14 +5164,14 @@ views['venture-ibkr'] = async () => {
     <div style="max-height:280px;overflow-y:auto">
       <table style="width:100%;border-collapse:collapse;font-size:11px">
         <thead><tr style="background:var(--bg-secondary);position:sticky;top:0">
-          <th style="padding:6px 8px;text-align:left">Date</th>
-          <th style="padding:6px 8px;text-align:right">NLV</th>
-          <th style="padding:6px 8px;text-align:right">Day P&L</th>
-          <th style="padding:6px 8px;text-align:right">Open P&L</th>
-          <th style="padding:6px 8px;text-align:right">Realized</th>
-          <th style="padding:6px 8px;text-align:right">Positions</th>
-          <th style="padding:6px 8px;text-align:right">Init Margin</th>
-          <th style="padding:6px 8px;text-align:right">Maint Margin</th>
+          <th style="padding:6px 8px;text-align:left" title="Snapshot date (taken at 5:30 PM ET daily)">Date</th>
+          <th style="padding:6px 8px;text-align:right" title="Net Liquidation Value: total account value if all positions were closed at market">NLV</th>
+          <th style="padding:6px 8px;text-align:right" title="Day P&L: realized gains/losses for that trading day">Day P&L</th>
+          <th style="padding:6px 8px;text-align:right" title="Open P&L: total unrealized profit/loss across all positions">Open P&L</th>
+          <th style="padding:6px 8px;text-align:right" title="Cumulative realized P&L from closed trades">Realized</th>
+          <th style="padding:6px 8px;text-align:right" title="Number of open position legs at snapshot time">Positions</th>
+          <th style="padding:6px 8px;text-align:right" title="Initial margin: buying power required to open current positions">Init Margin</th>
+          <th style="padding:6px 8px;text-align:right" title="Maintenance margin: minimum equity to hold positions. Below this triggers margin call">Maint Margin</th>
         </tr></thead>
         <tbody>${snapshotRows.map((s, i) => {
           const prevNlv = i < snapshotRows.length - 1 ? snapshotRows[i + 1].nlv : s.nlv;
