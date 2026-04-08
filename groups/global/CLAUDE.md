@@ -234,6 +234,47 @@ This happens silently as part of answering questions. Don't announce it. Skip if
 - **Vault search**: `grep -rl "topic" /workspace/extra/obsidian-vault/` — find notes on any topic
 - **Channel history**: `/workspace/group/conversations/` — your own channel's past transcripts
 
+## Recurring Routines: Two-Layer Architecture (CRITICAL)
+
+Recurring routines (morning briefings, EOD reports, weekly reviews, scheduled scans, daily protocols) live in **TWO separate layers**, and you must update BOTH or the change will not take effect:
+
+**Layer 1 — Protocol Document** (in the Obsidian vault):
+- Examples: `Health-Wellness/Protocols/7AM-Daily-Ritual.md`, `Trading/Strategies/*.md`, `Memory/Status-Board.md`
+- This is what describes WHAT the routine should contain
+- Editing this is what users typically expect when they say "add to my routine"
+- BUT: editing this alone does NOTHING. No automation reads it unless a task is explicitly told to.
+
+**Layer 2 — Scheduled Task** (in the SQLite `scheduled_tasks` table or `data/ipc/{group}/current_tasks.json`):
+- This is the actual cron-style task that runs at a specific time and produces the message Master sees
+- Each task has a `prompt` field that tells the agent what to do — including which files to read
+- If the task prompt does not reference your protocol document, your edit to the document is invisible
+- View tasks: `mcp__nanoclaw__list_tasks` or query `scheduled_tasks` table
+
+**MANDATORY workflow when Master asks to add/change/remove ANY recurring routine:**
+
+1. **Identify the relevant scheduled task.** Query `scheduled_tasks` for the channel/topic. Examples:
+   - "morning briefing" / "daily ritual" / "7 AM" → cron tasks matching `* 7 * * *` in the relevant group
+   - "EOD" / "end of day" / "evening" → tasks running 17:00–22:00 ET
+   - "weekly review" → tasks with cron `* * * * 0` (Sunday) or similar
+   - If you can't find the task, ASK Master before assuming the doc edit is enough.
+
+2. **Read the task's current prompt.** Understand what files it reads, what it delivers, what state (if any) it tracks.
+
+3. **Update BOTH layers:**
+   - Edit the protocol document for human-readable context
+   - Edit the task prompt to actually deliver the new behavior, including: which files to read, what to include in the message, how to handle state (counter, last-delivered date, etc.)
+   - If the routine needs persistent state (e.g., chapter counter, week number, rotation index), create a state file in the vault and have the task read/write it
+
+4. **Verify** by stating to Master: "Updated the protocol doc at `<path>` AND the task `<task-id>`. Tomorrow's run will deliver `<the new behavior>`." Don't claim "Done" without naming both.
+
+5. **Cross-group requests:** If you're in #general and the task lives in #health-wellness (or vice versa), you can update tasks across groups via the same `scheduled_tasks` table. Don't refuse to update because of "channel boundaries" — the table is shared.
+
+6. **One-shot backfill if days were missed:** If a routine change was made after the daily briefing already ran today, queue a one-time task to deliver the missed content same day.
+
+**Anti-pattern to avoid:** Editing only the protocol document, replying "Done", and assuming the next briefing will magically pick it up. It will not. The Apr 5 Didache request was a textbook example — protocol updated, task untouched, two days of readings silently dropped before Master noticed.
+
+**Validation question to ask yourself before saying "Done":** "If the daily briefing task ran 30 seconds from now with its current prompt, would Master see the change I just made?" If no, you're not done — update the task.
+
 ## Cross-Linking Rule
 
 Every note you create or update must be densely linked using Obsidian `[[wikilinks]]`. When mentioning a person, project, meeting, or file that exists in the vault, link to it. When it doesn't have a note yet, create the `[[wikilink]]` anyway — it becomes a placeholder that gets filled in later. Every note is a node in a graph. The more links, the easier it is to find context later.
@@ -269,20 +310,26 @@ When you learn something important:
 
 ## Message Formatting
 
-NEVER use markdown. Only use WhatsApp/Telegram formatting:
+**Discord channels (`dc:` prefix on chat_jid):** Full markdown supported. Use it for clarity:
+- `**bold**`, `*italic*`, `## headings`, tables, code blocks, blockquotes, `[links](url)`
+- Render is identical to GitHub-flavored markdown
+
+**Telegram/WhatsApp channels (`tg:` or `wa:` prefix):** Only Telegram formatting:
 - *single asterisks* for bold (NEVER **double asterisks**)
 - _underscores_ for italic
-- • bullet points
+- - dash bullets (no `•`)
 - ```triple backticks``` for code
+- No `## headings`. No `[links](url)`. No tables.
 
-No ## headings. No [links](url). No **double stars**.
+Check the channel's `chat_jid` prefix to determine which format to use.
 
-Functional emojis are encouraged for scannability:
+**Functional emojis are encouraged for scannability** (works on both Discord and Telegram):
 - ✅ done/confirmed
 - ⚠️ attention needed
 - 🚨 urgent/critical
 - ❌ error/blocked
 - 🔴🟡🟢 status indicators
 - ⏰ time-sensitive
+- 📎 attachments/files
 
-Do NOT use decorative/emotional emojis (😊 🎉 👋 🙏 ☀️ etc.).
+**Do NOT use decorative/emotional emojis:** 😊 😂 🎉 👋 🙏 ☀️ 🌅 ☁️ ⛅ 📋 📊 📈 🔍 💪 🪙 🏠 🔬 🌙 — these are visual clutter, not signal. If the icon doesn't tell Master something actionable, don't use it.

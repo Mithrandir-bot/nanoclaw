@@ -652,10 +652,19 @@ async function main(): Promise<void> {
   }
 
   // Build SDK env: merge secrets into process.env for the SDK only.
-  // Secrets never touch process.env itself, so Bash subprocesses can't see them.
+  // Most secrets never touch process.env itself, so Bash subprocesses can't see them.
+  // EXCEPTION: secrets matching BASH_ACCESSIBLE_SECRET_PATTERNS are also exported
+  // to process.env so subprocess scripts that need them (e.g. kalshi-weather-bot)
+  // can read them via process.env. This is opt-in per secret name.
+  const BASH_ACCESSIBLE_SECRET_PATTERNS = [
+    /^NANOCLAW_SECRET_KALSHI_/, // kalshi-weather-bot needs API key + RSA private key
+  ];
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
   for (const [key, value] of Object.entries(containerInput.secrets || {})) {
     sdkEnv[key] = value;
+    if (BASH_ACCESSIBLE_SECRET_PATTERNS.some((p) => p.test(key))) {
+      process.env[key] = value;
+    }
   }
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
