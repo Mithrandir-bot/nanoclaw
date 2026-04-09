@@ -41,6 +41,26 @@ export interface IpcDeps {
   ) => void;
 }
 
+/**
+ * Cross-channel send allowlist for non-main groups.
+ *
+ * Format: { sourceGroupFolder: [allowedTargetGroupFolders] }
+ *
+ * Main group can always send to any channel. Non-main groups can only send
+ * to themselves OR to channels explicitly listed here. Used for delegation
+ * patterns where one specialist channel needs to ask another specialist
+ * for help (e.g. Keyrocker → crypto research delegation).
+ *
+ * Pairs are unidirectional — to allow round-trip delegation, both directions
+ * must be listed.
+ */
+const CROSS_CHANNEL_ALLOWLIST: Record<string, string[]> = {
+  // Keyrocker (work assistant for crypto market-making firm) can delegate
+  // research to the personal #crypto agent, which can reply back to Keyrocker.
+  keyrocker: ['crypto'],
+  crypto: ['keyrocker'],
+};
+
 let ipcWatcherRunning = false;
 
 export function startIpcWatcher(deps: IpcDeps): void {
@@ -93,9 +113,15 @@ export function startIpcWatcher(deps: IpcDeps): void {
               if (data.type === 'message' && data.chatJid && data.text) {
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];
+                const isAllowedCrossChannel = (() => {
+                  if (!targetGroup) return false;
+                  const allowed = CROSS_CHANNEL_ALLOWLIST[sourceGroup];
+                  return allowed?.includes(targetGroup.folder) ?? false;
+                })();
                 if (
                   isMain ||
-                  (targetGroup && targetGroup.folder === sourceGroup)
+                  (targetGroup && targetGroup.folder === sourceGroup) ||
+                  isAllowedCrossChannel
                 ) {
                   // Route to pool bot when sender is specified and target is Telegram
                   if (data.sender && data.chatJid.startsWith('tg:')) {

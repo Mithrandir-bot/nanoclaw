@@ -586,11 +586,15 @@ export function getNewMessages(
   const placeholders = jids.map(() => '?').join(',');
   // Filter bot messages using both the is_bot_message flag AND the content
   // prefix as a backstop for messages written before the migration ran.
+  // EXCEPTION: messages tagged with [DELEGATION:from=X] bypass the bot filter —
+  // these are cross-channel delegation requests routed via the CROSS_CHANNEL_ALLOWLIST
+  // in src/ipc.ts. Same exception applied in getMessagesSince() below.
   const sql = `
     SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
     FROM messages
     WHERE timestamp > ? AND chat_jid IN (${placeholders})
-      AND is_bot_message = 0 AND content NOT LIKE ?
+      AND (is_bot_message = 0 OR content LIKE '[DELEGATION:%')
+      AND content NOT LIKE ?
       AND content != '' AND content IS NOT NULL
     ORDER BY timestamp
   `;
@@ -614,11 +618,17 @@ export function getMessagesSince(
 ): NewMessage[] {
   // Filter bot messages using both the is_bot_message flag AND the content
   // prefix as a backstop for messages written before the migration ran.
+  // EXCEPTION: messages tagged with the [DELEGATION:from=X] prefix bypass the
+  // bot filter — these are cross-channel delegation requests from one
+  // specialist agent to another (see CROSS_CHANNEL_ALLOWLIST in src/ipc.ts
+  // for which source→target pairs are permitted). The reply direction does
+  // NOT use this prefix to avoid round-trip loops.
   const sql = `
     SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
     FROM messages
     WHERE chat_jid = ? AND timestamp > ?
-      AND is_bot_message = 0 AND content NOT LIKE ?
+      AND (is_bot_message = 0 OR content LIKE '[DELEGATION:%')
+      AND content NOT LIKE ?
       AND content != '' AND content IS NOT NULL
     ORDER BY timestamp
   `;

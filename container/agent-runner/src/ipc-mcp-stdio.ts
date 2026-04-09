@@ -41,15 +41,16 @@ const server = new McpServer({
 
 server.tool(
   'send_message',
-  "Send a message to the user or group immediately while you're still running. Use this for progress updates or to send multiple messages. You can call this multiple times.",
+  "Send a message to the user or group immediately while you're still running. Use this for progress updates or to send multiple messages. You can call this multiple times. By default sends to your own group's chat. Use target_chat_jid to send to another channel — main group can send anywhere; non-main groups can only send to allowlisted partner channels (see groups/global/CLAUDE.md cross-channel section).",
   {
     text: z.string().describe('The message text to send'),
     sender: z.string().optional().describe('Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.'),
+    target_chat_jid: z.string().optional().describe('Target chat JID (e.g. "dc:1477831148825477161" for #crypto). Defaults to your own chat. Cross-channel sends require allowlist permission.'),
   },
   async (args) => {
     const data: Record<string, string | undefined> = {
       type: 'message',
-      chatJid,
+      chatJid: args.target_chat_jid || chatJid,
       text: args.text,
       sender: args.sender || undefined,
       groupFolder,
