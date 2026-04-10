@@ -3,7 +3,7 @@
 
 import './discord.js'; // discord
 
-// gmail
+import './gmail.js'; // gmail
 
 // slack
 
