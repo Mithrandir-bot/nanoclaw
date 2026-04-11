@@ -66,7 +66,9 @@ export class GmailChannel implements Channel {
     const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
 
     if (!clientId || !clientSecret || !refreshToken) {
-      throw new Error('Google OAuth not configured (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN)');
+      throw new Error(
+        'Google OAuth not configured (GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN)',
+      );
     }
 
     const resp = await fetch('https://oauth2.googleapis.com/token', {
@@ -85,13 +87,19 @@ export class GmailChannel implements Channel {
       throw new Error(`Google token refresh failed: ${resp.status} ${body}`);
     }
 
-    const data = (await resp.json()) as { access_token: string; expires_in: number };
+    const data = (await resp.json()) as {
+      access_token: string;
+      expires_in: number;
+    };
     this.accessToken = data.access_token;
     this.tokenExpiry = Date.now() + data.expires_in * 1000;
     return this.accessToken;
   }
 
-  private async gmailFetch(path: string, init?: RequestInit): Promise<Response> {
+  private async gmailFetch(
+    path: string,
+    init?: RequestInit,
+  ): Promise<Response> {
     const token = await this.getAccessToken();
     return fetch(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, {
       ...init,
@@ -107,7 +115,10 @@ export class GmailChannel implements Channel {
       const resp = await this.gmailFetch('profile');
       if (!resp.ok) {
         const body = await resp.text();
-        logger.warn({ status: resp.status, body: body.slice(0, 200) }, 'Gmail profile fetch failed, skipping channel');
+        logger.warn(
+          { status: resp.status, body: body.slice(0, 200) },
+          'Gmail profile fetch failed, skipping channel',
+        );
         return;
       }
       const profile = (await resp.json()) as { emailAddress?: string };
@@ -119,9 +130,13 @@ export class GmailChannel implements Channel {
     }
 
     const schedulePoll = () => {
-      const backoffMs = this.consecutiveErrors > 0
-        ? Math.min(this.pollIntervalMs * Math.pow(2, this.consecutiveErrors), 30 * 60 * 1000)
-        : this.pollIntervalMs;
+      const backoffMs =
+        this.consecutiveErrors > 0
+          ? Math.min(
+              this.pollIntervalMs * Math.pow(2, this.consecutiveErrors),
+              30 * 60 * 1000,
+            )
+          : this.pollIntervalMs;
       this.pollTimer = setTimeout(() => {
         this.pollForMessages()
           .catch((err) => logger.error({ err }, 'Gmail poll error'))
@@ -178,7 +193,10 @@ export class GmailChannel implements Channel {
       });
       if (!resp.ok) {
         const body = await resp.text();
-        logger.error({ jid, status: resp.status, body: body.slice(0, 200) }, 'Failed to send Gmail reply');
+        logger.error(
+          { jid, status: resp.status, body: body.slice(0, 200) },
+          'Failed to send Gmail reply',
+        );
       } else {
         logger.info({ to: meta.sender, threadId }, 'Gmail reply sent');
       }
@@ -239,7 +257,10 @@ export class GmailChannel implements Channel {
       this.consecutiveErrors = 0;
     } catch (err) {
       this.consecutiveErrors++;
-      logger.error({ err, consecutiveErrors: this.consecutiveErrors }, 'Gmail poll failed');
+      logger.error(
+        { err, consecutiveErrors: this.consecutiveErrors },
+        'Gmail poll failed',
+      );
     }
   }
 
@@ -251,13 +272,16 @@ export class GmailChannel implements Channel {
 
     const headers = msg.payload?.headers || [];
     const getHeader = (name: string) =>
-      headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value || '';
+      headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ||
+      '';
 
     const from = getHeader('From');
     const subject = getHeader('Subject');
     const rfc2822MessageId = getHeader('Message-ID');
     const threadId = msg.threadId || messageId;
-    const timestamp = new Date(parseInt(msg.internalDate || '0', 10)).toISOString();
+    const timestamp = new Date(
+      parseInt(msg.internalDate || '0', 10),
+    ).toISOString();
 
     const senderMatch = from.match(/^(.+?)\s*<(.+?)>$/);
     const senderName = senderMatch ? senderMatch[1].replace(/"/g, '') : from;
@@ -286,7 +310,10 @@ export class GmailChannel implements Channel {
     const mainEntry = Object.entries(groups).find(([, g]) => g.isMain === true);
 
     if (!mainEntry) {
-      logger.debug({ chatJid, subject }, 'No main group registered, skipping email');
+      logger.debug(
+        { chatJid, subject },
+        'No main group registered, skipping email',
+      );
       return;
     }
 
@@ -314,7 +341,10 @@ export class GmailChannel implements Channel {
       logger.warn({ messageId, err }, 'Failed to mark email as read');
     }
 
-    logger.info({ mainJid, from: senderName, subject }, 'Gmail email delivered to main group');
+    logger.info(
+      { mainJid, from: senderName, subject },
+      'Gmail email delivered to main group',
+    );
   }
 
   private extractTextBody(payload: GmailMessage['payload']): string {
@@ -341,9 +371,12 @@ export class GmailChannel implements Channel {
 }
 
 registerChannel('gmail', (opts: ChannelOpts) => {
-  const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN } = process.env;
+  const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN } =
+    process.env;
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REFRESH_TOKEN) {
-    logger.warn('Gmail: Google OAuth credentials not configured in environment');
+    logger.warn(
+      'Gmail: Google OAuth credentials not configured in environment',
+    );
     return null;
   }
   return new GmailChannel(opts);
