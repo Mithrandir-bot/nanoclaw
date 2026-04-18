@@ -368,6 +368,54 @@ The question/comment will appear in the Mission Control dashboard with an unread
   },
 );
 
+server.tool(
+  'store_secret',
+  `Store an encrypted credential. Only callable from the main group. The value is AES-256-GCM encrypted with the host SECRETS_ENCRYPTION_KEY and injected into future container runs as NANOCLAW_SECRET_{NAME_UPPERCASE}. Use for API keys, passwords, OAuth tokens. Name must match /^[A-Za-z_][A-Za-z0-9_]*$/.`,
+  {
+    name: z.string().describe('Secret name. Becomes NANOCLAW_SECRET_{uppercased underscored}. Alphanumeric + underscore only.'),
+    value: z.string().describe('The plaintext secret value to encrypt and store.'),
+    description: z.string().optional().describe('Human-readable description of what this secret is for.'),
+  },
+  async (args) => {
+    const data = {
+      type: 'store_secret',
+      secretName: args.name,
+      secretValue: args.value,
+      description: args.description,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(TASKS_DIR, data);
+
+    return {
+      content: [{ type: 'text' as const, text: `Secret "${args.name}" queued for storage. It will be available to all groups on their next container spawn.` }],
+    };
+  },
+);
+
+server.tool(
+  'list_secrets',
+  'List names and metadata of stored secrets (values are never returned). Reads the per-group secrets manifest written by the host at container spawn.',
+  {},
+  async () => {
+    const manifestPath = path.join(IPC_DIR, 'secrets-manifest.json');
+    try {
+      if (!fs.existsSync(manifestPath)) {
+        return { content: [{ type: 'text' as const, text: 'No secrets manifest found.' }] };
+      }
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as Array<{ name: string; description: string; updated_at: string }>;
+      if (manifest.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No secrets stored.' }] };
+      }
+      const lines = manifest.map((s) => `- ${s.name}${s.description ? ` (${s.description})` : ''} — updated ${s.updated_at}`);
+      return { content: [{ type: 'text' as const, text: `Stored secrets (${manifest.length}):\n${lines.join('\n')}` }] };
+    } catch (err) {
+      return { content: [{ type: 'text' as const, text: `Error reading secrets manifest: ${err instanceof Error ? err.message : String(err)}` }] };
+    }
+  },
+);
+
 // ── Market Data Tool ──────────────────────────────────────────────────────────
 // Fetches prices directly via HTTP inside the container (no IPC needed).
 
@@ -838,6 +886,117 @@ Use search_emails first to find the message ID.`,
     } catch (err) {
       return {
         content: [{ type: 'text' as const, text: `Gmail read failed: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'modify_email_labels',
+  `Add or remove Gmail labels on a message. Use this to classify/tag/archive/mark-read/unread emails.
+
+Accepts label NAMES (e.g. "Newsletter", "Finance/Receipts") or Gmail label IDs (e.g. "Label_123", "INBOX"). User-label names are resolved to IDs via the Gmail labels API; built-in names like INBOX/UNREAD/STARRED/IMPORTANT/TRASH/SPAM are passed through as-is.
+
+Common operations:
+• Archive: remove_labels=["INBOX"]
+• Mark read: remove_labels=["UNREAD"]
+• Star: add_labels=["STARRED"]
+• Classify: add_labels=["Newsletter"] (created automatically if create_missing=true)`,
+  {
+    message_id: z.string().describe('The Gmail message ID (from search_emails or read_email).'),
+    add_labels: z.array(z.string()).optional().describe('Label names or IDs to add.'),
+    remove_labels: z.array(z.string()).optional().describe('Label names or IDs to remove.'),
+    create_missing: z.boolean().default(true).describe('Create user labels in add_labels that don\'t exist yet.'),
+  },
+  async (args) => {
+    const add = args.add_labels ?? [];
+    const remove = args.remove_labels ?? [];
+    if (add.length === 0 && remove.length === 0) {
+      return { content: [{ type: 'text' as const, text: 'No labels to add or remove.' }], isError: true };
+    }
+
+    const BUILTINS = new Set(['INBOX', 'UNREAD', 'STARRED', 'IMPORTANT', 'TRASH', 'SPAM', 'SENT', 'DRAFT', 'CHAT',
+      'CATEGORY_PERSONAL', 'CATEGORY_SOCIAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS']);
+
+    try {
+      const token = await getGoogleAccessToken();
+
+      const labelsResp = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/labels', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!labelsResp.ok) {
+        return { content: [{ type: 'text' as const, text: `Gmail labels list error: ${labelsResp.status}` }], isError: true };
+      }
+      const labelsList = (await labelsResp.json() as { labels?: Array<{ id: string; name: string }> }).labels ?? [];
+      const nameToId = new Map(labelsList.map((l) => [l.name, l.id]));
+      const knownIds = new Set(labelsList.map((l) => l.id));
+
+      const resolve = async (input: string, allowCreate: boolean): Promise<string | null> => {
+        if (BUILTINS.has(input) || knownIds.has(input)) return input;
+        const existingId = nameToId.get(input);
+        if (existingId) return existingId;
+        if (!allowCreate) return null;
+        const createResp = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/labels', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: input, labelListVisibility: 'labelShow', messageListVisibility: 'show' }),
+        });
+        if (!createResp.ok) return null;
+        const created = await createResp.json() as { id: string; name: string };
+        nameToId.set(created.name, created.id);
+        knownIds.add(created.id);
+        return created.id;
+      };
+
+      const addIds: string[] = [];
+      const removeIds: string[] = [];
+      const skipped: string[] = [];
+      for (const name of add) {
+        const id = await resolve(name, args.create_missing ?? true);
+        if (id) addIds.push(id); else skipped.push(`add:${name}`);
+      }
+      for (const name of remove) {
+        const id = await resolve(name, false);
+        if (id) removeIds.push(id); else skipped.push(`remove:${name} (not found)`);
+      }
+
+      if (addIds.length === 0 && removeIds.length === 0) {
+        return {
+          content: [{ type: 'text' as const, text: `No labels resolved. Skipped: ${skipped.join(', ')}` }],
+          isError: true,
+        };
+      }
+
+      const modifyResp = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${args.message_id}/modify`,
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ addLabelIds: addIds, removeLabelIds: removeIds }),
+        },
+      );
+      if (!modifyResp.ok) {
+        const body = await modifyResp.text();
+        return {
+          content: [{ type: 'text' as const, text: `Gmail modify error: ${modifyResp.status} ${body.slice(0, 200)}` }],
+          isError: true,
+        };
+      }
+      const result = await modifyResp.json() as { id: string; labelIds?: string[] };
+
+      const parts = [
+        `Message ${result.id} updated.`,
+        addIds.length > 0 ? `Added: ${add.join(', ')}` : '',
+        removeIds.length > 0 ? `Removed: ${remove.filter((_, i) => removeIds[i]).join(', ')}` : '',
+        skipped.length > 0 ? `Skipped: ${skipped.join(', ')}` : '',
+        `Current labels: ${(result.labelIds || []).join(', ')}`,
+      ].filter(Boolean);
+
+      return { content: [{ type: 'text' as const, text: parts.join('\n') }] };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Gmail modify failed: ${err instanceof Error ? err.message : String(err)}` }],
         isError: true,
       };
     }

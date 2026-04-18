@@ -13,6 +13,7 @@ import {
   findExistingByDedupKey,
   getTaskById,
   logCrossGroupSend,
+  storeSecret,
   updateTask,
 } from './db.js';
 import { taskTitle } from './task-scheduler.js';
@@ -236,6 +237,10 @@ export async function processTaskIpc(
     venture_file?: string;
     project_file?: string;
     category?: string;
+    // For store_secret
+    secretName?: string;
+    secretValue?: string;
+    description?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -580,6 +585,42 @@ export async function processTaskIpc(
             'Review requested via IPC',
           );
         }
+      }
+      break;
+
+    case 'store_secret':
+      if (!isMain) {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized store_secret attempt blocked',
+        );
+        break;
+      }
+      if (!data.secretName || typeof data.secretValue !== 'string') {
+        logger.warn(
+          { sourceGroup, hasName: !!data.secretName },
+          'Invalid store_secret request - missing name or value',
+        );
+        break;
+      }
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(data.secretName)) {
+        logger.warn(
+          { sourceGroup, name: data.secretName },
+          'Invalid store_secret request - name must match /^[A-Za-z_][A-Za-z0-9_]*$/',
+        );
+        break;
+      }
+      try {
+        storeSecret(data.secretName, data.secretValue, data.description);
+        logger.info(
+          { sourceGroup, name: data.secretName },
+          'Secret stored via IPC',
+        );
+      } catch (err) {
+        logger.error(
+          { sourceGroup, name: data.secretName, err },
+          'Failed to store secret via IPC',
+        );
       }
       break;
 
