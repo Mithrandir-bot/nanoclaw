@@ -187,6 +187,19 @@ Before recommending tools, services, or integrations, check this list. These are
 
 Files you create are saved in `/workspace/group/`. Use this for notes, research, or anything that should persist.
 
+## Tool Output Efficiency
+
+Large tool outputs (verbose JSON, full email bodies, HTML pages, Sheets reads, long search results) are expensive: every token flows into every subsequent reasoning step this turn. Before reasoning further on a verbose result, distill it.
+
+**Distillation rule:** After any tool call that returns >500 tokens of output, extract only what you need for the current step:
+- Preserve verbatim: IDs, URLs, email addresses, numeric counts, dates, quoted excerpts you will cite
+- Drop: boilerplate, repeated headers, pagination metadata, CSS/HTML scaffolding, full object dumps when you only need a few fields
+- Keep your summary faithful — never invent or round values
+
+**When NOT to distill:** a single short read where you need the full text anyway (e.g., reading a CLAUDE.md or a short note). Distill when the output is >500 tokens or when you'll make multiple further tool calls before finishing.
+
+This applies to sub-agents you spawn as well — tell them to return a distilled report, not the raw transcript.
+
 ## Vault-First Knowledge Rule
 
 Before starting any research, analysis, or task:

@@ -39,7 +39,7 @@ RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
 ENV DENO_DIR=/tmp/deno
 
 # Install Python packages for trading/DeFi agents
-RUN pip3 install --break-system-packages hyperliquid-python-sdk
+RUN pip3 install --break-system-packages hyperliquid-python-sdk yfinance lxml
 
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
