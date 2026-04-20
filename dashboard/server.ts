@@ -1715,6 +1715,52 @@ function getVentureIbkr() {
       dailyPnl[curr.date] = { pnl: Math.round((curr.nlv - prev.nlv) * 100) / 100, nlv: curr.nlv };
     }
 
+    // Per-strategy daily P&L series (populated by export_dashboard_data._compute_strategy_pnl)
+    // Today's breakdown: { [strategy]: { cumulativeUnrealized, deltaUnrealized, realizedToday, totalToday } }
+    const latestSnap = snapshotList.length > 0 ? (snapshotList[snapshotList.length - 1] as { strategyPnl?: Record<string, unknown>; date: string }) : null;
+    const strategyPnlToday: Record<string, unknown> = latestSnap?.strategyPnl || {};
+    // Historical time series by strategy: [{ date, totalToday }, ...] for each strategy
+    const strategyPnlSeries: Record<string, Array<{ date: string; totalToday: number; cumulativeUnrealized: number }>> = {};
+    for (const snap of snapshotList) {
+      const sp = (snap as { strategyPnl?: Record<string, { totalToday?: number; cumulativeUnrealized?: number }>; date: string }).strategyPnl;
+      if (!sp) continue;
+      for (const [strat, vals] of Object.entries(sp)) {
+        if (!strategyPnlSeries[strat]) strategyPnlSeries[strat] = [];
+        strategyPnlSeries[strat].push({
+          date: (snap as { date: string }).date,
+          totalToday: vals.totalToday || 0,
+          cumulativeUnrealized: vals.cumulativeUnrealized || 0,
+        });
+      }
+    }
+
+    // Auto-applied risk gates (mirrors auto_execute.py constants — surfaced for dashboard display)
+    const riskGates = {
+      earningsBufferDays: 14,
+      earningsSource: 'yfinance (1h cache)',
+      vixNakedCeiling: 35,
+      vixGlobalHalt: 40,
+      contractStackBlock: true,
+      underlyingStackCapPct: 6,
+      marginCeilings: {
+        '112': 3, '221': 3, STRANGLE: 3, NAKED_PUT: 3,
+        '1-2-0': 5, '1x3': 5,
+      },
+      activeStrategies: [
+        { code: 'LT112', label: 'LT112', products: ['/MES'], ddteRange: '55-120' },
+        { code: '1-2-0', label: '1-2-0 (Uncle Tony)', products: ['/MES'], ddteRange: '55-120' },
+        { code: '221', label: '221', products: ['/MES'], ddteRange: '55-120' },
+        { code: 'STRANGLE', label: 'Strangle', products: ['/CL', '/GC', '/HE', '/LE', '/6A', '/6B', '/6E'], ddteRange: '75-105' },
+        { code: 'NAKED_PUT', label: 'Naked Put', products: ['/MES'], ddteRange: '60-90' },
+        { code: '1x3', label: '1x3 Ratio', products: ['/MES', '/CL', '/GC'], ddteRange: '50-75' },
+        { code: 'DD', label: 'Double Diagonal', products: ['SPY'], ddteRange: 'front 18-32 / back 28-50' },
+        { code: 'LEAPS', label: 'LEAPS', products: ['equities'], ddteRange: '365+' },
+        { code: 'WHEEL', label: 'Wheel', products: ['manual'], ddteRange: '7-45' },
+        { code: 'PUT_DEBIT_SPREAD', label: 'Put Debit Spread (residual)', products: ['/MES'], ddteRange: 'inherited' },
+        { code: 'LONG_PUT_HEDGE', label: 'Long Put Hedge (residual)', products: ['/MES'], ddteRange: 'inherited' },
+      ],
+    };
+
     // Seasonal calendar data
     const seasonalCalendar = {
       winter: [
@@ -1777,12 +1823,15 @@ function getVentureIbkr() {
       todayScan,
       strategyPerf,
       dailyPnl,
+      strategyPnlToday,
+      strategyPnlSeries,
+      riskGates,
       seasonalCalendar,
       performance: perfRaw,
     };
   } catch (err) {
     console.error('[venture-ibkr]', err);
-    return { account: {}, positions: [], trades: [], tradeSummary: {}, greeks: {}, risk: {}, snapshots: [], todayScan: null, strategyPerf: {}, dailyPnl: {}, seasonalCalendar: {}, performance: {} };
+    return { account: {}, positions: [], trades: [], tradeSummary: {}, greeks: {}, risk: {}, snapshots: [], todayScan: null, strategyPerf: {}, dailyPnl: {}, strategyPnlToday: {}, strategyPnlSeries: {}, riskGates: {}, seasonalCalendar: {}, performance: {} };
   }
 }
 

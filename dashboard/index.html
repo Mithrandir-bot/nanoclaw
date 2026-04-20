@@ -1238,6 +1238,24 @@ async function post(path, body) {
 // --- Auth functions ---
 async function checkAuth() {
   try {
+    // If ?token=XXX is in the URL, trade it for the auth cookie before checking.
+    // Lets URL-based entry points (bookmarks, headless screenshot tools) authenticate in one hop.
+    const urlToken = new URLSearchParams(window.location.search).get('token');
+    if (urlToken) {
+      try {
+        const login = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: urlToken }),
+          credentials: 'same-origin',
+        });
+        if (login.ok) {
+          // Strip the token from the URL so it's not bookmarked/shared by accident.
+          const cleanUrl = window.location.pathname + window.location.hash;
+          window.history.replaceState({}, '', cleanUrl);
+        }
+      } catch {}
+    }
     const res = await fetch('/api/auth/check', { credentials: 'same-origin' });
     const data = await res.json();
     if (data.authenticated) {
@@ -1533,10 +1551,16 @@ let currentView = 'dashboard';
 (function initFromHash() {
   const hash = location.hash.replace(/^#\/?/, '');
   if (hash) {
-    const viewName = hash.split('/')[0];
+    const parts = hash.split('/');
+    const viewName = parts[0];
     const navItems = $$('.nav-item');
     const match = navItems.find(n => n.dataset.view === viewName);
     if (match) currentView = viewName;
+    // IBKR sub-tab via URL: #venture-ibkr/{portfolio|performance|risk|journal}
+    if (viewName === 'venture-ibkr' && parts[1]) {
+      const validTabs = ['portfolio', 'performance', 'risk', 'journal'];
+      if (validTabs.includes(parts[1])) window._ibkrTab = parts[1];
+    }
   }
 })();
 
@@ -4042,8 +4066,12 @@ window.ventureDropStage = async (event, newStage) => {
 // --- Venture Sub-Dashboards ---
 
 // Helper: build SVG line chart
-function svgLineChart(data, {width=600, height=200, color='var(--accent)', yLabel='', showDots=true, baseline=true, chartId=''} = {}) {
+function svgLineChart(data, {width=600, height=200, color='var(--accent)', yLabel='', showDots=true, baseline=true, chartId='', labels=[]} = {}) {
   if (!data.length) return '<div style="padding:40px;text-align:center;color:var(--text-tertiary);font-size:11px">No data</div>';
+  // Normalize: callers may pass [number, ...] + a labels[] array, or [{y, label}, ...] directly.
+  if (typeof data[0] === 'number') {
+    data = data.map((v, i) => ({ y: v, label: labels[i] || '' }));
+  }
   const pad = {top: 10, right: 10, bottom: 24, left: 50};
   const w = width - pad.left - pad.right;
   const h = height - pad.top - pad.bottom;
@@ -4493,9 +4521,19 @@ views['venture-ibkr'] = async () => {
 
   // Strategy color map
   const stratColors = {
-    'LT112': '#f97316', 'STRANGLE': '#3b82f6', 'NAKED_PUT': '#22c55e', '1X3_RATIO': '#a855f7',
-    'WHEEL_CSP': '#06b6d4', 'WHEEL_CC': '#06b6d4', '221': '#eab308', '1_2_0': '#ec4899',
-    'PMCC': '#6b7280', 'LONG_LEAPS': '#6b7280',
+    'LT112': '#f97316', '112': '#f97316',
+    'STRANGLE': '#3b82f6',
+    'NAKED_PUT': '#22c55e',
+    '1X3_RATIO': '#a855f7', '1x3': '#a855f7',
+    'WHEEL_CSP': '#06b6d4', 'WHEEL_CC': '#06b6d4', 'WHEEL': '#06b6d4',
+    '221': '#eab308',
+    '1_2_0': '#ec4899', '1-2-0': '#ec4899',
+    'PMCC': '#6b7280', 'LONG_LEAPS': '#6b7280', 'LEAPS': '#6b7280',
+    'DD': '#14b8a6',
+    'PUT_DEBIT_SPREAD': '#8b5cf6',  // free-hedge residual from 112/221 after nakeds close
+    'LONG_PUT_HEDGE': '#d946ef',    // free-hedge residual from 1-2-0 after shorts close
+    'UNASSIGNED': '#71717a',
+    'OTHER': '#71717a',
   };
 
   // Tier 1: Buffer to Margin Call + Theta/Margin Efficiency
@@ -4505,6 +4543,38 @@ views['venture-ibkr'] = async () => {
   const portfolioTheta = (greeks.portfolio || {}).netTheta || 0;
   const _thetaEff = (acct.maintenanceMargin || 0) > 0 ? portfolioTheta / (acct.maintenanceMargin / 1000) : null;
   const thetaEfficiency = _thetaEff !== null ? _thetaEff.toFixed(2) : '-';
+
+  // Beta-weighted delta (SPY-equivalent). Raw /MES delta is misleading across products;
+  // beta-weighting expresses directional bias in SPY-equivalent notional dollars.
+  // Betas are approximate; update as needed.
+  const _betaMap = {
+    'MES': 1.0, 'ES': 1.0, 'SPX': 1.0, 'SPY': 1.0,
+    'MNQ': 1.15, 'NQ': 1.15, 'QQQ': 1.15,
+    'RTY': 1.05, 'M2K': 1.05, 'IWM': 1.05,
+    'CL': 0.35, 'MCL': 0.35, 'NG': 0.2, 'QG': 0.2,
+    'GC': -0.15, 'MGC': -0.15, 'SI': 0.30, 'SIL': 0.30, 'HG': 0.45,
+    '6E': 0.10, '6B': 0.10, '6A': 0.20, '6J': -0.10, '6C': 0.15,
+    'ZN': -0.25, 'ZB': -0.30, 'ZF': -0.15, 'ZT': -0.10,
+    'ZC': 0.05, 'ZS': 0.05, 'ZW': 0.05,
+    'LE': 0.10, 'HE': 0.10, 'GF': 0.10,
+  };
+  let betaWeightedDelta = 0;
+  const bwDeltaByStrategy = {};
+  if (isConnected && positions.length) {
+    for (const p of positions) {
+      const raw = p.symbol || '';
+      const ticker = raw.replace(/^\//, '').split(/\s/)[0].toUpperCase();
+      const beta = _betaMap[ticker] != null ? _betaMap[ticker] : 1.0;
+      const pd = (p.delta || 0) * (p.quantity || 0) * (p.multiplier || 1);
+      // Raw 'pd' is already in underlying dollars for futures (delta * qty * multiplier).
+      const weighted = pd * beta;
+      betaWeightedDelta += weighted;
+      const strat = p.strategy || 'OTHER';
+      bwDeltaByStrategy[strat] = (bwDeltaByStrategy[strat] || 0) + weighted;
+    }
+  }
+  const betaDeltaPctNlv = acct.netLiquidation > 0 ? (betaWeightedDelta / acct.netLiquidation * 100) : 0;
+  const betaDeltaColor = Math.abs(betaDeltaPctNlv) < 0.2 ? 'var(--text-primary)' : Math.abs(betaDeltaPctNlv) < 0.5 ? 'var(--yellow)' : 'var(--red)';
 
   // Stale data warning (market-calendar aware)
   const _ts = acct.timestamp ? new Date(acct.timestamp).getTime() : NaN;
@@ -4516,8 +4586,8 @@ views['venture-ibkr'] = async () => {
   const staleThreshold = _isFuturesClosed ? 120 : 45; // 2hr tolerance when closed, 45min during session (30min export cycle + buffer)
   const staleWarning = dataAge === null ? `<div style="font-size:9px;color:var(--yellow);text-align:right;margin-bottom:4px">Timestamp unavailable</div>` : dataAge > staleThreshold ? `<div style="font-size:9px;color:var(--red);text-align:right;margin-bottom:4px">Data is ${dataAge} min old${_isFuturesClosed ? ' (futures closed)' : ' — may be stale'}</div>` : `<div style="font-size:9px;color:var(--text-tertiary);text-align:right;margin-bottom:4px">Updated ${dataAge} min ago${_isFuturesClosed ? ' (futures closed)' : ''}</div>`;
 
-  // KPI Tiles (expanded to 6 with margin buffer)
-  const kpi = `${staleWarning}<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:16px">
+  // KPI Tiles (7 tiles: NLV, Day P&L, BP, Margin Buffer, Theta/$1K Margin, β-Δ, Open P&L)
+  const kpi = `${staleWarning}<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:16px">
     <div class="card" style="padding:12px;text-align:center">
       <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:3px">Net Liquidation</div>
       <div style="font-size:20px;font-weight:700;color:var(--text-primary)">${isConnected ? '$' + Math.round(acct.netLiquidation).toLocaleString() : '--'}</div>
@@ -4527,22 +4597,27 @@ views['venture-ibkr'] = async () => {
       <div style="font-size:20px;font-weight:700;color:${pnlColor(acct.dayPnl || 0)}">${isConnected ? fmtPnl(acct.dayPnl || 0) : '--'}</div>
     </div>
     <div class="card" style="padding:12px;text-align:center">
-      <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:3px">Open P&L</div>
-      <div style="font-size:20px;font-weight:700;color:${pnlColor((acct.unrealizedPnl || 0) || positions.reduce((s,p) => s + (p.unrealizedPnl||0), 0))}">${isConnected ? fmtPnl((acct.unrealizedPnl || 0) || positions.reduce((s,p) => s + (p.unrealizedPnl||0), 0)) : '--'}</div>
-    </div>
-    <div class="card" style="padding:12px;text-align:center">
       <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:3px">Buying Power</div>
       <div style="font-size:20px;font-weight:700;color:var(--text-primary)">${isConnected ? '$' + Math.round(acct.buyingPower || 0).toLocaleString() : '--'}</div>
     </div>
     <div class="card" style="padding:12px;text-align:center">
       <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:3px">Margin Buffer</div>
       <div style="font-size:20px;font-weight:700;color:${bufferColor}">${isConnected ? '$' + Math.round(marginBuffer).toLocaleString() : '--'}</div>
-      <div style="font-size:9px;color:${bufferColor};margin-top:2px">${isConnected ? marginBufferPct.toFixed(0) + '% of NLV before liquidation' : ''}</div>
+      <div style="font-size:9px;color:${bufferColor};margin-top:2px">${isConnected ? marginBufferPct.toFixed(0) + '% of NLV before liq' : ''}</div>
     </div>
-    <div class="card" style="padding:12px;text-align:center">
+    <div class="card" style="padding:12px;text-align:center" title="Daily theta income per $1,000 of maintenance margin. Higher = more efficient premium collection.">
       <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:3px">Theta / $1K Margin</div>
       <div style="font-size:20px;font-weight:700;color:${portfolioTheta > 0 ? 'var(--green)' : 'var(--text-tertiary)'}">${isConnected ? '$' + thetaEfficiency : '--'}</div>
-      <div style="font-size:9px;color:var(--text-tertiary);margin-top:2px">${isConnected && portfolioTheta ? 'Daily: $' + portfolioTheta.toFixed(0) + ' theta' : ''}</div>
+      <div style="font-size:9px;color:var(--text-tertiary);margin-top:2px">${isConnected && portfolioTheta ? 'Daily: $' + portfolioTheta.toFixed(0) : ''}</div>
+    </div>
+    <div class="card" style="padding:12px;text-align:center" title="SPY-equivalent directional exposure. |β-Δ| should stay under 0.2% NLV per Tom King's risk rules.">
+      <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:3px">β-Weighted Δ (SPY)</div>
+      <div style="font-size:20px;font-weight:700;color:${betaDeltaColor}">${isConnected ? '$' + Math.round(betaWeightedDelta).toLocaleString() : '--'}</div>
+      <div style="font-size:9px;color:${betaDeltaColor};margin-top:2px">${isConnected ? betaDeltaPctNlv.toFixed(2) + '% of NLV' : ''}</div>
+    </div>
+    <div class="card" style="padding:12px;text-align:center">
+      <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:3px">Open P&L</div>
+      <div style="font-size:20px;font-weight:700;color:${pnlColor((acct.unrealizedPnl || 0) || positions.reduce((s,p) => s + (p.unrealizedPnl||0), 0))}">${isConnected ? fmtPnl((acct.unrealizedPnl || 0) || positions.reduce((s,p) => s + (p.unrealizedPnl||0), 0)) : '--'}</div>
     </div>
   </div>`;
 
@@ -4553,11 +4628,11 @@ views['venture-ibkr'] = async () => {
     Connected but NLV is zero — account data may be loading.
   </div>` : '';
 
-  // Cumulative P&L Chart
+  // Cumulative P&L Chart — suppress when there's too little data to be meaningful (<5 points)
   const pnlDays = Object.entries(dailyPnl).sort(([a],[b]) => a.localeCompare(b));
   let cumPnl = 0;
   const cumData = pnlDays.map(([date, v]) => { cumPnl += v.pnl; return { date, value: cumPnl }; });
-  const pnlChart = cumData.length > 1 ? `<div class="card" style="padding:16px;margin-bottom:16px">
+  const pnlChart = cumData.length >= 5 ? `<div class="card" style="padding:16px;margin-bottom:16px">
     <div style="font-weight:600;margin-bottom:8px;font-size:13px">Cumulative P&L</div>
     ${svgLineChart(cumData.map(d => d.value), { height: 160, labels: cumData.map(d => d.date.slice(5)), color: cumPnl >= 0 ? 'var(--green)' : 'var(--red)' })}
   </div>` : '';
@@ -4889,6 +4964,19 @@ views['venture-ibkr'] = async () => {
   });
   const filteredLegs = tradeNums.reduce((s, tn) => s + tradeGroups[tn].legs.length, 0);
 
+  // Per Gemini review: hide low-signal columns when empty across the filtered set.
+  // Type (orderType) and TIF (timeInForce) are frequently blank in IBKR CP REST fills.
+  // Status is always "open" on paper; show only if any legs have a non-open status.
+  let _hasType = false, _hasTif = false, _hasNonOpenStatus = false;
+  for (const tn of tradeNums) {
+    for (const t of tradeGroups[tn].legs) {
+      if (t.orderType && String(t.orderType).trim()) _hasType = true;
+      if (t.timeInForce && String(t.timeInForce).trim()) _hasTif = true;
+      const st = String(t.status || '').toLowerCase();
+      if (st && st !== 'open') _hasNonOpenStatus = true;
+    }
+  }
+
   const journal = trades.length ? `<div class="card" style="padding:0;overflow:hidden;margin-top:16px">
     <div style="padding:10px 12px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)">
       <span style="font-weight:600;font-size:13px">Trade Journal (${filteredLegs} legs in ${tradeNums.length} trades${tradeNums.length < allTradeNums.length ? ' of ' + allTradeNums.length + ' total' : ''})</span>
@@ -4925,10 +5013,10 @@ views['venture-ibkr'] = async () => {
           <th style="padding:6px 6px;text-align:right" title="Total cost for all contracts: unit cost x qty. Negative = credit received">Total Cost</th>
           <th style="padding:6px 6px;text-align:right" title="IBKR commission charged for this leg">Comm</th>
           <th style="padding:6px 6px;text-align:right" title="Exchange and regulatory fees">Fees</th>
-          <th style="padding:6px 6px;text-align:center" title="Order type: LMT (limit), MKT (market), STP (stop)">Type</th>
-          <th style="padding:6px 6px;text-align:center" title="Time in force: DAY, GTC (good til cancelled), IOC (immediate or cancel)">TIF</th>
+          ${_hasType ? '<th style="padding:6px 6px;text-align:center" title="Order type: LMT (limit), MKT (market), STP (stop)">Type</th>' : ''}
+          ${_hasTif ? '<th style="padding:6px 6px;text-align:center" title="Time in force: DAY, GTC (good til cancelled), IOC (immediate or cancel)">TIF</th>' : ''}
           <th style="padding:6px 6px;text-align:left;min-width:130px" title="Date and time the order was filled">Fill Time</th>
-          <th style="padding:6px 6px;text-align:center" title="Order status: filled, open, cancelled">Status</th>
+          ${_hasNonOpenStatus ? '<th style="padding:6px 6px;text-align:center" title="Order status: filled, open, cancelled">Status</th>' : ''}
         </tr></thead>
         <tbody>${tradeNums.map(tn => {
           const g = tradeGroups[tn];
@@ -4961,10 +5049,10 @@ views['venture-ibkr'] = async () => {
             <td style="${hSt};text-align:right;color:${netColor}">${netLabel} $${Math.abs(netCost).toFixed(2)}</td>
             <td style="${hSt};text-align:right;color:var(--text-tertiary)">$${g.totalComm.toFixed(2)}</td>
             <td style="${hSt};text-align:right;color:var(--text-tertiary)">$${g.totalFees.toFixed(2)}</td>
-            <td style="${hSt};text-align:center;color:var(--text-tertiary)">--</td>
-            <td style="${hSt};text-align:center;color:var(--text-tertiary)">--</td>
+            ${_hasType ? `<td style="${hSt};text-align:center;color:var(--text-tertiary)">--</td>` : ''}
+            ${_hasTif ? `<td style="${hSt};text-align:center;color:var(--text-tertiary)">--</td>` : ''}
             <td style="${hSt};color:var(--text-tertiary)">${fillDate}</td>
-            <td style="${hSt};text-align:center"><span class="badge" style="background:var(--green)22;color:var(--green);font-size:8px">OPEN</span></td>
+            ${_hasNonOpenStatus ? `<td style="${hSt};text-align:center"><span class="badge" style="background:var(--green)22;color:var(--green);font-size:8px">OPEN</span></td>` : ''}
           </tr>`;
           // Individual legs
           const legs = g.legs.map(t => {
@@ -4984,10 +5072,10 @@ views['venture-ibkr'] = async () => {
               <td style="padding:4px 6px;text-align:right;font-family:var(--mono);color:${sideColor}">$${(t.totalCost||0).toFixed(2)}</td>
               <td style="padding:4px 6px;text-align:right;font-family:var(--mono);font-size:10px;color:var(--text-tertiary)">$${(t.commission||0).toFixed(2)}</td>
               <td style="padding:4px 6px;text-align:right;font-family:var(--mono);font-size:10px;color:var(--text-tertiary)">$${(t.fees||0).toFixed(2)}</td>
-              <td style="padding:4px 6px;text-align:center;font-size:9px;color:var(--text-tertiary)">${t.orderType||''}</td>
-              <td style="padding:4px 6px;text-align:center;font-size:9px;color:var(--text-tertiary)">${t.timeInForce||''}</td>
+              ${_hasType ? `<td style="padding:4px 6px;text-align:center;font-size:9px;color:var(--text-tertiary)">${esc(t.orderType||'')}</td>` : ''}
+              ${_hasTif ? `<td style="padding:4px 6px;text-align:center;font-size:9px;color:var(--text-tertiary)">${esc(t.timeInForce||'')}</td>` : ''}
               <td style="padding:4px 6px;font-family:var(--mono);font-size:10px;color:var(--text-tertiary)">${t.fillTimeStr||''}</td>
-              <td style="padding:4px 6px;text-align:center"><span class="badge" style="background:var(--green)18;color:var(--green)aa;font-size:7px">${(t.status||'').toUpperCase()}</span></td>
+              ${_hasNonOpenStatus ? `<td style="padding:4px 6px;text-align:center"><span class="badge" style="background:var(--green)18;color:var(--green)aa;font-size:7px">${(t.status||'').toUpperCase()}</span></td>` : ''}
             </tr>`;
           }).join('');
           return header + legs;
@@ -5002,6 +5090,8 @@ views['venture-ibkr'] = async () => {
           const totalQtyAll = _filteredTrades.reduce((s,t) => s + Math.abs(t.quantity||0), 0);
           const tSt = 'padding:7px 6px;font-family:var(--mono);font-size:11px;font-weight:700';
           const netColor = totalNetCost <= 0 ? 'var(--green)' : 'var(--red)';
+          const _trailingCols = (_hasType ? 1 : 0) + (_hasTif ? 1 : 0) + 1 /*Fill Time*/ + (_hasNonOpenStatus ? 1 : 0);
+          const _trailingEmpty = new Array(_trailingCols).fill('<td style="'+tSt+'"></td>').join('');
           return '<tr style="background:var(--bg-secondary);border-top:2px solid var(--border)">'+
             '<td style="'+tSt+'" colspan="3">TOTAL ('+tradeNums.length+' trades, '+totalLegs+' legs)</td>'+
             '<td style="'+tSt+'"></td><td style="'+tSt+'"></td><td style="'+tSt+'"></td><td style="'+tSt+'"></td>'+
@@ -5010,7 +5100,7 @@ views['venture-ibkr'] = async () => {
             '<td style="'+tSt+';text-align:right;color:'+netColor+'">'+(totalNetCost<=0?'CREDIT':'DEBIT')+' $'+Math.abs(totalNetCost).toFixed(2)+'</td>'+
             '<td style="'+tSt+';text-align:right;color:var(--text-tertiary)">$'+totalComm.toFixed(2)+'</td>'+
             '<td style="'+tSt+';text-align:right;color:var(--text-tertiary)">$'+totalFees.toFixed(2)+'</td>'+
-            '<td style="'+tSt+'"></td><td style="'+tSt+'"></td><td style="'+tSt+'"></td><td style="'+tSt+'"></td></tr>';
+            _trailingEmpty +'</tr>';
         })()}</tbody>
       </table>
     </div>
@@ -5035,7 +5125,7 @@ views['venture-ibkr'] = async () => {
       <div style="font-size:10px;color:var(--text-tertiary)">Total P&L</div>
     </div>
     <div class="card" style="padding:10px;text-align:center">
-      <div style="font-size:20px;font-weight:700;color:${pnlColor(expectancy)}">${expectancy >= 0 ? '+' : ''}$${expectancy.toFixed(0)}</div>
+      <div style="font-size:20px;font-weight:700;color:${_ct > 0 ? pnlColor(expectancy) : 'var(--text-tertiary)'}">${_ct > 0 ? (expectancy >= 0 ? '+' : '') + '$' + expectancy.toFixed(0) : '-'}</div>
       <div style="font-size:10px;color:var(--text-tertiary)">Expectancy /trade</div>
     </div>
     <div class="card" style="padding:10px;text-align:center">
@@ -5176,15 +5266,16 @@ views['venture-ibkr'] = async () => {
         <tbody>${snapshotRows.map((s, i) => {
           const prevNlv = i < snapshotRows.length - 1 ? snapshotRows[i + 1].nlv : s.nlv;
           const dayPnl = s.nlv - prevNlv;
+          const intOpts = { maximumFractionDigits: 0 };
           return `<tr style="border-bottom:1px solid var(--border-light)">
             <td style="padding:5px 8px;font-family:var(--mono)">${s.date}</td>
-            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-weight:500">$${(s.nlv || 0).toLocaleString()}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-weight:500">$${(s.nlv || 0).toLocaleString('en-US', intOpts)}</td>
             <td style="padding:5px 8px;text-align:right;font-family:var(--mono);color:${pnlColor(dayPnl)}">${dayPnl !== 0 ? fmtPnl(dayPnl) : '-'}</td>
             <td style="padding:5px 8px;text-align:right;font-family:var(--mono);color:${pnlColor(s.unrealizedPnl || 0)}">${s.unrealizedPnl ? fmtPnl(s.unrealizedPnl) : '-'}</td>
             <td style="padding:5px 8px;text-align:right;font-family:var(--mono);color:${pnlColor(s.realizedPnl || 0)}">${s.realizedPnl ? fmtPnl(s.realizedPnl) : '-'}</td>
             <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${s.openPositions || 0}</td>
-            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-size:10px">${s.initMargin ? '$' + s.initMargin.toLocaleString() : '-'}</td>
-            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-size:10px">${s.maintMargin ? '$' + s.maintMargin.toLocaleString() : '-'}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-size:10px">${s.initMargin ? '$' + s.initMargin.toLocaleString('en-US', intOpts) : '-'}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-size:10px">${s.maintMargin ? '$' + s.maintMargin.toLocaleString('en-US', intOpts) : '-'}</td>
           </tr>`;
         }).join('')}</tbody>
       </table>
@@ -5586,17 +5677,131 @@ views['venture-ibkr'] = async () => {
       }).join('')}
     </div>
 
+    <!-- Today's Strategy P&L card — populated from daily-snapshots.json[strategyPnl] -->
+    ${(() => {
+      const spt = d.strategyPnlToday || {};
+      const entries = Object.entries(spt).sort((a, b) => (b[1].totalToday || 0) - (a[1].totalToday || 0));
+      if (!entries.length) {
+        window._strategyPnlCard = '';
+        return '';
+      }
+      const rows = entries.map(([strat, v]) => {
+        const sc = stratColors[strat] || '#666';
+        const total = v.totalToday || 0;
+        const du = v.deltaUnrealized || 0;
+        const rl = v.realizedToday || 0;
+        const cum = v.cumulativeUnrealized || 0;
+        return `<tr style="border-bottom:1px solid var(--border-light)">
+          <td style="padding:6px 8px"><span class="badge" style="background:${sc}22;color:${sc};font-size:10px;font-weight:600">${esc(strat)}</span></td>
+          <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px;color:${pnlColor(total)};font-weight:600">${fmtPnl(total)}</td>
+          <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:10px;color:${pnlColor(du)}">${fmtPnl(du)}</td>
+          <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:10px;color:${pnlColor(rl)}">${fmtPnl(rl)}</td>
+          <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:10px;color:${pnlColor(cum)}">${fmtPnl(cum)}</td>
+        </tr>`;
+      }).join('');
+      window._strategyPnlCard = `<div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+          <span style="font-weight:600;font-size:13px">Today's P&L by Strategy</span>
+          <span style="font-size:10px;color:var(--text-tertiary)">Δ unrealized + realized today</span>
+        </div>
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--bg-secondary);border-bottom:1px solid var(--border)">
+            <th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--text-tertiary);text-transform:uppercase">Strategy</th>
+            <th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--text-tertiary);text-transform:uppercase">Total</th>
+            <th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--text-tertiary);text-transform:uppercase">Δ Unreal.</th>
+            <th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--text-tertiary);text-transform:uppercase">Realized</th>
+            <th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--text-tertiary);text-transform:uppercase">Cum. Unreal.</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+      return '';
+    })()}
+
+    <!-- Auto Risk Gates card — what the scanner enforces automatically -->
+    ${(() => {
+      const rg = d.riskGates || {};
+      if (!rg.vixNakedCeiling) {
+        window._riskGatesCard = '';
+        return '';
+      }
+      const row = (label, val) => `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border-light);font-size:11px"><span style="color:var(--text-tertiary)">${esc(label)}</span><span style="font-family:var(--mono);font-weight:600">${esc(String(val))}</span></div>`;
+      const ceilings = rg.marginCeilings || {};
+      const ceilingGrid = Object.entries(ceilings)
+        .map(([k, v]) => `<div style="display:flex;justify-content:space-between;padding:3px 8px;background:${(stratColors[k]||'#666')}14;border-radius:3px;font-size:10px"><span style="color:${stratColors[k]||'var(--text-primary)'};font-weight:600">${esc(k)}</span><span style="font-family:var(--mono);color:var(--text-primary)">${v}%</span></div>`)
+        .join('');
+      // Strategy-level β-Δ breakdown: which strategy is driving directional bias?
+      const nlv = d.account?.netLiquidation || 0;
+      const bwEntries = Object.entries(bwDeltaByStrategy).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+      const bwRows = bwEntries.map(([strat, val]) => {
+        const pct = nlv > 0 ? val / nlv * 100 : 0;
+        const sc = stratColors[strat] || '#666';
+        const col = Math.abs(pct) < 0.2 ? 'var(--text-primary)' : Math.abs(pct) < 0.5 ? 'var(--yellow)' : 'var(--red)';
+        return `<tr style="border-bottom:1px solid var(--border-light)">
+          <td style="padding:5px 8px"><span class="badge" style="background:${sc}22;color:${sc};font-size:10px;font-weight:600">${esc(strat)}</span></td>
+          <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-size:11px;color:${col};font-weight:600">${val >= 0 ? '+' : ''}$${Math.round(val).toLocaleString()}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-size:10px;color:${col}">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</td>
+        </tr>`;
+      }).join('');
+      window._bwDeltaByStrategyCard = bwEntries.length ? `<div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+          <span style="font-weight:600;font-size:13px">β-Weighted Δ by Strategy</span>
+          <span style="font-size:10px;color:var(--text-tertiary)">SPY-eq $ | % of NLV</span>
+        </div>
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr style="background:var(--bg-secondary);border-bottom:1px solid var(--border)">
+            <th style="padding:5px 8px;text-align:left;font-size:10px;color:var(--text-tertiary);text-transform:uppercase">Strategy</th>
+            <th style="padding:5px 8px;text-align:right;font-size:10px;color:var(--text-tertiary);text-transform:uppercase">β-Δ $</th>
+            <th style="padding:5px 8px;text-align:right;font-size:10px;color:var(--text-tertiary);text-transform:uppercase">% NLV</th>
+          </tr></thead>
+          <tbody>${bwRows}</tbody>
+        </table>
+      </div>` : '';
+
+      // Live status per gate: compute from current VIX + risk state. Sources:
+      //   - vix: pulled from risk-dashboard.json by the exporter (falls back to null)
+      //   - bpUsedPct: from risk payload
+      const liveVix = typeof (d.risk && d.risk.vix) === 'number' ? d.risk.vix : null;
+      const gateRow = (label, detail, status) => {
+        const color = status === 'OK' ? 'var(--green)' : status === 'WARN' ? 'var(--yellow)' : status === 'HALT' ? 'var(--red)' : 'var(--text-tertiary)';
+        const icon = status === 'OK' ? '✓' : status === 'WARN' ? '⚠' : status === 'HALT' ? '✕' : '·';
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border-light);font-size:11px;gap:8px">
+          <span style="color:var(--text-tertiary);flex:1">${esc(label)}</span>
+          <span style="font-family:var(--mono);color:var(--text-primary);font-size:10px">${esc(detail)}</span>
+          <span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:${color}22;color:${color};font-weight:700;font-size:10px">${icon}</span>
+        </div>`;
+      };
+      const vixNakedStatus = liveVix == null ? 'UNK' : liveVix >= rg.vixNakedCeiling ? 'HALT' : liveVix >= (rg.vixNakedCeiling - 5) ? 'WARN' : 'OK';
+      const vixGlobalStatus = liveVix == null ? 'UNK' : liveVix >= rg.vixGlobalHalt ? 'HALT' : liveVix >= (rg.vixGlobalHalt - 5) ? 'WARN' : 'OK';
+      const vixLabel = liveVix == null ? '--' : 'VIX ' + liveVix.toFixed(1);
+
+      window._riskGatesCard = `<div class="card" style="padding:14px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <span style="font-weight:600;font-size:13px">Auto Risk Gates</span>
+          <span style="font-size:10px;color:var(--text-tertiary)">Live status vs. auto_execute.py thresholds</span>
+        </div>
+        ${gateRow('Earnings buffer', (rg.earningsBufferDays || 14) + 'd · ' + (rg.earningsSource || 'yfinance'), 'OK')}
+        ${gateRow('VIX naked ceiling (' + rg.vixNakedCeiling + ')', vixLabel + ' → ' + (vixNakedStatus === 'HALT' ? 'skipping naked-heavy' : vixNakedStatus === 'WARN' ? 'approaching' : 'clear'), vixNakedStatus)}
+        ${gateRow('VIX global halt (' + rg.vixGlobalHalt + ')', vixLabel + ' → ' + (vixGlobalStatus === 'HALT' ? 'ALL NEW TRADES HALTED' : vixGlobalStatus === 'WARN' ? 'approaching' : 'clear'), vixGlobalStatus)}
+        ${gateRow('Contract stacking', rg.contractStackBlock ? 'hard block on dup conid' : 'off', rg.contractStackBlock ? 'OK' : 'WARN')}
+        ${gateRow('Underlying concentration', rg.underlyingStackCapPct + '% NLV cap per symbol', 'OK')}
+        <div style="margin-top:10px;font-size:10px;color:var(--text-tertiary);margin-bottom:6px">Margin ceilings (% NLV per position)</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px">${ceilingGrid}</div>
+      </div>`;
+      return '';
+    })()}
+
     <!-- TAB: Portfolio (live trading view) -->
     <div style="display:${(window._ibkrTab || 'portfolio') === 'portfolio' ? 'block' : 'none'}">
       ${kpi}
-      ${greekStrip}
+      <!-- Risk Dashboard + Active Positions above the fold. Greeks Exposure lives on the Risk tab. -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-        ${posTable}
-        ${stratTable}
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
-        ${greeksTable}
         ${riskPanel}
+        ${posTable}
+      </div>
+      ${window._strategyPnlCard ? `<div style="margin-top:16px">${window._strategyPnlCard}</div>` : ''}
+      <div style="margin-top:16px">
+        ${stratTable}
       </div>
       ${pnlChart}
       ${dailyChart}
@@ -5605,6 +5810,7 @@ views['venture-ibkr'] = async () => {
         ${incomeTracker}
         ${automationCard}
       </div>
+      ${calendarHtml}
     </div>
 
     <!-- TAB: Performance (tear sheet / institutional view) -->
@@ -5630,12 +5836,15 @@ views['venture-ibkr'] = async () => {
 
     <!-- TAB: Risk (risk management view) -->
     <div style="display:${(window._ibkrTab || 'portfolio') === 'risk' ? 'block' : 'none'}">
+      <!-- Greeks + Risk Dashboard at the top: Greeks ARE the risk for an options book -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
         ${riskPanel}
-        ${healthPanel}
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
         ${greeksTable}
+      </div>
+      ${window._riskGatesCard ? `<div style="margin-top:16px">${window._riskGatesCard}</div>` : ''}
+      ${window._bwDeltaByStrategyCard ? `<div style="margin-top:16px">${window._bwDeltaByStrategyCard}</div>` : ''}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+        ${healthPanel}
         <div class="card" style="padding:14px">
           <div style="font-weight:600;font-size:13px;margin-bottom:8px">Capital at Risk</div>
           ${capAtRiskCard ? capAtRiskCard.replace(/<div class="card"[^>]*>/, '').replace(/<\/div>$/, '') : '<div style="color:var(--text-tertiary);font-size:11px">No positions</div>'}
@@ -5643,7 +5852,7 @@ views['venture-ibkr'] = async () => {
       </div>
       ${underwaterChart}
       ${rollingVolChart}
-      ${calendarHtml}
+      <!-- calendarHtml moved to Portfolio tab (forward-planning reference, not risk data) -->
     </div>
 
     <!-- TAB: Journal (trade log) -->
@@ -5991,8 +6200,8 @@ views['venture-defi-carry'] = async () => {
         <div style="padding:0 16px 16px">
           <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:8px">Active Strategies</div>
           <div style="display:flex;flex-wrap:wrap;gap:4px">
-            ${['LT112','1-2-0','221','Strangles','Naked Puts','1x3 Ratio','Wheel','PMCC/LEAPS'].map(s =>
-              '<span style="font-size:10px;font-weight:600;padding:3px 8px;border-radius:4px;background:var(--accent-muted);color:var(--accent)">' + s + '</span>'
+            ${((ibkr.riskGates && ibkr.riskGates.activeStrategies) || [{label:'LT112'},{label:'1-2-0'},{label:'221'},{label:'Strangle'},{label:'Naked Put'},{label:'1x3 Ratio'},{label:'Double Diagonal'},{label:'LEAPS'},{label:'Wheel'}]).map(s =>
+              '<span title="' + esc(((s.products||[]).join(', ')) + ' · DTE ' + (s.ddteRange||'')) + '" style="font-size:10px;font-weight:600;padding:3px 8px;border-radius:4px;background:var(--accent-muted);color:var(--accent)">' + esc(s.label) + '</span>'
             ).join('')}
           </div>
         </div>

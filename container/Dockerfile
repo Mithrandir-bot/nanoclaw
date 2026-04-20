@@ -3,6 +3,14 @@
 
 FROM node:22-slim
 
+# BUILD_DATE forces a unique image digest per day so the nightly rebuild cron
+# produces an image with a fresh "created" timestamp, which keeps
+# `docker image prune -af --filter until=24h` (installed by the hypervisor)
+# from deleting us. Pass via --build-arg BUILD_DATE=$(date +%Y%m%d).
+ARG BUILD_DATE=unknown
+LABEL build-date="${BUILD_DATE}"
+RUN echo "build_date=${BUILD_DATE}" > /etc/nanoclaw-build-date
+
 # Install system dependencies for Chromium
 RUN apt-get update && apt-get install -y \
     chromium \
