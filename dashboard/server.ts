@@ -1685,6 +1685,7 @@ function getVentureIbkr() {
     const greeks = readJson('greeks-exposure.json') || { portfolio: {}, byExpiry: {}, byStrategy: {} };
     const risk = readJson('risk-dashboard.json') || {};
     const snapshots = readJson('daily-snapshots.json') || { snapshots: [] };
+    const spySeries = (readJson('spy-closes.json') || { series: [] }).series || [];
 
     // Find most recent scan file
     const scanFiles = fs.readdirSync(dataDir).filter(f => f.startsWith('scan-') && f.endsWith('.json')).sort().reverse();
@@ -1828,10 +1829,11 @@ function getVentureIbkr() {
       riskGates,
       seasonalCalendar,
       performance: perfRaw,
+      spySeries,
     };
   } catch (err) {
     console.error('[venture-ibkr]', err);
-    return { account: {}, positions: [], trades: [], tradeSummary: {}, greeks: {}, risk: {}, snapshots: [], todayScan: null, strategyPerf: {}, dailyPnl: {}, strategyPnlToday: {}, strategyPnlSeries: {}, riskGates: {}, seasonalCalendar: {}, performance: {} };
+    return { account: {}, positions: [], trades: [], tradeSummary: {}, greeks: {}, risk: {}, snapshots: [], todayScan: null, strategyPerf: {}, dailyPnl: {}, strategyPnlToday: {}, strategyPnlSeries: {}, riskGates: {}, seasonalCalendar: {}, performance: {}, spySeries: [] };
   }
 }
 

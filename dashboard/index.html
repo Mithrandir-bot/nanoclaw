@@ -124,6 +124,140 @@
   .badge.accent { background: var(--accent-muted); color: var(--accent); }
   .badge.muted { background: var(--bg-tertiary); color: var(--text-tertiary); }
 
+  /* ─── Delta pill: signature element shared across the three new IBKR cards ─── */
+  .delta-pill {
+    display: inline-flex; align-items: baseline; gap: 3px;
+    padding: 2px 7px; border-radius: 10px;
+    font-family: var(--mono); font-size: 10px; font-weight: 600;
+    letter-spacing: -0.1px;
+  }
+  .delta-pill.pos { background: var(--green-muted); color: var(--green); }
+  .delta-pill.neg { background: var(--red-muted); color: var(--red); }
+  .delta-pill.flat { background: var(--bg-tertiary); color: var(--text-tertiary); }
+  .delta-pill .arrow { font-size: 8px; line-height: 1; transform: translateY(-0.5px); }
+
+  /* ─── Shared card header (three new IBKR cards) ─── */
+  .ct-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 14px; border-bottom: 1px solid var(--border); gap: 12px;
+  }
+  .ct-head .ct-title { font-weight: 600; font-size: 13px; letter-spacing: -0.1px; }
+  .ct-head .ct-sub {
+    font-size: 10px; color: var(--text-tertiary);
+    text-transform: uppercase; letter-spacing: 0.4px; font-family: var(--mono);
+  }
+  .ct-head .ct-summary {
+    font-size: 10px; color: var(--text-secondary);
+    display: inline-flex; align-items: baseline; gap: 8px; font-family: var(--mono);
+  }
+  .ct-head .ct-summary-key {
+    color: var(--text-tertiary); letter-spacing: 0.3px;
+    text-transform: uppercase; font-size: 9px;
+  }
+  .ct-head-left { display: flex; align-items: baseline; gap: 10px; }
+
+  /* Empty state for new cards */
+  .es { padding: 28px 16px; text-align: center; }
+  .es-glyph {
+    font-size: 18px; color: var(--text-tertiary);
+    margin-bottom: 6px; font-family: var(--mono); letter-spacing: 4px;
+  }
+  .es-msg { font-size: 11px; color: var(--text-tertiary); letter-spacing: 0.3px; }
+
+  /* ─── Benchmark chart (SPY overlay) ─── */
+  .bnch-chart { position: relative; }
+  .bnch-chart svg { display: block; width: 100%; }
+  .bnch-chart .crosshair { pointer-events: none; opacity: 0; transition: opacity 120ms; }
+  .bnch-chart.is-hovering .crosshair { opacity: 1; }
+  .bnch-tooltip {
+    position: absolute; pointer-events: none; opacity: 0;
+    padding: 8px 10px; border-radius: var(--radius-sm);
+    background: var(--bg-tertiary); border: 1px solid var(--border);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+    font-size: 11px; line-height: 1.5;
+    transform: translate(-50%, -100%) translateY(-10px);
+    transition: opacity 120ms;
+    min-width: 140px;
+  }
+  .bnch-tooltip.show { opacity: 1; }
+  .bnch-tooltip .tt-date {
+    font-size: 9px; color: var(--text-tertiary);
+    text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 4px; font-family: var(--mono);
+  }
+  .bnch-tooltip .tt-row {
+    display: flex; justify-content: space-between; gap: 12px; font-family: var(--mono);
+  }
+  .bnch-tooltip .tt-row .tt-label {
+    color: var(--text-tertiary); display: flex; align-items: center; gap: 5px;
+  }
+  .bnch-tooltip .tt-swatch { width: 8px; height: 2px; border-radius: 1px; }
+  .bnch-tooltip .tt-spread { margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--border); }
+
+  /* ─── Concentration by Underlying ─── */
+  .conc-row {
+    display: grid; grid-template-columns: 72px 1fr 92px; gap: 14px;
+    align-items: center; padding: 9px 14px;
+    border-bottom: 1px solid var(--border-light); transition: background 100ms;
+  }
+  .conc-row:last-child { border-bottom: none; }
+  .conc-row:hover { background: var(--bg-tertiary); }
+  .conc-symbol {
+    font-family: var(--mono); font-size: 12px; font-weight: 600;
+    color: var(--text-primary); letter-spacing: -0.2px;
+  }
+  .conc-bar-wrap { position: relative; }
+  .conc-bar-track {
+    height: 18px; background: var(--bg-tertiary);
+    border-radius: 3px; overflow: hidden; display: flex;
+  }
+  .conc-seg { height: 100%; transition: opacity 100ms; }
+  .conc-seg:hover { opacity: 0.7; }
+  .conc-bar-wrap .conc-cap-tick {
+    position: absolute; top: -2px; bottom: -2px; width: 1px;
+    background: var(--yellow); opacity: 0.5;
+  }
+  .conc-nums { text-align: right; font-family: var(--mono); font-size: 11px; }
+  .conc-nums .conc-dollars { color: var(--text-secondary); display: block; }
+  .conc-nums .conc-pct { color: var(--text-primary); font-weight: 600; }
+  .conc-legend {
+    display: flex; flex-wrap: wrap; gap: 10px 14px;
+    padding: 10px 14px; border-top: 1px solid var(--border-light);
+    font-size: 10px; color: var(--text-tertiary); font-family: var(--mono);
+  }
+  .conc-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+  .conc-legend-swatch { width: 9px; height: 9px; border-radius: 2px; }
+
+  /* ─── Theta / Margin Efficiency ─── */
+  .theta-row {
+    display: grid; grid-template-columns: 104px 1fr 76px; gap: 14px;
+    align-items: center; padding: 8px 14px;
+    border-bottom: 1px solid var(--border-light);
+  }
+  .theta-row:last-child { border-bottom: none; }
+  .theta-meta {
+    font-family: var(--mono); font-size: 10px; color: var(--text-tertiary);
+    display: flex; gap: 8px; align-items: baseline; margin-top: 2px;
+  }
+  .theta-meta .theta-dollars { color: var(--text-secondary); }
+  .theta-bar-wrap { position: relative; height: 28px; display: flex; align-items: center; }
+  .theta-bar-track { height: 14px; position: relative; flex: 1; }
+  .theta-bar-axis { position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--border); }
+  .theta-bar-zero { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border); }
+  .theta-bar { position: absolute; height: 14px; top: 7px; border-radius: 2px; transition: transform 120ms; }
+  .theta-bar.pos { background: linear-gradient(90deg, var(--accent) 0%, var(--accent-hover) 100%); }
+  .theta-bar.neg { background: linear-gradient(90deg, var(--red) 0%, #e16b67 100%); }
+  .theta-value { font-family: var(--mono); font-size: 12px; font-weight: 600; text-align: right; letter-spacing: -0.2px; }
+  .theta-value.pos { color: var(--accent-hover); }
+  .theta-value.neg { color: var(--red); }
+  .theta-value-unit { font-size: 9px; color: var(--text-tertiary); letter-spacing: 0.3px; }
+  .theta-flag {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 9px; color: var(--red); font-family: var(--mono);
+    letter-spacing: 0.3px; margin-left: 6px;
+  }
+  .theta-flag::before { content: '⚠'; font-size: 10px; }
+
   /* Loading bar */
   .loading-bar { position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--accent); transform-origin: left; animation: loadingBar 1.5s ease-in-out infinite; z-index: 10; }
   @keyframes loadingBar { 0% { transform: scaleX(0); } 50% { transform: scaleX(0.7); } 100% { transform: scaleX(1); opacity: 0; } }
@@ -4066,6 +4200,455 @@ window.ventureDropStage = async (event, newStage) => {
 // --- Venture Sub-Dashboards ---
 
 // Helper: build SVG line chart
+// ──────────────────────────────────────────────────────────────────────
+// Three new cards for the IBKR Trading view.
+// Module-scoped so the render functions can reference stratColors directly.
+// ──────────────────────────────────────────────────────────────────────
+
+// Hoisted strategy color map — used by the new cards + shared with the
+// copy inside views['venture-ibkr'] (which shadows this one; either is fine).
+const stratColors = {
+  'LT112': '#f97316', '112': '#f97316',
+  'STRANGLE': '#3b82f6',
+  'NAKED_PUT': '#22c55e',
+  '1X3_RATIO': '#a855f7', '1x3': '#a855f7',
+  'WHEEL_CSP': '#06b6d4', 'WHEEL_CC': '#06b6d4', 'WHEEL': '#06b6d4',
+  '221': '#eab308',
+  '1_2_0': '#ec4899', '1-2-0': '#ec4899',
+  'PMCC': '#6b7280', 'LONG_LEAPS': '#6b7280', 'LEAPS': '#6b7280',
+  'DD': '#14b8a6',
+  'PUT_DEBIT_SPREAD': '#8b5cf6',
+  'LONG_PUT_HEDGE': '#d946ef',
+  'UNASSIGNED': '#71717a',
+  'OTHER': '#71717a',
+};
+
+// Helper — delta pill (used in card headers as a headline-metric chip)
+function deltaPill(v, fmt) {
+  fmt = fmt || (x => (x >= 0 ? '+' : '') + x.toFixed(2) + '%');
+  const cls = v > 0.0001 ? 'pos' : v < -0.0001 ? 'neg' : 'flat';
+  const arrow = v > 0.0001 ? '▲' : v < -0.0001 ? '▼' : '●';
+  return `<span class="delta-pill ${cls}"><span class="arrow">${arrow}</span>${fmt(v).replace(/^[+−-]/, '')}</span>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 1. SPY Benchmark Overlay  — for the Performance tab
+// ══════════════════════════════════════════════════════════════════════
+// portfolioSeries, spySeries: [{date: 'YYYY-MM-DD', pctReturn: number}, ...]
+// opts: { label?: string }
+function renderSpyBenchmarkChart(portfolioSeries, spySeries, opts) {
+  opts = opts || {};
+  const label = opts.label || 'Portfolio vs. S&P 500';
+
+  if (!portfolioSeries || !portfolioSeries.length || !spySeries || !spySeries.length) {
+    return `<div class="card">
+      <div class="ct-head"><div class="ct-head-left"><span class="ct-title">${esc(label)}</span></div></div>
+      <div class="es"><div class="es-glyph">— — —</div><div class="es-msg">Waiting for daily P&L history</div></div>
+    </div>`;
+  }
+
+  const spyMap = new Map(spySeries.map(function(d) { return [d.date, d.pctReturn]; }));
+  const rows = portfolioSeries.map(function(p) {
+    return {
+      date: p.date,
+      port: p.pctReturn,
+      spy: spyMap.has(p.date) ? spyMap.get(p.date) : null,
+    };
+  }).filter(function(r) { return r.spy != null; });
+
+  if (!rows.length) {
+    return `<div class="card">
+      <div class="ct-head"><div class="ct-head-left"><span class="ct-title">${esc(label)}</span></div></div>
+      <div class="es"><div class="es-glyph">— — —</div><div class="es-msg">No overlapping dates</div></div>
+    </div>`;
+  }
+
+  const W = 880, H = 220;
+  const PAD = { t: 14, r: 90, b: 24, l: 44 };
+  const IW = W - PAD.l - PAD.r;
+  const IH = H - PAD.t - PAD.b;
+
+  const allVals = rows.reduce(function(acc, r) { acc.push(r.port, r.spy); return acc; }, [0]);
+  const minY = Math.min.apply(null, allVals);
+  const maxY = Math.max.apply(null, allVals);
+  const rangeY = (maxY - minY) || 1;
+  const yPad = rangeY * 0.12;
+  const yMin = minY - yPad;
+  const yMax = maxY + yPad;
+  const yRange = yMax - yMin;
+
+  const xOf = function(i) { return PAD.l + (i / Math.max(1, rows.length - 1)) * IW; };
+  const yOf = function(v) { return PAD.t + IH - ((v - yMin) / yRange) * IH; };
+
+  // Y ticks (5 lines)
+  const ticks = [];
+  for (let i = 0; i <= 4; i++) {
+    const v = yMin + (yRange * i / 4);
+    ticks.push({ v: v, y: yOf(v) });
+  }
+  const zeroVisible = yMin <= 0 && yMax >= 0;
+  const zeroY = yOf(0);
+
+  const polyPort = rows.map(function(r, i) { return xOf(i).toFixed(1) + ',' + yOf(r.port).toFixed(1); }).join(' ');
+  const polySpy  = rows.map(function(r, i) { return xOf(i).toFixed(1) + ',' + yOf(r.spy).toFixed(1); }).join(' ');
+
+  // Build tint segments (green when portfolio > SPY, red when <). Interpolate at crossovers.
+  const tintSegments = [];
+  let segStart = 0;
+  let segSign = (rows[0].port - rows[0].spy) >= 0 ? 'pos' : 'neg';
+  for (let i = 1; i <= rows.length; i++) {
+    const currentSign = i < rows.length ? ((rows[i].port - rows[i].spy) >= 0 ? 'pos' : 'neg') : null;
+    if (i === rows.length || currentSign !== segSign) {
+      if (i > segStart) {
+        const top = [], bot = [];
+        for (let j = segStart; j < i; j++) {
+          const x = xOf(j).toFixed(1);
+          top.push(x + ',' + yOf(rows[j].port).toFixed(1));
+          bot.push(x + ',' + yOf(rows[j].spy).toFixed(1));
+        }
+        // crossover interpolation on both edges
+        if (segStart > 0 && rows[segStart - 1]) {
+          const p0 = rows[segStart - 1], p1 = rows[segStart];
+          const d0 = p0.port - p0.spy, d1 = p1.port - p1.spy;
+          const t = d0 / (d0 - d1);
+          const cx = xOf(segStart - 1) + (xOf(segStart) - xOf(segStart - 1)) * t;
+          const cy = yOf(p0.port + (p1.port - p0.port) * t);
+          top.unshift(cx.toFixed(1) + ',' + cy.toFixed(1));
+          bot.unshift(cx.toFixed(1) + ',' + cy.toFixed(1));
+        }
+        if (i < rows.length && rows[i]) {
+          const p0 = rows[i - 1], p1 = rows[i];
+          const d0 = p0.port - p0.spy, d1 = p1.port - p1.spy;
+          const t = d0 / (d0 - d1);
+          const cx = xOf(i - 1) + (xOf(i) - xOf(i - 1)) * t;
+          const cy = yOf(p0.port + (p1.port - p0.port) * t);
+          top.push(cx.toFixed(1) + ',' + cy.toFixed(1));
+          bot.push(cx.toFixed(1) + ',' + cy.toFixed(1));
+        }
+        const pts = top.concat(bot.reverse()).join(' ');
+        tintSegments.push({ sign: segSign, points: pts });
+      }
+      segStart = i;
+      segSign = currentSign;
+    }
+  }
+
+  const finalPort = rows[rows.length - 1].port;
+  const finalSpy = rows[rows.length - 1].spy;
+  const spread = finalPort - finalSpy;
+
+  // X-axis ticks (show ~6 labels)
+  const xStep = Math.max(1, Math.floor(rows.length / 5));
+  const xTickXs = [];
+  for (let i = 0; i < rows.length; i += xStep) xTickXs.push(i);
+  if (xTickXs[xTickXs.length - 1] !== rows.length - 1) xTickXs.push(rows.length - 1);
+
+  const chartId = 'bnch-' + Math.random().toString(36).slice(2, 8);
+
+  // Data payload for hover handler
+  const rowsPayload = rows.map(function(r, i) {
+    return { i: i, date: r.date, port: r.port, spy: r.spy, x: xOf(i), yP: yOf(r.port), yS: yOf(r.spy) };
+  });
+  const rowsJson = JSON.stringify(rowsPayload).replace(/'/g, '&#39;');
+
+  const legendRow = `<div style="display:flex;align-items:center;gap:14px;padding:8px 14px 10px;border-top:1px solid var(--border-light);font-size:10px;color:var(--text-tertiary);font-family:var(--mono)">
+    <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:16px;height:2px;background:var(--accent)"></span>PORTFOLIO</span>
+    <span style="display:inline-flex;align-items:center;gap:6px"><span style="width:16px;height:0;border-top:1.5px dashed var(--text-tertiary)"></span>S&amp;P 500</span>
+    <span style="margin-left:auto;font-size:9px;opacity:0.7">TINT &mdash; GREEN OUTPERFORMING &middot; RED UNDERPERFORMING</span>
+  </div>`;
+
+  return `<div class="card">
+    <div class="ct-head">
+      <div class="ct-head-left">
+        <span class="ct-title">${esc(label)}</span>
+        <span class="ct-sub">${rows.length} days</span>
+      </div>
+      <div class="ct-summary">
+        <span class="ct-summary-key">Alpha</span>${deltaPill(spread, function(v){return (v>=0?'+':'')+v.toFixed(2)+'%';})}
+      </div>
+    </div>
+    <div class="bnch-chart" id="${chartId}"
+         onmousemove="__bnchHover('${chartId}', event)"
+         onmouseleave="__bnchLeave('${chartId}')"
+         data-rows='${rowsJson}'
+         data-ymin="${yMin}" data-yrange="${yRange}"
+         data-padt="${PAD.t}" data-ih="${IH}">
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:${H}px;max-height:240px">
+        <defs>
+          <linearGradient id="${chartId}-pos" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--green)" stop-opacity="0.18"/>
+            <stop offset="100%" stop-color="var(--green)" stop-opacity="0.03"/>
+          </linearGradient>
+          <linearGradient id="${chartId}-neg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="var(--red)" stop-opacity="0.18"/>
+            <stop offset="100%" stop-color="var(--red)" stop-opacity="0.03"/>
+          </linearGradient>
+        </defs>
+        ${ticks.map(function(t) {
+          return `<line x1="${PAD.l}" y1="${t.y}" x2="${W - PAD.r}" y2="${t.y}"
+            stroke="var(--border-light)" stroke-width="1" stroke-dasharray="2,4"/>
+          <text x="${PAD.l - 8}" y="${t.y + 3}" text-anchor="end"
+            fill="var(--text-tertiary)" font-size="9" font-family="var(--mono)">${(t.v >= 0 ? '+' : '') + t.v.toFixed(1) + '%'}</text>`;
+        }).join('')}
+        ${zeroVisible ? `<line x1="${PAD.l}" y1="${zeroY}" x2="${W - PAD.r}" y2="${zeroY}" stroke="var(--text-tertiary)" stroke-width="1" opacity="0.4"/>` : ''}
+        ${xTickXs.map(function(i) {
+          return `<text x="${xOf(i)}" y="${H - 6}" text-anchor="middle"
+            fill="var(--text-tertiary)" font-size="9" font-family="var(--mono)">${rows[i].date.slice(5)}</text>`;
+        }).join('')}
+        ${tintSegments.map(function(s) {
+          return `<polygon points="${s.points}" fill="url(#${chartId}-${s.sign})"/>`;
+        }).join('')}
+        <polyline points="${polySpy}" fill="none" stroke="var(--text-tertiary)"
+          stroke-width="1.5" stroke-linejoin="round" stroke-dasharray="4,3" opacity="0.9"/>
+        <polyline points="${polyPort}" fill="none" stroke="var(--accent)"
+          stroke-width="2" stroke-linejoin="round"/>
+        <g>
+          <line x1="${xOf(rows.length - 1)}" y1="${yOf(finalPort)}" x2="${W - PAD.r + 4}" y2="${yOf(finalPort)}"
+            stroke="var(--accent)" stroke-width="1" opacity="0.4"/>
+          <rect x="${W - PAD.r + 4}" y="${yOf(finalPort) - 8}" width="${PAD.r - 8}" height="16" rx="3"
+            fill="var(--accent)" opacity="0.12"/>
+          <text x="${W - PAD.r + 8}" y="${yOf(finalPort) + 3}" text-anchor="start"
+            fill="var(--accent)" font-size="10" font-weight="600" font-family="var(--mono)">${(finalPort >= 0 ? '+' : '') + finalPort.toFixed(1) + '%'}</text>
+          <line x1="${xOf(rows.length - 1)}" y1="${yOf(finalSpy)}" x2="${W - PAD.r + 4}" y2="${yOf(finalSpy)}"
+            stroke="var(--text-tertiary)" stroke-width="1" opacity="0.35"/>
+          <text x="${W - PAD.r + 8}" y="${yOf(finalSpy) + 3}" text-anchor="start"
+            fill="var(--text-tertiary)" font-size="10" font-weight="500" font-family="var(--mono)">${(finalSpy >= 0 ? '+' : '') + finalSpy.toFixed(1) + '%'}</text>
+        </g>
+        <g class="crosshair">
+          <line class="cx-v" y1="${PAD.t}" y2="${H - PAD.b}" stroke="var(--text-primary)" stroke-width="1" opacity="0.25"/>
+          <circle class="cx-p" r="4" fill="var(--accent)" stroke="var(--bg-secondary)" stroke-width="1.5"/>
+          <circle class="cx-s" r="3.5" fill="var(--text-tertiary)" stroke="var(--bg-secondary)" stroke-width="1.5"/>
+        </g>
+      </svg>
+      ${legendRow}
+      <div class="bnch-tooltip" id="${chartId}-tt"></div>
+    </div>
+  </div>`;
+}
+
+// Hover handlers for benchmark chart (assigned once, idempotent)
+window.__bnchHover = function(id, ev) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const rows = JSON.parse(el.getAttribute('data-rows').replace(/&#39;/g, "'"));
+  const svg = el.querySelector('svg');
+  const rect = svg.getBoundingClientRect();
+  const scaleX = rect.width / 880;
+  const scaleY = rect.height / 220;
+  const xInSvg = (ev.clientX - rect.left) / scaleX;
+  let best = rows[0], bestD = Infinity;
+  for (let i = 0; i < rows.length; i++) {
+    const d = Math.abs(rows[i].x - xInSvg);
+    if (d < bestD) { bestD = d; best = rows[i]; }
+  }
+  el.classList.add('is-hovering');
+  const cx = svg.querySelector('.cx-v');
+  const cp = svg.querySelector('.cx-p');
+  const cs = svg.querySelector('.cx-s');
+  cx.setAttribute('x1', best.x); cx.setAttribute('x2', best.x);
+  cp.setAttribute('cx', best.x); cp.setAttribute('cy', best.yP);
+  cs.setAttribute('cx', best.x); cs.setAttribute('cy', best.yS);
+  const tt = document.getElementById(id + '-tt');
+  const spread = best.port - best.spy;
+  const spreadArrow = spread > 0.0001 ? '▲' : spread < -0.0001 ? '▼' : '●';
+  const spreadColor = spread > 0.0001 ? 'var(--green)' : spread < -0.0001 ? 'var(--red)' : 'var(--text-tertiary)';
+  tt.innerHTML =
+    '<div class="tt-date">' + best.date + '</div>' +
+    '<div class="tt-row"><span class="tt-label"><span class="tt-swatch" style="background:var(--accent)"></span>Portfolio</span>' +
+    '<span style="color:var(--text-primary);font-weight:600">' + (best.port >= 0 ? '+' : '') + best.port.toFixed(2) + '%</span></div>' +
+    '<div class="tt-row"><span class="tt-label"><span class="tt-swatch" style="background:var(--text-tertiary)"></span>S&amp;P 500</span>' +
+    '<span style="color:var(--text-secondary)">' + (best.spy >= 0 ? '+' : '') + best.spy.toFixed(2) + '%</span></div>' +
+    '<div class="tt-row tt-spread"><span class="tt-label">Alpha</span>' +
+    '<span style="color:' + spreadColor + ';font-weight:600">' + spreadArrow + ' ' + (spread >= 0 ? '+' : '') + spread.toFixed(2) + '%</span></div>';
+  tt.style.left = (best.x * scaleX) + 'px';
+  tt.style.top = (((best.yP + best.yS) / 2) * scaleY) + 'px';
+  tt.classList.add('show');
+};
+window.__bnchLeave = function(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.remove('is-hovering');
+  const tt = document.getElementById(id + '-tt');
+  if (tt) tt.classList.remove('show');
+};
+
+// ══════════════════════════════════════════════════════════════════════
+// 2. Concentration by Underlying — for the Risk tab
+// ══════════════════════════════════════════════════════════════════════
+// items: [{ symbol, marketValue, pctOfNlv, strategies: [...], strategyBreakdown?: [{strategy, marketValue}] }]
+// opts: { cap?: number (default 6) — the underlying-concentration cap from riskGates }
+function renderConcentrationByUnderlying(items, opts) {
+  opts = opts || {};
+  const title = opts.title || 'Concentration by Underlying';
+  const capPct = opts.cap != null ? opts.cap : 6;
+
+  if (!items || !items.length) {
+    return `<div class="card">
+      <div class="ct-head"><div class="ct-head-left"><span class="ct-title">${esc(title)}</span></div></div>
+      <div class="es"><div class="es-glyph">— — —</div><div class="es-msg">No open positions</div></div>
+    </div>`;
+  }
+
+  const sorted = items.slice().sort(function(a, b) { return (b.pctOfNlv || 0) - (a.pctOfNlv || 0); });
+  const top = sorted[0];
+  const uniqueStrats = new Set();
+  sorted.forEach(function(r) { (r.strategies || []).forEach(function(s) { uniqueStrats.add(s); }); });
+  const maxDisplay = Math.max(capPct * 2, top.pctOfNlv * 1.2, 10);
+
+  const _fmtDollars = function(v) {
+    const abs = Math.abs(v);
+    if (abs >= 1000000) return '$' + (abs / 1000000).toFixed(2) + 'M';
+    if (abs >= 10000) return '$' + Math.round(abs).toLocaleString();
+    return '$' + Math.round(abs).toLocaleString();
+  };
+
+  const rows = sorted.map(function(item) {
+    const strategies = item.strategies || ['OTHER'];
+    const breakdown = item.strategyBreakdown || strategies.map(function(s) {
+      return { strategy: s, marketValue: item.marketValue / strategies.length };
+    });
+    const totalMv = breakdown.reduce(function(s, b) { return s + Math.abs(b.marketValue || 0); }, 0) || 1;
+    const barFillPct = (item.pctOfNlv / maxDisplay) * 100;
+
+    const segs = breakdown
+      .filter(function(b) { return b.marketValue && b.marketValue !== 0; })
+      .sort(function(a, b) { return Math.abs(b.marketValue) - Math.abs(a.marketValue); })
+      .map(function(b) {
+        const segPctOfBar = (Math.abs(b.marketValue) / totalMv) * barFillPct;
+        const c = stratColors[b.strategy] || '#666';
+        return '<div class="conc-seg" style="width:' + segPctOfBar.toFixed(2) + '%;background:' + c + '" title="' + esc(b.strategy) + ': ' + _fmtDollars(b.marketValue) + '"></div>';
+      }).join('');
+
+    const capPos = (capPct / maxDisplay) * 100;
+    const overCap = item.pctOfNlv > capPct;
+
+    return `<div class="conc-row">
+      <div class="conc-symbol">${esc(item.symbol)}</div>
+      <div class="conc-bar-wrap">
+        <div class="conc-bar-track">${segs}</div>
+        <div class="conc-cap-tick" style="left:${capPos}%"></div>
+      </div>
+      <div class="conc-nums">
+        <span class="conc-pct" style="color:${overCap ? 'var(--red)' : 'var(--text-primary)'}">${item.pctOfNlv.toFixed(1)}%</span>
+        <span class="conc-dollars">${_fmtDollars(item.marketValue)}</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  const legendStrats = Array.from(uniqueStrats);
+  const legend = legendStrats.map(function(s) {
+    return `<span class="conc-legend-item"><span class="conc-legend-swatch" style="background:${stratColors[s] || '#666'}"></span>${esc(s)}</span>`;
+  }).join('');
+
+  const headlineSpread = top.pctOfNlv - (sorted[1] ? sorted[1].pctOfNlv : 0);
+
+  return `<div class="card">
+    <div class="ct-head">
+      <div class="ct-head-left">
+        <span class="ct-title">${esc(title)}</span>
+        <span class="ct-sub">${sorted.length} symbols</span>
+      </div>
+      <div class="ct-summary">
+        <span class="ct-summary-key">Top</span>
+        <span style="color:var(--text-primary);font-weight:600">${esc(top.symbol)}</span>
+        <span style="color:var(--text-secondary)">${top.pctOfNlv.toFixed(1)}%</span>
+        ${sorted.length > 1 ? deltaPill(headlineSpread, function(v){return (v>=0?'+':'')+v.toFixed(1)+'%';}) : ''}
+      </div>
+    </div>
+    ${rows}
+    <div class="conc-legend">
+      ${legend}
+      <span style="margin-left:auto;color:var(--yellow);letter-spacing:0.3px">│ = ${capPct}% cap</span>
+    </div>
+  </div>`;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 3. Per-Strategy Theta / Margin Efficiency — for the Risk tab
+// ══════════════════════════════════════════════════════════════════════
+// items: [{ strategy, dailyTheta, marginUsed }]
+function renderThetaEfficiency(items, opts) {
+  opts = opts || {};
+  const title = opts.title || 'Theta / Margin Efficiency';
+
+  if (!items || !items.length) {
+    return `<div class="card">
+      <div class="ct-head"><div class="ct-head-left"><span class="ct-title">${esc(title)}</span></div></div>
+      <div class="es"><div class="es-glyph">— — —</div><div class="es-msg">Waiting for Greeks snapshot</div></div>
+    </div>`;
+  }
+
+  const enriched = items.map(function(item) {
+    const theta = item.dailyTheta || 0;
+    const margin = Math.max(1, item.marginUsed || 0);
+    const ratio = theta / (margin / 1000);
+    return {
+      strategy: item.strategy,
+      dailyTheta: theta,
+      marginUsed: item.marginUsed || 0,
+      thetaPer1k: ratio,
+      isBurning: (item.marginUsed || 0) > 100 && theta <= 0,
+    };
+  });
+
+  enriched.sort(function(a, b) { return b.thetaPer1k - a.thetaPer1k; });
+
+  const maxAbs = Math.max.apply(null, [1].concat(enriched.map(function(e) { return Math.abs(e.thetaPer1k); })));
+  const hasNeg = enriched.some(function(e) { return e.thetaPer1k < 0; });
+  const zeroPos = hasNeg ? 50 : 0;
+
+  const rows = enriched.map(function(e) {
+    const c = stratColors[e.strategy] || '#666';
+    const cls = e.thetaPer1k >= 0 ? 'pos' : 'neg';
+    const barW = (Math.abs(e.thetaPer1k) / maxAbs) * (hasNeg ? 50 : 100);
+    const barLeft = e.thetaPer1k >= 0 ? zeroPos : (zeroPos - barW);
+    const thetaLabel = (e.dailyTheta >= 0 ? '+' : '') + '$' + e.dailyTheta.toFixed(0);
+    const marginLabel = '$' + Math.round(e.marginUsed).toLocaleString();
+
+    return `<div class="theta-row">
+      <div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span class="badge" style="background:${c}22;color:${c};font-size:10px;font-weight:600;padding:2px 8px;border-radius:3px;letter-spacing:0.2px">${esc(e.strategy)}</span>
+          ${e.isBurning ? '<span class="theta-flag">BURN</span>' : ''}
+        </div>
+        <div class="theta-meta">
+          <span class="theta-dollars">${thetaLabel}/d</span>
+          <span>&middot;</span>
+          <span>${marginLabel} margin</span>
+        </div>
+      </div>
+      <div class="theta-bar-wrap">
+        <div class="theta-bar-track">
+          <div class="theta-bar-axis"></div>
+          ${hasNeg ? '<div class="theta-bar-zero" style="left:' + zeroPos + '%"></div>' : ''}
+          <div class="theta-bar ${cls}" style="left:${barLeft.toFixed(2)}%;width:${barW.toFixed(2)}%"></div>
+        </div>
+      </div>
+      <div>
+        <div class="theta-value ${cls}">${e.thetaPer1k >= 0 ? '+' : '−'}$${Math.abs(e.thetaPer1k).toFixed(2)}</div>
+        <div class="theta-value-unit" style="text-align:right">PER $1K</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const best = enriched[0];
+
+  return `<div class="card">
+    <div class="ct-head">
+      <div class="ct-head-left">
+        <span class="ct-title">${esc(title)}</span>
+        <span class="ct-sub">${enriched.length} strategies</span>
+      </div>
+      <div class="ct-summary">
+        <span class="ct-summary-key">Best</span>
+        <span style="color:var(--text-primary);font-weight:600">${esc(best.strategy)}</span>
+        <span style="color:${best.thetaPer1k >= 0 ? 'var(--accent-hover)' : 'var(--red)'};font-family:var(--mono);font-weight:600">${best.thetaPer1k >= 0 ? '+' : '−'}$${Math.abs(best.thetaPer1k).toFixed(2)}/$1k</span>
+      </div>
+    </div>
+    ${rows}
+  </div>`;
+}
+
 function svgLineChart(data, {width=600, height=200, color='var(--accent)', yLabel='', showDots=true, baseline=true, chartId='', labels=[]} = {}) {
   if (!data.length) return '<div style="padding:40px;text-align:center;color:var(--text-tertiary);font-size:11px">No data</div>';
   // Normalize: callers may pass [number, ...] + a labels[] array, or [{y, label}, ...] directly.
@@ -4697,6 +5280,7 @@ views['venture-ibkr'] = async () => {
         <th style="${_hPad};text-align:left" title="Contract symbol, put/call, and strike price">Symbol</th>
         <th style="${_hPad};text-align:center" title="LONG (positive qty) or SHORT (negative qty)">Side</th>
         <th style="${_hPad};text-align:center" title="Option expiration date (MM/DD)">Expiry</th>
+        <th style="${_hPad};text-align:center" title="Days to expiration. Red <= 7d, yellow <= 21d. Options traders manage risk on the DTE clock — promoted to a primary column.">DTE</th>
         <th style="${_hPad};text-align:right" title="Number of contracts. Negative = short position">Qty</th>
         <th style="${_hPad};text-align:right" title="Total cost basis: avgCost x abs(qty). For shorts, this is the credit received">Cost</th>
         <th style="${_hPad};text-align:right" title="Current market value: marketPrice x qty x multiplier">Value</th>
@@ -4704,7 +5288,6 @@ views['venture-ibkr'] = async () => {
         <th style="${_hPad};text-align:right" title="P&L as % of cost basis: unrealizedPnl / abs(cost) x 100">P&L %</th>
         <th style="${_hPad};text-align:right" title="Position delta: per-contract delta x qty. Positive = bullish, negative = bearish">Delta</th>
         <th style="${_hPad};text-align:right" title="Position theta: per-contract theta x qty. Positive = collecting time decay daily">Theta</th>
-        <th style="${_hPad};text-align:right" title="Days to expiration. Red < 7d, yellow < 21d">DTE</th>
         <th style="${_hPad};text-align:right" title="Days in trade: calendar days since fill date. Shows -- if no matching trade found">DIT</th>
         <th style="${_hPad};text-align:right" title="Implied volatility as a percentage">IV</th>
       </tr></thead>
@@ -4734,6 +5317,7 @@ views['venture-ibkr'] = async () => {
           </td>
           <td style="${hSt};text-align:center;color:var(--text-tertiary);font-size:9px">--</td>
           <td style="${hSt};text-align:center;color:var(--text-tertiary);font-size:10px">${gExpiry}</td>
+          <td style="${hSt};text-align:center;font-weight:700;color:${(gDte||0) <= 7 ? 'var(--red)' : (gDte||0) <= 21 ? 'var(--yellow)' : 'var(--text-primary)'}">${gDte || '-'}${typeof gDte === 'number' ? '<span style="font-size:9px;color:var(--text-tertiary);font-weight:500;margin-left:2px">d</span>' : ''}</td>
           <td style="${hSt};text-align:right;color:var(--text-tertiary)">${gQty}</td>
           <td style="${hSt};text-align:right;color:var(--text-tertiary)">${_fmtDollar(gAvgCost)}</td>
           <td style="${hSt};text-align:right;color:var(--text-tertiary)">${_fmtDollar(gMktVal)}</td>
@@ -4741,7 +5325,6 @@ views['venture-ibkr'] = async () => {
           <td style="${hSt};text-align:right;color:${_pnlPctColor(gPnl, gAvgCost)}">${_fmtPnlPct(gPnl, gAvgCost)}</td>
           <td style="${hSt};text-align:right">${gDelta >= 0 ? '+' : ''}${gDelta.toFixed(3)}</td>
           <td style="${hSt};text-align:right;color:${gTheta >= 0 ? 'var(--green)' : 'var(--red)'}">${gTheta >= 0 ? '+' : ''}${gTheta.toFixed(3)}</td>
-          <td style="${hSt};text-align:right;color:${(gDte||0) <= 7 ? 'var(--red)' : (gDte||0) <= 21 ? 'var(--yellow)' : 'var(--text-secondary)'}">${gDte || '-'}</td>
           <td style="${hSt};text-align:right;color:var(--text-tertiary);font-size:10px">--</td>
           <td style="${hSt};text-align:right;color:var(--text-tertiary);font-size:10px">--</td>
         </tr>`;
@@ -4758,6 +5341,7 @@ views['venture-ibkr'] = async () => {
           <td style="padding:4px 8px 4px 28px;font-weight:500;font-size:11px">${esc(p.symbol)}${p.right ? ' ' + p.right : ''}${p.strike ? ' ' + p.strike : ''}</td>
           <td style="${_lPad};text-align:center;font-size:9px;color:${qty > 0 ? 'var(--green)' : 'var(--red)'}">${qty > 0 ? 'LONG' : 'SHORT'}</td>
           <td style="${_lPad};text-align:center;font-size:10px;color:var(--text-tertiary)">${p.expiry ? p.expiry.slice(4,6) + '/' + p.expiry.slice(6) : ''}</td>
+          <td style="${_lPad};text-align:center;${_mono};font-weight:600;color:${(p.dte||0) <= 7 ? 'var(--red)' : (p.dte||0) <= 21 ? 'var(--yellow)' : 'var(--text-primary)'}">${p.dte || '-'}${typeof p.dte === 'number' ? '<span style="font-size:9px;color:var(--text-tertiary);font-weight:500;margin-left:2px">d</span>' : ''}</td>
           <td style="${lSt};text-align:right">${qty}</td>
           <td style="${lSt};text-align:right">${_fmtDollar(legCost)}</td>
           <td style="${lSt};text-align:right">${_fmtDollar(legValue)}</td>
@@ -4765,7 +5349,6 @@ views['venture-ibkr'] = async () => {
           <td style="${lSt};text-align:right;color:${_pnlPctColor(legPnl, legCost)}">${_fmtPnlPct(legPnl, legCost)}</td>
           <td style="${lSt};text-align:right">${posDelta >= 0 ? '+' : ''}${posDelta.toFixed(3)}</td>
           <td style="${lSt};text-align:right;color:${posTheta >= 0 ? 'var(--green)' : 'var(--red)'}">${posTheta >= 0 ? '+' : ''}${posTheta.toFixed(3)}</td>
-          <td style="${_lPad};text-align:right;color:${(p.dte||0) <= 7 ? 'var(--red)' : (p.dte||0) <= 21 ? 'var(--yellow)' : 'var(--text-secondary)'}">${p.dte || '-'}</td>
           <td style="${_lPad};text-align:right;font-size:10px;color:var(--text-tertiary)">${dit === '--' ? '--' : dit + 'd'}</td>
           <td style="${_lPad};text-align:right;${_mono};font-size:10px;color:var(--text-tertiary)">${p.iv ? (p.iv * 100).toFixed(1) + '%' : '-'}</td>
         </tr>`;
@@ -4786,6 +5369,7 @@ views['venture-ibkr'] = async () => {
           <td style="${tSt};color:var(--text-primary)">TOTAL (${positions.length} legs)</td>
           <td style="${tSt};text-align:center;color:var(--text-tertiary);font-size:9px">--</td>
           <td style="${tSt};text-align:center;color:var(--text-tertiary)">--</td>
+          <td style="${tSt};text-align:center;font-weight:700;color:${(tDte||0) <= 7 ? 'var(--red)' : (tDte||0) <= 21 ? 'var(--yellow)' : 'var(--text-primary)'}">${tDte}${typeof tDte === 'number' ? '<span style="font-size:9px;color:var(--text-tertiary);font-weight:500;margin-left:2px">d</span>' : ''}</td>
           <td style="${tSt};text-align:right">${tQty}</td>
           <td style="${tSt};text-align:right">${_fmtDollar(tAvgCost)}</td>
           <td style="${tSt};text-align:right;color:var(--text-tertiary)">${_fmtDollar(tMktVal)}</td>
@@ -4793,7 +5377,6 @@ views['venture-ibkr'] = async () => {
           <td style="${tSt};text-align:right;color:${_pnlPctColor(tPnl, tAvgCost)}">${_fmtPnlPct(tPnl, tAvgCost)}</td>
           <td style="${tSt};text-align:right">${tDelta >= 0 ? '+' : ''}${tDelta.toFixed(3)}</td>
           <td style="${tSt};text-align:right;color:${tTheta >= 0 ? 'var(--green)' : 'var(--red)'}">${tTheta >= 0 ? '+' : ''}${tTheta.toFixed(3)}</td>
-          <td style="${tSt};text-align:right;color:${(tDte||0) <= 7 ? 'var(--red)' : (tDte||0) <= 21 ? 'var(--yellow)' : 'var(--text-secondary)'}">${tDte}</td>
           <td style="${tSt};text-align:right;color:var(--text-tertiary)">--</td>
           <td style="${tSt};text-align:right;color:var(--text-tertiary)">--</td>
         </tr>`;
@@ -5791,6 +6374,74 @@ views['venture-ibkr'] = async () => {
       return '';
     })()}
 
+    ${(() => {
+      // Benchmark: portfolio NLV % return vs SPY % return, both normalized to first snapshot date.
+      const snaps = d.snapshots || [];
+      const portfolioSeries = (() => {
+        if (!snaps.length) return [];
+        const base = snaps[0].nlv || 0;
+        if (base <= 0) return [];
+        return snaps.map(s => ({ date: s.date, pctReturn: ((s.nlv - base) / base) * 100 }));
+      })();
+      const spySeriesRaw = d.spySeries || [];
+      const spySeries = (() => {
+        if (!spySeriesRaw.length || !portfolioSeries.length) return [];
+        // Align spy to portfolio start date: find the spy close on/nearest the portfolio's first date
+        const firstDate = portfolioSeries[0].date;
+        const baseEntry = spySeriesRaw.find(r => r.date >= firstDate) || spySeriesRaw[0];
+        const base = baseEntry ? baseEntry.close : 0;
+        if (!base) return [];
+        return spySeriesRaw.map(r => ({ date: r.date, pctReturn: ((r.close - base) / base) * 100 }));
+      })();
+      window._benchmarkCard = renderSpyBenchmarkChart(portfolioSeries, spySeries);
+
+      // Concentration by underlying: aggregate positions[] by root ticker.
+      const concentrationData = (() => {
+        const nlv = (d.account || {}).netLiquidation || 0;
+        if (!positions.length || nlv <= 0) return [];
+        const byUnd = {};
+        for (const p of positions) {
+          let sym = (p.symbol || '').split(/\s+/)[0] || 'UNK';
+          if (!byUnd[sym]) byUnd[sym] = { symbol: sym, marketValue: 0, strategies: new Set(), strategyBreakdown: [] };
+          const mv = Math.abs(p.marketValue || 0);
+          byUnd[sym].marketValue += mv;
+          byUnd[sym].strategies.add(p.strategy || 'OTHER');
+          byUnd[sym].strategyBreakdown.push({ strategy: p.strategy || 'OTHER', marketValue: mv });
+        }
+        return Object.values(byUnd).map(u => ({
+          symbol: u.symbol, marketValue: u.marketValue,
+          pctOfNlv: (u.marketValue / nlv) * 100,
+          strategies: Array.from(u.strategies),
+          strategyBreakdown: u.strategyBreakdown,
+        }));
+      })();
+      window._concentrationCard = renderConcentrationByUnderlying(concentrationData, {
+        cap: ((d.riskGates || {}).underlyingStackCapPct) || 6,
+      });
+
+      // Theta efficiency: dailyTheta per $1k margin, per strategy.
+      // Uses greeks.byStrategy for theta (already computed), sums abs(marketValue) as margin proxy.
+      const thetaData = (() => {
+        const greeksByStrat = ((d.greeks || {}).byStrategy) || {};
+        const stratMv = {};
+        for (const p of positions) {
+          const s = p.strategy || 'OTHER';
+          stratMv[s] = (stratMv[s] || 0) + Math.abs(p.marketValue || 0);
+        }
+        const items = [];
+        const keys = new Set([...Object.keys(greeksByStrat), ...Object.keys(stratMv)]);
+        for (const s of keys) {
+          const theta = (greeksByStrat[s] && greeksByStrat[s].theta) || 0;
+          const mv = stratMv[s] || 0;
+          if (mv < 100 && Math.abs(theta) < 0.5) continue;
+          items.push({ strategy: s, dailyTheta: theta, marginUsed: mv });
+        }
+        return items;
+      })();
+      window._thetaEfficiencyCard = renderThetaEfficiency(thetaData);
+      return '';
+    })()}
+
     <!-- TAB: Portfolio (live trading view) -->
     <div style="display:${(window._ibkrTab || 'portfolio') === 'portfolio' ? 'block' : 'none'}">
       ${kpi}
@@ -5817,6 +6468,7 @@ views['venture-ibkr'] = async () => {
     <div style="display:${(window._ibkrTab || 'portfolio') === 'performance' ? 'block' : 'none'}">
       ${statsRow}
       ${instMetrics}
+      ${window._benchmarkCard ? `<div style="margin-bottom:16px">${window._benchmarkCard}</div>` : ''}
       ${pnlChart}
       ${underwaterChart}
       ${rollingVolChart}
@@ -5843,6 +6495,8 @@ views['venture-ibkr'] = async () => {
       </div>
       ${window._riskGatesCard ? `<div style="margin-top:16px">${window._riskGatesCard}</div>` : ''}
       ${window._bwDeltaByStrategyCard ? `<div style="margin-top:16px">${window._bwDeltaByStrategyCard}</div>` : ''}
+      ${window._concentrationCard ? `<div style="margin-top:16px">${window._concentrationCard}</div>` : ''}
+      ${window._thetaEfficiencyCard ? `<div style="margin-top:16px">${window._thetaEfficiencyCard}</div>` : ''}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
         ${healthPanel}
         <div class="card" style="padding:14px">
