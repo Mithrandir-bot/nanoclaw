@@ -1082,6 +1082,41 @@ function getServices(): ServiceStatus[] {
     services.push({ name: 'IBKR Paper Trading', category: 'Trading', status: 'unconfigured', lastChecked: now });
   }
 
+  // --- IBKR DD Auto-Manager (host-side systemd timer) ---
+  try {
+    const statusFile = path.join(GROUPS_DIR, 'trading', 'trading-bot', 'data', 'dd_status.json');
+    const stateFile = path.join(GROUPS_DIR, 'trading', 'trading-bot', 'data', 'dd_positions.json');
+    const safeParse = (raw: string | null, fallback: object) => {
+      if (!raw || !raw.trim()) return fallback;
+      try { return JSON.parse(raw); } catch { return fallback; }
+    };
+    let ddStatus = 'unconfigured';
+    let ddDetail: string | undefined;
+    if (fs.existsSync(stateFile)) {
+      const state = safeParse(readFileSafe(stateFile), { dds: [] }) as { dds: Array<{ status: string }> };
+      const activeCount = (state.dds || []).filter((d) => d.status === 'active').length;
+      const raw = readFileSafe(statusFile);
+      const snap = raw ? (safeParse(raw, {}) as { updated_at?: string }) : null;
+      if (snap?.updated_at) {
+        const ageMin = Math.round((Date.now() - new Date(snap.updated_at).getTime()) / 60000);
+        if (ageMin <= 20) {
+          ddStatus = 'connected';
+          ddDetail = `${activeCount} active · last run ${ageMin}m ago`;
+        } else {
+          ddStatus = 'disconnected';
+          ddDetail = `Last run ${ageMin}m ago (timer may be stopped)`;
+        }
+      } else {
+        // state file exists but no valid status snapshot yet — timer hasn't run or file is being written
+        ddStatus = 'pending';
+        ddDetail = `${activeCount} DD(s) configured · awaiting first run`;
+      }
+    }
+    services.push({ name: 'IBKR DD Auto-Manager', category: 'Trading', status: ddStatus, detail: ddDetail, lastChecked: now });
+  } catch {
+    services.push({ name: 'IBKR DD Auto-Manager', category: 'Trading', status: 'unconfigured', lastChecked: now });
+  }
+
   // --- GSA API ---
   const gsaKey = process.env.GSA_API_KEY;
   services.push({ name: 'GSA Auctions API', category: 'Trading', status: gsaKey && gsaKey !== 'DEMO_KEY' ? 'connected' : gsaKey === 'DEMO_KEY' ? 'disconnected' : 'unconfigured', detail: gsaKey && gsaKey !== 'DEMO_KEY' ? 'Hourly scan' : gsaKey === 'DEMO_KEY' ? 'Using DEMO_KEY (rate limited)' : undefined, lastChecked: now });
@@ -1789,6 +1824,40 @@ function getVentureIbkr() {
     // Performance metrics (TWR, Sharpe, Sortino, Max DD, CVaR, monthly returns)
     const perfRaw = readJson('performance-metrics.json') || {};
 
+    // Double-diagonal auto-manager read-model + recent audit events.
+    // ddSnap is the single source of truth for UI rendering — the manager
+    // writes it every run, so it mirrors the live state file. We only fall
+    // back to the raw state file when no snapshot exists yet.
+    const ddSnap = readJson('dd_status.json') || { updated_at: null, dds: [] };
+    const ddStateFallback = readJson('dd_positions.json') || { dds: [] };
+    const ddSource = ddSnap.dds && ddSnap.dds.length ? ddSnap : ddStateFallback;
+    let ddAudit: Array<{ ts: string; msg: string }> = [];
+    try {
+      const auditPath = path.join(dataDir, 'dd_audit.log');
+      if (fs.existsSync(auditPath)) {
+        const lines = fs
+          .readFileSync(auditPath, 'utf-8')
+          .split('\n')
+          .filter((l) => l.trim() !== '')
+          .slice(-10)
+          .reverse();
+        ddAudit = lines.map((l) => {
+          const m = l.match(/^\[([^\]]+)\] (.+)$/);
+          return m ? { ts: m[1], msg: m[2] } : { ts: '', msg: l };
+        });
+      }
+    } catch {
+      ddAudit = [];
+    }
+    const ddList = (ddSource.dds || []) as Array<{ status: string }>;
+    const doubleDiagonals = {
+      updatedAt: ddSnap.updated_at,
+      active: ddList.filter((d) => d.status === 'active'),
+      closed: ddList.filter((d) => d.status !== 'active'),
+      configured: ddList.length,
+      audit: ddAudit,
+    };
+
     // Enrich positions with trade entry dates from fills
     const allTrades = tradesData.trades || [];
     const positions = positionsData.positions || [];
@@ -1830,10 +1899,11 @@ function getVentureIbkr() {
       seasonalCalendar,
       performance: perfRaw,
       spySeries,
+      doubleDiagonals,
     };
   } catch (err) {
     console.error('[venture-ibkr]', err);
-    return { account: {}, positions: [], trades: [], tradeSummary: {}, greeks: {}, risk: {}, snapshots: [], todayScan: null, strategyPerf: {}, dailyPnl: {}, strategyPnlToday: {}, strategyPnlSeries: {}, riskGates: {}, seasonalCalendar: {}, performance: {}, spySeries: [] };
+    return { account: {}, positions: [], trades: [], tradeSummary: {}, greeks: {}, risk: {}, snapshots: [], todayScan: null, strategyPerf: {}, dailyPnl: {}, strategyPnlToday: {}, strategyPnlSeries: {}, riskGates: {}, seasonalCalendar: {}, performance: {}, spySeries: [], doubleDiagonals: { updatedAt: null, active: [], closed: [], configured: 0, audit: [] } };
   }
 }
 
