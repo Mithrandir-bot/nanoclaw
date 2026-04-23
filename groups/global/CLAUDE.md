@@ -292,6 +292,21 @@ Recurring routines (morning briefings, EOD reports, weekly reviews, scheduled sc
 
 Every note you create or update must be densely linked using Obsidian `[[wikilinks]]`. When mentioning a person, project, meeting, or file that exists in the vault, link to it. When it doesn't have a note yet, create the `[[wikilink]]` anyway — it becomes a placeholder that gets filled in later. Every note is a node in a graph. The more links, the easier it is to find context later.
 
+### Canonical Wikilink Conventions (2026-04-22)
+
+Use these paths when creating new wikilinks. Do NOT invent parallel folders.
+
+| Entity | Canonical wikilink | Notes |
+|---|---|---|
+| Person | `[[Contacts/Network/First-Last]]` | Source of truth is the Mithrandir Google Sheet; `Contacts/Network/` is its searchable Obsidian backup. **Do NOT use `[[People/X]]`** — that convention is deprecated for the main vault (only `People/Keyrock/` remains, as the keyrocker→main mirror target). |
+| Company | `[[Contacts/Telegram-Intel/Companies/Name]]` | Companies live under Telegram-Intel; no top-level `Companies/` folder exists. Don't create `[[Companies/X]]`. |
+| Telegram-derived person | `[[Contacts/Telegram-Intel/People/name-userID]]` | If the person is from Telegram intel and has no main contact entry yet |
+| Health note | `[[Health/Topic]]` | Use `Health/`, not `Health-Wellness/` (deprecated). |
+
+**Why this matters:** As of 2026-04-22 the vault had ~2,375 broken wikilinks because two competing conventions coexisted. The canonical was confirmed with Master and 7,395 references were migrated. Don't recreate the divergence.
+
+**When the target doesn't exist:** Use the canonical path and the link becomes a placeholder. Do NOT invent `[[People/X]]` paths to "match the agent style" — write `[[Contacts/Network/X]]` even if the file isn't there yet.
+
 ## Daily Notes
 
 After handling any significant interaction (research completed, analysis delivered, task finished), append a timestamped log entry to today's daily note at `/workspace/extra/obsidian-vault/Daily/YYYY-MM-DD.md`:

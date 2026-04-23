@@ -36,6 +36,7 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     ffmpeg \
     unzip \
+    sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install yt-dlp for YouTube extraction
