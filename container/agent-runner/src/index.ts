@@ -29,6 +29,11 @@ interface ContainerInput {
   assistantName?: string;
   secrets?: Record<string, string>;
   model?: string;
+  // SDK thinking-effort knob. 'low' for routine scheduled tasks (massive token
+  // savings), 'medium' default for interactive, 'high' for research deep-dives.
+  effort?: 'low' | 'medium' | 'high' | 'max';
+  // Hard turn cap to prevent runaway loops on scheduled tasks.
+  maxTurns?: number;
 }
 
 interface ContainerOutput {
@@ -516,13 +521,30 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
-  const activeModel = process.env.CLAUDE_MODEL || 'claude-opus-4-6';
-  log(`Model: ${activeModel}`);
+  // Per-task model routing: input.model wins, then env var, then Opus default.
+  const activeModel = containerInput.model || process.env.CLAUDE_MODEL || 'claude-opus-4-6';
+  // Effort: scheduled tasks default to 'low' (token savings on routine work),
+  // interactive sessions default to 'medium'. Caller can override via input.
+  const activeEffort = containerInput.effort
+    || (containerInput.isScheduledTask ? 'low' : 'medium');
+  // Turn limit: stricter for unattended scheduled tasks, permissive for interactive.
+  const activeMaxTurns = containerInput.maxTurns
+    || (containerInput.isScheduledTask ? 30 : 50);
+  log(`Model: ${activeModel} | effort: ${activeEffort} | maxTurns: ${activeMaxTurns}`);
+
+  // OpenRouter MCP is wired only when the API key is available (host injects it via stdin secrets).
+  const openrouterMcpPath = path.join(__dirname, 'openrouter-mcp-stdio.js');
+  const openrouterAvailable = !!sdkEnv.OPENROUTER_API_KEY && fs.existsSync(openrouterMcpPath);
+  if (openrouterAvailable) {
+    log('OpenRouter MCP enabled');
+  }
 
   for await (const message of query({
     prompt: stream,
     options: {
       model: activeModel,
+      effort: activeEffort,
+      maxTurns: activeMaxTurns,
       cwd: '/workspace/group',
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
@@ -538,7 +560,8 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        ...(openrouterAvailable ? ['mcp__openrouter__*'] : []),
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -554,6 +577,13 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
+        ...(openrouterAvailable ? {
+          openrouter: {
+            command: 'node',
+            args: [openrouterMcpPath],
+            env: { OPENROUTER_API_KEY: sdkEnv.OPENROUTER_API_KEY as string },
+          },
+        } : {}),
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
