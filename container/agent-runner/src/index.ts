@@ -369,15 +369,26 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
   return lines.join('\n');
 }
 
+// Set when the container starts handling its query — we only honor _close
+// sentinels written AFTER this point, so a stale root-owned sentinel left
+// behind by a previous host process can't terminate this run before it begins.
+let containerQueryStartMs = 0;
+
 /**
  * Check for _close sentinel.
  */
 function shouldClose(): boolean {
-  if (fs.existsSync(IPC_INPUT_CLOSE_SENTINEL)) {
-    try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
-    return true;
+  if (!fs.existsSync(IPC_INPUT_CLOSE_SENTINEL)) return false;
+  // Ignore sentinels older than this run — defends against root-owned stale files
+  // the container can't unlink (host runs as root, container runs as node).
+  if (containerQueryStartMs > 0) {
+    try {
+      const mtime = fs.statSync(IPC_INPUT_CLOSE_SENTINEL).mtimeMs;
+      if (mtime < containerQueryStartMs) return false;
+    } catch { /* fall through */ }
   }
-  return false;
+  try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore — perms may prevent it */ }
+  return true;
 }
 
 /**
@@ -497,6 +508,11 @@ async function runQuery(
 
   let newSessionId: string | undefined;
   let lastAssistantUuid: string | undefined;
+  // Cache the most recent substantive assistant text. The SDK's `result.result`
+  // field is null when the final assistant action was a tool_use (e.g. TodoWrite
+  // immediately after emitting a long-form report) — without this fallback the
+  // host receives result=null and never delivers the actual response to the user.
+  let lastAssistantText: string | null = null;
   let messageCount = 0;
   let resultCount = 0;
 
@@ -530,8 +546,11 @@ async function runQuery(
   const activeEffort = containerInput.effort
     || (containerInput.isScheduledTask ? 'low' : 'medium');
   // Turn limit: stricter for unattended scheduled tasks, permissive for interactive.
+  // Interactive sessions raised from 50 → 100 because browser-heavy research tasks
+  // (each navigation/screenshot/scroll/extract = a turn) routinely exhaust 50 before
+  // the agent reaches the final report-emission turn.
   const activeMaxTurns = containerInput.maxTurns
-    || (containerInput.isScheduledTask ? 30 : 50);
+    || (containerInput.isScheduledTask ? 30 : 100);
   log(`Model: ${activeModel} | effort: ${activeEffort} | maxTurns: ${activeMaxTurns}`);
 
   // OpenRouter MCP is wired only when the API key is available (host injects it via stdin secrets).
@@ -599,6 +618,21 @@ async function runQuery(
 
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
+      // Capture text content from this assistant turn for the result-fallback path.
+      const assistantContent = (message as any).message?.content;
+      if (Array.isArray(assistantContent)) {
+        const textParts: string[] = [];
+        for (const block of assistantContent) {
+          if (block && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string') {
+            textParts.push(block.text);
+          }
+        }
+        if (textParts.length > 0) {
+          const joined = textParts.join('\n').trim();
+          // Ignore short synthetic continuation tokens like "No response requested."
+          if (joined.length > 50) lastAssistantText = joined;
+        }
+      }
     }
 
     // Track token usage from assistant messages
@@ -625,7 +659,13 @@ async function runQuery(
 
     if (message.type === 'result') {
       resultCount++;
-      const textResult = 'result' in message ? (message as { result?: string }).result : null;
+      const sdkResult = 'result' in message ? (message as { result?: string }).result : null;
+      // Fallback to the most recent substantive assistant text when the SDK didn't
+      // surface one (typically because the final assistant turn was a tool_use).
+      const textResult = sdkResult || lastAssistantText;
+      if (!sdkResult && lastAssistantText) {
+        log(`SDK result was null; falling back to cached lastAssistantText (${lastAssistantText.length} chars)`);
+      }
       // Check for cost_usd in result message
       const resultMsg = message as any;
       const costUsd = resultMsg.cost_usd || resultMsg.total_cost_usd || 0;
@@ -704,7 +744,14 @@ async function main(): Promise<void> {
   let sessionId = containerInput.sessionId || undefined; // treat empty string as no session
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
-  // Clean up stale _close sentinel from previous container runs
+  // Anchor before stale-cleanup so shouldClose() ignores any sentinel we can't unlink.
+  containerQueryStartMs = Date.now();
+
+  // Clean up stale _close sentinel from previous container runs.
+  // chmod first because the host writes it as root and we run as node — the chmod
+  // itself may fail (we're not the owner), but we still try the unlink and rely on
+  // the mtime check in shouldClose() as the real defense.
+  try { fs.chmodSync(IPC_INPUT_CLOSE_SENTINEL, 0o666); } catch { /* may not exist or perm denied */ }
   try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
 
   // Build initial prompt (drain any pending IPC messages too)

@@ -122,7 +122,7 @@ if [ "$REBUILD_NEEDED" = true ]; then
   if docker builder prune -f > /dev/null 2>&1 && ./container/build.sh > /dev/null 2>&1; then
     touch "$MARKER"
     # Sync agent-runner to all groups
-    for group in main ai-research business-ideas health-wellness trading crypto contacts; do
+    for group in main ai-research business-ideas health-wellness trading crypto contacts real-estate keyrocker; do
       dest="data/sessions/$group/agent-runner-src/index.ts"
       mcp="data/sessions/$group/agent-runner-src/ipc-mcp-stdio.ts"
       [ -f "$dest" ] && cp container/agent-runner/src/index.ts "$dest"
