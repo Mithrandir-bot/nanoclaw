@@ -21,6 +21,7 @@ import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import { sendPoolMessage } from './channels/telegram.js';
 import { RegisteredGroup } from './types.js';
+import { handleLinkedInIpc } from './linkedin-host.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
@@ -624,7 +625,15 @@ export async function processTaskIpc(
       }
       break;
 
-    default:
-      logger.warn({ type: data.type }, 'Unknown IPC task type');
+    default: {
+      const handledByLinkedIn = await handleLinkedInIpc(
+        data as unknown as Record<string, unknown>,
+        sourceGroup,
+        DATA_DIR,
+      );
+      if (!handledByLinkedIn) {
+        logger.warn({ type: data.type }, 'Unknown IPC task type');
+      }
+    }
   }
 }

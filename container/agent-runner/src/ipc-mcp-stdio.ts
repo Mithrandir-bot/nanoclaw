@@ -1148,6 +1148,152 @@ server.tool(
   },
 );
 
+// ─────────────────────────────────────────────────────────────────────────
+// LinkedIn integration tools — keyrocker group only.
+// Host-side handler lives in .claude/skills/linkedin-keyrocker/host.ts.
+// Tools write to /workspace/ipc/tasks/ and poll /workspace/ipc/linkedin_results/.
+// ─────────────────────────────────────────────────────────────────────────
+
+if (groupFolder === 'keyrocker') {
+  const LINKEDIN_RESULTS_DIR = path.join(IPC_DIR, 'linkedin_results');
+
+  async function waitForLinkedInResult(
+    requestId: string,
+    maxWaitMs = 240_000,
+  ): Promise<{ success: boolean; message: string; data?: unknown }> {
+    const resultFile = path.join(LINKEDIN_RESULTS_DIR, `${requestId}.json`);
+    const pollMs = 1000;
+    let elapsed = 0;
+    while (elapsed < maxWaitMs) {
+      if (fs.existsSync(resultFile)) {
+        try {
+          const r = JSON.parse(fs.readFileSync(resultFile, 'utf-8'));
+          fs.unlinkSync(resultFile);
+          return r;
+        } catch (err) {
+          return { success: false, message: `Failed to read LinkedIn result: ${err}` };
+        }
+      }
+      await new Promise((res) => setTimeout(res, pollMs));
+      elapsed += pollMs;
+    }
+    return { success: false, message: 'LinkedIn request timed out (240s)' };
+  }
+
+  async function callLinkedIn(
+    type: string,
+    payload: Record<string, unknown>,
+  ): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }> {
+    const requestId = `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    writeIpcFile(TASKS_DIR, {
+      type,
+      requestId,
+      ...payload,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+    const result = await waitForLinkedInResult(requestId);
+    const body =
+      result.data !== undefined
+        ? `${result.message}\n\n${JSON.stringify(result.data, null, 2)}`
+        : result.message;
+    return {
+      content: [{ type: 'text' as const, text: body }],
+      isError: !result.success,
+    };
+  }
+
+  server.tool(
+    'linkedin_list_recent_messages',
+    `List your recent LinkedIn DM threads. Sponsored InMail is filtered out.
+
+Returns sender name, headline, last message snippet, unread state, and timestamp per thread. Use this on the scheduled digest tick to summarize new DMs since the last check.`,
+    {
+      limit: z.number().int().min(1).max(30).optional().describe('Max threads to return (default 15)'),
+      unread_only: z.boolean().optional().describe('If true, only return threads with unread messages'),
+    },
+    async (args) =>
+      callLinkedIn('linkedin_list_recent_messages', {
+        limit: args.limit,
+        unread_only: args.unread_only,
+      }),
+  );
+
+  server.tool(
+    'linkedin_read_thread',
+    'Read the full message history of one LinkedIn DM thread.',
+    {
+      thread_url: z.string().describe('Thread URL from list_recent_messages (e.g. https://www.linkedin.com/messaging/thread/...)'),
+      limit: z.number().int().min(1).max(50).optional().describe('Max messages to return (default 20)'),
+    },
+    async (args) =>
+      callLinkedIn('linkedin_read_thread', {
+        thread_url: args.thread_url,
+        limit: args.limit,
+      }),
+  );
+
+  server.tool(
+    'linkedin_recent_activity',
+    `Fetch the recent posts published by a specific LinkedIn profile, or by Master if no profile is specified.
+
+Pass profile_url="me" (or omit it) to get Master's own posts — useful when Master asks "what are my latest posts?" or "check my writing style". Do NOT guess Master's public slug; the tool resolves it from the logged-in session.
+
+For other people, accept any of: full LinkedIn URL, the public slug, or a urn:li:fsd_profile:... URN.`,
+    {
+      profile_url: z
+        .string()
+        .optional()
+        .describe(
+          'Profile URL, slug, URN, or "me" / "self" for Master\'s own profile. Defaults to "me" if omitted.',
+        ),
+      limit: z.number().int().min(1).max(20).optional().describe('Max posts to return (default 10)'),
+    },
+    async (args) =>
+      callLinkedIn('linkedin_recent_activity', {
+        profile_url: args.profile_url ?? 'me',
+        limit: args.limit,
+      }),
+  );
+
+  server.tool(
+    'linkedin_get_profile',
+    `Look up a LinkedIn profile. Returns name, headline, current role/company, location.
+
+Pass query="me" (or omit it) for Master's own profile. For others, accept full URL, public slug, or urn:li:fsd_profile:... URN. Do NOT guess Master's slug.`,
+    {
+      query: z
+        .string()
+        .optional()
+        .describe('Profile URL, slug, URN, or "me" / "self" for Master\'s own profile.'),
+    },
+    async (args) => callLinkedIn('linkedin_get_profile', { query: args.query ?? 'me' }),
+  );
+
+  server.tool(
+    'linkedin_get_company',
+    'Look up a LinkedIn company page by URL or slug. Returns name, industry, size, description.',
+    {
+      query: z.string().describe('Company URL or slug (e.g. "acme-inc" or full URL)'),
+    },
+    async (args) => callLinkedIn('linkedin_get_company', { query: args.query }),
+  );
+
+  server.tool(
+    'linkedin_search_people',
+    `Search LinkedIn people. Hard-capped at 20 queries/day to dodge the Commercial Use Limit — use sparingly and prefer get_profile when you already have a name+company.`,
+    {
+      query: z.string().describe('Search query (e.g. "VP Engineering at Acme")'),
+      limit: z.number().int().min(1).max(10).optional().describe('Max results (default 5)'),
+    },
+    async (args) =>
+      callLinkedIn('linkedin_search_people', {
+        query: args.query,
+        limit: args.limit,
+      }),
+  );
+}
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);
