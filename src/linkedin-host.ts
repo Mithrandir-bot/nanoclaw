@@ -35,9 +35,13 @@ const callLog: number[] = [];
 
 async function throttle(): Promise<void> {
   const now = Date.now();
-  while (callLog.length && now - callLog[0] > THROTTLE_WINDOW_MS) callLog.shift();
+  while (callLog.length && now - callLog[0] > THROTTLE_WINDOW_MS)
+    callLog.shift();
   if (callLog.length >= THROTTLE_MAX) {
-    logger.info({ recentCalls: callLog.length }, 'LinkedIn velocity throttle — cooling down');
+    logger.info(
+      { recentCalls: callLog.length },
+      'LinkedIn velocity throttle — cooling down',
+    );
     await new Promise((r) => setTimeout(r, THROTTLE_COOLDOWN_MS));
     callLog.length = 0;
   }
@@ -52,7 +56,9 @@ interface QuotaFile {
   count: number;
 }
 
-function checkAndIncrementSearchQuota(): { ok: true } | { ok: false; remaining: 0 } {
+function checkAndIncrementSearchQuota():
+  | { ok: true }
+  | { ok: false; remaining: 0 } {
   const quotaPath = path.join(process.cwd(), 'data', 'linkedin-quota.json');
   const today = new Date().toISOString().slice(0, 10);
   let q: QuotaFile = { date: today, count: 0 };
@@ -158,7 +164,10 @@ function writeResult(
 ): void {
   const resultsDir = path.join(dataDir, 'ipc', sourceGroup, 'linkedin_results');
   fs.mkdirSync(resultsDir, { recursive: true });
-  fs.writeFileSync(path.join(resultsDir, `${requestId}.json`), JSON.stringify(result));
+  fs.writeFileSync(
+    path.join(resultsDir, `${requestId}.json`),
+    JSON.stringify(result),
+  );
 }
 
 /**
@@ -175,7 +184,10 @@ export async function handleLinkedInIpc(
   if (!type?.startsWith('linkedin_')) return false;
 
   if (sourceGroup !== ALLOWED_GROUP) {
-    logger.warn({ sourceGroup, type }, 'LinkedIn IPC rejected: only keyrocker may use this integration');
+    logger.warn(
+      { sourceGroup, type },
+      'LinkedIn IPC rejected: only keyrocker may use this integration',
+    );
     return true;
   }
 
@@ -262,7 +274,10 @@ export async function handleLinkedInIpc(
   if (result.success) {
     logger.info({ type, requestId }, 'LinkedIn request completed');
   } else {
-    logger.error({ type, requestId, message: result.message }, 'LinkedIn request failed');
+    logger.error(
+      { type, requestId, message: result.message },
+      'LinkedIn request failed',
+    );
   }
   return true;
 }
