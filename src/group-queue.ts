@@ -213,13 +213,21 @@ export class GroupQueue {
       fs.mkdirSync(inputDir, { recursive: true });
       // Container runs as `node`; needs write+execute on the dir to unlink drained files
       // owned by root (sticky bit doesn't help since file-owner=root != container-user=node).
-      try { fs.chmodSync(inputDir, 0o777); } catch { /* non-critical */ }
+      try {
+        fs.chmodSync(inputDir, 0o777);
+      } catch {
+        /* non-critical */
+      }
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
       const filepath = path.join(inputDir, filename);
       const tempPath = `${filepath}.tmp`;
       fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
       fs.renameSync(tempPath, filepath);
-      try { fs.chmodSync(filepath, 0o666); } catch { /* non-critical */ }
+      try {
+        fs.chmodSync(filepath, 0o666);
+      } catch {
+        /* non-critical */
+      }
       return true;
     } catch {
       return false;
@@ -237,7 +245,11 @@ export class GroupQueue {
     const closeFile = path.join(inputDir, '_close');
     try {
       fs.mkdirSync(inputDir, { recursive: true });
-      try { fs.chmodSync(inputDir, 0o777); } catch { /* non-critical */ }
+      try {
+        fs.chmodSync(inputDir, 0o777);
+      } catch {
+        /* non-critical */
+      }
       fs.writeFileSync(closeFile, '');
       // Host runs as root; container runs as `node` and needs to unlink this on cleanup.
       fs.chmodSync(closeFile, 0o666);
