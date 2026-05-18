@@ -1721,6 +1721,7 @@ function getVentureIbkr() {
     const risk = readJson('risk-dashboard.json') || {};
     const snapshots = readJson('daily-snapshots.json') || { snapshots: [] };
     const spySeries = (readJson('spy-closes.json') || { series: [] }).series || [];
+    const closedPositions = readJson('closed_positions.json') || { updated_at: null, closed: [] };
 
     // Find most recent scan file
     const scanFiles = fs.readdirSync(dataDir).filter(f => f.startsWith('scan-') && f.endsWith('.json')).sort().reverse();
@@ -1900,10 +1901,11 @@ function getVentureIbkr() {
       performance: perfRaw,
       spySeries,
       doubleDiagonals,
+      closedPositions,
     };
   } catch (err) {
     console.error('[venture-ibkr]', err);
-    return { account: {}, positions: [], trades: [], tradeSummary: {}, greeks: {}, risk: {}, snapshots: [], todayScan: null, strategyPerf: {}, dailyPnl: {}, strategyPnlToday: {}, strategyPnlSeries: {}, riskGates: {}, seasonalCalendar: {}, performance: {}, spySeries: [], doubleDiagonals: { updatedAt: null, active: [], closed: [], configured: 0, audit: [] } };
+    return { account: {}, positions: [], trades: [], tradeSummary: {}, greeks: {}, risk: {}, snapshots: [], todayScan: null, strategyPerf: {}, dailyPnl: {}, strategyPnlToday: {}, strategyPnlSeries: {}, riskGates: {}, seasonalCalendar: {}, performance: {}, spySeries: [], doubleDiagonals: { updatedAt: null, active: [], closed: [], configured: 0, audit: [] }, closedPositions: { updated_at: null, closed: [] } };
   }
 }
 

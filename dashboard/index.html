@@ -5087,6 +5087,8 @@ views['venture-ibkr'] = async () => {
   const dailyPnl = d.dailyPnl || {};
   const scan = d.todayScan;
   const seasonal = d.seasonalCalendar || {};
+  const closedPositions = (d.closedPositions && Array.isArray(d.closedPositions.closed)) ? d.closedPositions.closed : [];
+  const closedPositionsUpdatedAt = d.closedPositions ? d.closedPositions.updated_at : null;
 
   // Core date constant — declared FIRST, used by stale warning, calendar, income tracker, etc.
   const now = new Date();
@@ -5563,6 +5565,45 @@ views['venture-ibkr'] = async () => {
       if (st && st !== 'open') _hasNonOpenStatus = true;
     }
   }
+
+  // Closed Positions card — realized P&L per closure event from IBKR /pa/transactions
+  // Source of truth is IBKR's rpnl.amt (settled by the broker, includes fees).
+  // Backs the weekly-review reconciliation gap that hid the ARM JAN28 120C close for 25 days.
+  const _cpSorted = [...closedPositions].sort((a, b) => (b.close_date || '').localeCompare(a.close_date || ''));
+  const _cpTotalPnl = _cpSorted.reduce((s, c) => s + (Number(c.realized_pnl) || 0), 0);
+  const _cpUpdatedAt = closedPositionsUpdatedAt ? new Date(closedPositionsUpdatedAt) : null;
+  const _cpStaleMin = _cpUpdatedAt ? Math.floor((Date.now() - _cpUpdatedAt.getTime()) / 60000) : null;
+  const _cpStaleLabel = _cpStaleMin == null ? '' : (_cpStaleMin < 60 ? `${_cpStaleMin}m ago` : `${Math.floor(_cpStaleMin/60)}h ${_cpStaleMin%60}m ago`);
+  const closedPositionsCard = _cpSorted.length ? `<div class="card" style="padding:0;overflow:hidden;margin-top:16px">
+    <div style="padding:10px 12px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)">
+      <span style="font-weight:600;font-size:13px">Closed Positions (${_cpSorted.length} events, realized P&amp;L ${fmtPnl(_cpTotalPnl)})</span>
+      <span style="font-size:10px;color:var(--text-tertiary)">${_cpUpdatedAt ? 'Updated ' + _cpStaleLabel : ''}</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:11px;min-width:700px">
+        <thead><tr style="background:var(--bg-secondary)">
+          <th style="padding:6px 10px;text-align:left">Close Date</th>
+          <th style="padding:6px 10px;text-align:left">Symbol</th>
+          <th style="padding:6px 10px;text-align:center" title="Strategy badge inherited from the open position">Strategy</th>
+          <th style="padding:6px 10px;text-align:center" title="L = long-side closure (sold a long), S = short-side closure (covered a short)">Side</th>
+          <th style="padding:6px 10px;text-align:right" title="Realized P&amp;L from IBKR /pa/transactions rpnl (broker-settled, includes fees)">Realized P&amp;L</th>
+        </tr></thead>
+        <tbody>${_cpSorted.slice(0, 50).map(c => {
+          const pnl = Number(c.realized_pnl) || 0;
+          const sc = stratColors[c.strategy] || '#666';
+          const stratBadge = c.strategy ? `<span class="badge" style="background:${sc}22;color:${sc};font-size:9px">${esc(c.strategy)}</span>` : '<span style="color:var(--text-tertiary)">—</span>';
+          return `<tr style="border-bottom:1px solid var(--border-light)">
+            <td style="padding:6px 10px;font-family:var(--mono)">${esc(c.close_date || '')}</td>
+            <td style="padding:6px 10px;font-family:var(--mono)">${esc(c.symbol || c.conid || '')}</td>
+            <td style="padding:6px 10px;text-align:center">${stratBadge}</td>
+            <td style="padding:6px 10px;text-align:center;color:var(--text-tertiary)">${esc(c.side || '')}</td>
+            <td style="padding:6px 10px;text-align:right;font-family:var(--mono);color:${pnlColor(pnl)}">${fmtPnl(pnl)}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>
+    </div>
+    ${_cpSorted.length > 50 ? `<div style="padding:6px 12px;font-size:10px;color:var(--text-tertiary);text-align:right">Showing 50 most recent of ${_cpSorted.length}</div>` : ''}
+  </div>` : '';
 
   const journal = trades.length ? `<div class="card" style="padding:0;overflow:hidden;margin-top:16px">
     <div style="padding:10px 12px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)">
@@ -6653,6 +6694,7 @@ views['venture-ibkr'] = async () => {
 
     <!-- TAB: Journal (trade log) -->
     <div style="display:${(window._ibkrTab || 'portfolio') === 'journal' ? 'block' : 'none'}">
+      ${closedPositionsCard}
       ${journal}
       ${bestWorstTable ? `<div style="margin-top:16px">${bestWorstTable}</div>` : ''}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
