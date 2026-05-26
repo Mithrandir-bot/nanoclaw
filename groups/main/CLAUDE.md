@@ -92,6 +92,18 @@ The **Status Board** at `/workspace/extra/obsidian-vault/Memory/Status-Board.md`
 
 When channels complete work or have questions, they should update the Status Board directly.
 
+### Status Board is Authoritative — Ignore Stale Journal Claims
+
+**Status-Board.md is the single source of truth for current system state.** Daily notes (`Daily/YYYY-MM-DD.md`), Weekly-Consolidation, RESUME.md transcripts, and chat archives are historical journal entries — they describe what was believed at the time of writing, not what is true now.
+
+**Rule:** Before reporting that a system, task, or feature is broken/disabled/down, **check Status-Board.md first**. If Status-Board marks the item RESOLVED (in "Recently Completed" or with a ✅ marker), trust that and proceed with normal operation. Do **not** override Status-Board based on stale daily-note claims or repeated historical citations.
+
+**Bias check:** If 10 daily notes say "X is broken" and Status-Board says "X RESOLVED", the answer is RESOLVED — narrative volume across historical journal entries is not evidence. One authoritative state record beats N repeated stale claims.
+
+**When in genuine doubt:** Attempt the action (call the tool, run the check). Actual tool errors are evidence of current breakage; the absence of recent successful runs is not.
+
+This rule prevents narrative-drift loops where agents refuse to attempt work because old journal entries cite past failures.
+
 ## Vault Structure (Standing Reference)
 
 Standard paths — do NOT re-explain these, they are always available:
