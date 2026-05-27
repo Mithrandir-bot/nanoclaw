@@ -1723,24 +1723,43 @@ function getVentureIbkr() {
     const spySeries = (readJson('spy-closes.json') || { series: [] }).series || [];
     const closedPositions = readJson('closed_positions.json') || { updated_at: null, closed: [] };
 
-    // Find most recent scan file
+    // Find most recent scan file — but only honor it if <48h old to avoid showing stale recommendations
     const scanFiles = fs.readdirSync(dataDir).filter(f => f.startsWith('scan-') && f.endsWith('.json')).sort().reverse();
-    const todayScan = scanFiles.length > 0 ? readJson(scanFiles[0]) : null;
+    let todayScan: unknown = null;
+    if (scanFiles.length > 0) {
+      const latest = scanFiles[0];
+      try {
+        const stat = fs.statSync(path.join(dataDir, latest));
+        const ageHours = (Date.now() - stat.mtimeMs) / 3600000;
+        if (ageHours <= 48) {
+          todayScan = readJson(latest);
+        } else {
+          todayScan = { stale: true, ageHours: Math.round(ageHours), latestFile: latest };
+        }
+      } catch {}
+    }
 
-    // Build strategy performance from closed trades
-    const closedTrades = (tradesData.trades || []).filter((t: { status: string }) => t.status === 'closed');
+    // Build strategy performance from closed positions (authoritative, /pa/transactions-based).
+    // trades.json's 'closed' status only catches the 7-day API window; closedPositions.json
+    // covers all historical closures with realized P&L from IBKR.
+    const closedFromPa = (closedPositions.closed || []) as Array<{ strategy?: string; realized_pnl?: number; close_date?: string; first_seen?: string }>;
     const strategyPerf: Record<string, { trades: number; wins: number; pnl: number; totalHoldDays: number; avgHold: number; winRate: number }> = {};
-    for (const t of closedTrades) {
-      const s = (t as { strategy: string; pnl?: number; holdDays?: number }).strategy;
+    for (const c of closedFromPa) {
+      const s = c.strategy || 'UNKNOWN';
       if (!strategyPerf[s]) strategyPerf[s] = { trades: 0, wins: 0, pnl: 0, totalHoldDays: 0, avgHold: 0, winRate: 0 };
       strategyPerf[s].trades++;
-      if (((t as { pnl?: number }).pnl || 0) > 0) strategyPerf[s].wins++;
-      strategyPerf[s].pnl += (t as { pnl?: number }).pnl || 0;
-      strategyPerf[s].totalHoldDays += (t as { holdDays?: number }).holdDays || 0;
+      if ((c.realized_pnl || 0) > 0) strategyPerf[s].wins++;
+      strategyPerf[s].pnl += c.realized_pnl || 0;
+      // Hold days from first_seen → close_date if both present
+      if (c.first_seen && c.close_date) {
+        const ms = new Date(c.close_date).getTime() - new Date(c.first_seen).getTime();
+        if (ms > 0) strategyPerf[s].totalHoldDays += ms / 86400000;
+      }
     }
     for (const s of Object.values(strategyPerf)) {
       s.winRate = s.trades > 0 ? Math.round((s.wins / s.trades) * 100) : 0;
       s.avgHold = s.trades > 0 ? Math.round(s.totalHoldDays / s.trades) : 0;
+      s.pnl = Math.round(s.pnl * 100) / 100;
     }
 
     // Daily P&L from snapshots
