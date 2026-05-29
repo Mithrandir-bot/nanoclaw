@@ -211,6 +211,15 @@ try {
     CREATE INDEX IF NOT EXISTS idx_wallet_snap_ts ON wallet_snapshots(wallet_id, timestamp);
   `);
 
+  // Migration: add external_balances + partial flag for cross-chain/CEX aggregation
+  // (Hyperliquid USDC, future Solana/Arbitrum, etc.). JSON blob keyed by venue.
+  try {
+    dbWrite.exec(`ALTER TABLE wallet_snapshots ADD COLUMN external_balances TEXT DEFAULT NULL`);
+  } catch { /* already added */ }
+  try {
+    dbWrite.exec(`ALTER TABLE wallet_snapshots ADD COLUMN partial INTEGER DEFAULT 0`);
+  } catch { /* already added */ }
+
   // Seed the wallet if not already added
   const walletExists = dbWrite.prepare("SELECT id FROM wallet_assets WHERE address = ?")
     .get('0x073b227DcA24dE3ae301f5802F4c99444fd58662') as { id: number } | undefined;
@@ -1117,6 +1126,314 @@ function getServices(): ServiceStatus[] {
     services.push({ name: 'IBKR DD Auto-Manager', category: 'Trading', status: 'unconfigured', lastChecked: now });
   }
 
+  // --- Crypto Agent (scheduled-task driven, mirrors the IBKR Trading category) ---
+  try {
+    const cryptoTasks = db.prepare(`
+      SELECT id, name, schedule_value, status, last_run, next_run
+      FROM scheduled_tasks
+      WHERE id IN (
+        'task-1773935672847-oz07uq',
+        'task-1773936349695-x4eozp',
+        'task-1773412617912-rkv6iq',
+        'task-1773157153395-cd9bdj',
+        'task-1773616832-crypto-weekly'
+      ) ORDER BY schedule_value ASC
+    `).all() as Array<{
+      id: string; name: string; schedule_value: string;
+      status: string; last_run: string | null; next_run: string | null;
+    }>;
+    for (const t of cryptoTasks) {
+      let status: ServiceStatus['status'] = 'unconfigured';
+      const parts: string[] = [];
+      if (t.status === 'active') {
+        status = t.last_run ? 'connected' : 'pending';
+        parts.push(`cron ${t.schedule_value}`);
+        if (t.last_run) parts.push(`last ${relativeTime(t.last_run)}`);
+        if (t.next_run) parts.push(`next ${relativeTime(t.next_run)}`);
+      } else {
+        status = 'disconnected';
+        parts.push(t.status);
+      }
+      services.push({
+        name: t.name, category: 'Crypto', status,
+        detail: parts.join(' · '), lastChecked: now,
+      });
+    }
+  } catch (e) {
+    services.push({
+      name: 'Crypto Agent Scanners', category: 'Crypto',
+      status: 'disconnected',
+      detail: `Query failed: ${e instanceof Error ? e.message : 'unknown'}`,
+      lastChecked: now,
+    });
+  }
+
+  // --- HL Paper Trader (funding-rate arbitrage simulation, Phase 2) ---
+  try {
+    const hlStateFile = path.join(GROUPS_DIR, 'trading', 'hyperliquid-monitor', 'data', 'paper_positions.json');
+    const raw = readFileSafe(hlStateFile);
+    if (raw) {
+      const st = JSON.parse(raw) as {
+        summary?: {
+          total_paper_pnl?: number; total_funding_collected?: number;
+          total_fees_paid?: number; wins?: number; losses?: number;
+          open_count?: number; closed_count?: number; last_run?: string;
+          median_pnl_usd?: number; max_drawdown_usd?: number;
+          calmar_ratio?: number; win_rate_pct?: number;
+          blacklisted_assets?: string[];
+        };
+        open_positions?: Array<unknown>;
+      };
+      const s = st.summary || {};
+      const closedN = (s.wins ?? 0) + (s.losses ?? 0);
+      const openN = (st.open_positions || []).length;
+      const pnl = s.total_paper_pnl ?? 0;
+      const median = s.median_pnl_usd;
+      const dd = s.max_drawdown_usd ?? 0;
+      const calmar = s.calmar_ratio ?? 0;
+      const wr = s.win_rate_pct ?? 0;
+      const bl = (s.blacklisted_assets || []).length;
+
+      // Status logic: positive median + healthy Calmar = green. Negative median
+      // (the Gemini-flagged outlier-driven case) → pending warning, not green.
+      let status: ServiceStatus['status'] = 'connected';
+      if (typeof median === 'number' && median < 0) status = 'pending';
+      if (pnl < 0) status = 'disconnected';
+
+      const parts: string[] = [];
+      parts.push(`P&L $${pnl.toFixed(2)}`);
+      if (typeof median === 'number') parts.push(`median $${median.toFixed(2)}/trade`);
+      parts.push(`win ${wr.toFixed(0)}% (${s.wins ?? 0}/${closedN})`);
+      parts.push(`maxDD $${dd.toFixed(2)}`);
+      if (calmar) parts.push(`Calmar ${calmar.toFixed(1)}`);
+      parts.push(`${openN} open`);
+      if (bl > 0) parts.push(`${bl} blacklisted`);
+      if (s.last_run) parts.push(`last ${relativeTime(s.last_run)}`);
+
+      services.push({
+        name: 'HL Paper Trader',
+        category: 'Crypto',
+        status,
+        detail: parts.join(' · '),
+        lastChecked: now,
+      });
+    }
+  } catch (e) {
+    services.push({
+      name: 'HL Paper Trader',
+      category: 'Crypto',
+      status: 'disconnected',
+      detail: `State read failed: ${e instanceof Error ? e.message : 'unknown'}`,
+      lastChecked: now,
+    });
+  }
+
+  // --- HL Basis Trader (spot-perp basis arb on BTC/ETH/SOL) ---
+  try {
+    const basisFile = path.join(GROUPS_DIR, 'trading', 'hyperliquid-monitor', 'data', 'basis_positions.json');
+    const raw = readFileSafe(basisFile);
+    if (raw) {
+      const st = JSON.parse(raw) as {
+        summary?: {
+          total_paper_pnl?: number; wins?: number; losses?: number;
+          open_count?: number; closed_count?: number; last_run?: string;
+          median_pnl_usd?: number; max_drawdown_usd?: number;
+          calmar_ratio?: number; win_rate_pct?: number;
+        };
+        open_positions?: Array<unknown>;
+      };
+      const s = st.summary || {};
+      const closedN = (s.wins ?? 0) + (s.losses ?? 0);
+      const openN = (st.open_positions || []).length;
+      const pnl = s.total_paper_pnl ?? 0;
+      const median = s.median_pnl_usd;
+      const dd = s.max_drawdown_usd ?? 0;
+      const wr = s.win_rate_pct ?? 0;
+
+      // Status: green if median > 0 (the gate the alt arb couldn't pass),
+      // pending if median <= 0 but total positive, disconnected if total < 0.
+      let status: ServiceStatus['status'] = 'connected';
+      if (typeof median === 'number' && median <= 0) status = 'pending';
+      if (pnl < 0) status = 'disconnected';
+      // Pre-track-record state — no closed trades yet — keep neutral
+      if (closedN === 0) status = openN > 0 ? 'pending' : 'unconfigured';
+
+      const parts: string[] = [];
+      parts.push(`P&L $${pnl.toFixed(2)}`);
+      if (typeof median === 'number' && closedN > 0) parts.push(`median $${median.toFixed(2)}/trade`);
+      if (closedN > 0) parts.push(`win ${wr.toFixed(0)}% (${s.wins ?? 0}/${closedN})`);
+      if (dd > 0) parts.push(`maxDD $${dd.toFixed(2)}`);
+      parts.push(`${openN} open`);
+      if (s.last_run) parts.push(`last ${relativeTime(s.last_run)}`);
+
+      services.push({
+        name: 'HL Basis Trader',
+        category: 'Crypto',
+        status,
+        detail: parts.join(' · '),
+        lastChecked: now,
+      });
+    }
+  } catch (e) {
+    services.push({
+      name: 'HL Basis Trader',
+      category: 'Crypto',
+      status: 'disconnected',
+      detail: `State read failed: ${e instanceof Error ? e.message : 'unknown'}`,
+      lastChecked: now,
+    });
+  }
+
+  // --- Wallet Portfolio (Base + Hyperliquid composite) ---
+  try {
+    const walletRow = db.prepare("SELECT id FROM wallet_assets WHERE address = ?").get(WALLET_ADDRESS) as { id: number } | undefined;
+    if (walletRow) {
+      const latest = db.prepare(`
+        SELECT timestamp, total_usd, eth_price, external_balances, partial
+        FROM wallet_snapshots WHERE wallet_id = ?
+        ORDER BY timestamp DESC LIMIT 1
+      `).get(walletRow.id) as { timestamp: string; total_usd: number; eth_price: number; external_balances: string | null; partial: number | null } | undefined;
+      if (latest) {
+        const ext = latest.external_balances ? JSON.parse(latest.external_balances) as Record<string, number> : {};
+        const hl = ext.hyperliquid ?? 0;
+        const base = (latest.total_usd ?? 0) - hl;
+        const status: ServiceStatus['status'] = latest.partial ? 'pending' : 'connected';
+        const partialNote = latest.partial ? ' · ⚠ partial (HL fetch failed)' : '';
+        services.push({
+          name: 'Wallet Portfolio',
+          category: 'Crypto',
+          status,
+          detail: `$${latest.total_usd.toFixed(2)} (Base $${base.toFixed(2)} + HL $${hl.toFixed(2)}) · ETH $${latest.eth_price.toFixed(0)} · ${relativeTime(latest.timestamp)}${partialNote}`,
+          lastChecked: now,
+        });
+      }
+    }
+  } catch {}
+
+  // --- IBKR Strategy Coverage (reads positions.json strategy tags + recent execution log) ---
+  try {
+    const posFile = path.join(GROUPS_DIR, 'trading', 'trading-bot', 'data', 'positions.json');
+    const tradesFile = path.join(GROUPS_DIR, 'trading', 'trading-bot', 'data', 'auto_trades.json');
+    const ALL_STRATEGIES = [
+      'LT112', '1-2-0', '221', 'STRANGLE', 'NAKED_PUT', '1x3',
+      'DD', 'WHEEL_CSP', 'LONG_LEAPS', 'DPMCC',
+    ];
+
+    const active = new Set<string>();
+    const posRaw = readFileSafe(posFile);
+    if (posRaw) {
+      const posData = JSON.parse(posRaw) as { positions?: Array<{ strategy?: string }> };
+      for (const p of posData.positions ?? []) {
+        if (!p.strategy) continue;
+        // Normalize: exporter uses 1_2_0, code uses 1-2-0
+        const s = p.strategy.replace('_', '-').replace('1-2-0', '1-2-0');
+        active.add(s === '1_2_0' ? '1-2-0' : p.strategy);
+      }
+    }
+    // Cross-reference today's auto_trades.json — covers strategies that
+    // fired live but haven't yet been picked up by the exporter classifier
+    const tradesRaw = readFileSafe(tradesFile);
+    if (tradesRaw) {
+      const trades = JSON.parse(tradesRaw) as Array<{ strategy?: string; timestamp?: string }>;
+      const recent = trades.filter(t => {
+        if (!t.timestamp) return false;
+        const age = Date.now() - new Date(t.timestamp).getTime();
+        return age < 7 * 86400_000; // last 7 days
+      });
+      for (const t of recent) if (t.strategy) active.add(t.strategy);
+    }
+
+    const covered = ALL_STRATEGIES.filter(s => active.has(s));
+    const missing = ALL_STRATEGIES.filter(s => !active.has(s));
+    const pct = Math.round((covered.length / ALL_STRATEGIES.length) * 100);
+    services.push({
+      name: 'IBKR Strategy Coverage',
+      category: 'IBKR Trading',
+      status: covered.length >= 7 ? 'connected' : covered.length >= 4 ? 'pending' : 'disconnected',
+      detail: `${covered.length}/${ALL_STRATEGIES.length} live (${pct}%) · missing: ${missing.join(', ') || 'none'}`,
+      lastChecked: now,
+    });
+  } catch (e) {
+    services.push({
+      name: 'IBKR Strategy Coverage',
+      category: 'IBKR Trading',
+      status: 'disconnected',
+      detail: `Coverage check failed: ${e instanceof Error ? e.message : 'unknown'}`,
+      lastChecked: now,
+    });
+  }
+
+  // --- IBKR Position Monitor health (last run + alert count from the recurring monitor task) ---
+  try {
+    const monitorTask = db.prepare(`
+      SELECT last_run, last_result FROM scheduled_tasks WHERE id = 'ibkr-position-monitor'
+    `).get() as { last_run: string | null; last_result: string | null } | undefined;
+    if (monitorTask?.last_run) {
+      const result = (monitorTask.last_result || '').toLowerCase();
+      // Heuristic alert count — the monitor flags issues in its output text
+      const alertHits = (result.match(/\balert\b|⚠️|🚨|persistent issues|outstanding issues/g) || []).length;
+      const issueLine = (monitorTask.last_result || '').match(/(\d+)\s+(?:issue|alert)/i);
+      const issueCount = issueLine ? parseInt(issueLine[1], 10) : alertHits;
+      services.push({
+        name: 'IBKR Position Monitor',
+        category: 'IBKR Trading',
+        status: issueCount > 0 ? 'pending' : 'connected',
+        detail: `last ${relativeTime(monitorTask.last_run)} · ${issueCount > 0 ? `${issueCount} signal(s) in output` : 'no alerts'}`,
+        lastChecked: now,
+      });
+    }
+  } catch {}
+
+  // --- IBKR Auto-Execution Scanners (scheduled-task driven, surfaced for the "Track new services" rule) ---
+  try {
+    const autoExecTasks = db.prepare(`
+      SELECT id, name, schedule_value, status, last_run, next_run
+      FROM scheduled_tasks
+      WHERE id IN (
+        'ibkr-premarket-scan',
+        'ibkr-premarket-scan-non-mes',
+        'ibkr-wheel-scan',
+        'ibkr-leaps-scan',
+        'task-1779841296764-ubncgo'
+      )
+      ORDER BY schedule_value ASC
+    `).all() as Array<{
+      id: string; name: string; schedule_value: string;
+      status: string; last_run: string | null; next_run: string | null;
+    }>;
+    for (const t of autoExecTasks) {
+      let status: ServiceStatus['status'] = 'unconfigured';
+      const parts: string[] = [];
+      if (t.status === 'active') {
+        status = t.last_run ? 'connected' : 'pending';
+        parts.push(`cron ${t.schedule_value}`);
+        if (t.last_run) parts.push(`last ${relativeTime(t.last_run)}`);
+        if (t.next_run) parts.push(`next ${relativeTime(t.next_run)}`);
+      } else if (t.status === 'disabled') {
+        status = 'disconnected';
+        parts.push('disabled');
+      } else {
+        status = 'disconnected';
+        parts.push(t.status);
+      }
+      services.push({
+        name: t.name,
+        category: 'IBKR Trading',
+        status,
+        detail: parts.join(' · '),
+        lastChecked: now,
+      });
+    }
+  } catch (e) {
+    services.push({
+      name: 'IBKR Auto-Execution Scanners',
+      category: 'IBKR Trading',
+      status: 'disconnected',
+      detail: `Query failed: ${e instanceof Error ? e.message : 'unknown'}`,
+      lastChecked: now,
+    });
+  }
+
   // --- GSA API ---
   const gsaKey = process.env.GSA_API_KEY;
   services.push({ name: 'GSA Auctions API', category: 'Trading', status: gsaKey && gsaKey !== 'DEMO_KEY' ? 'connected' : gsaKey === 'DEMO_KEY' ? 'disconnected' : 'unconfigured', detail: gsaKey && gsaKey !== 'DEMO_KEY' ? 'Hourly scan' : gsaKey === 'DEMO_KEY' ? 'Using DEMO_KEY (rate limited)' : undefined, lastChecked: now });
@@ -1433,6 +1750,8 @@ const VENTURE_EDITABLE_FIELDS = new Set([
   'stage', 'status', 'risk_level', 'opportunity_score', 'estimated_upside',
   'investment_needed', 'next_action', 'agent', 'tags', 'linked_project',
   'linked_tasks', 'linked_docs',
+  // 2026-05-28 (biz-ideas autonomy reorientation):
+  'revenue_actual_usd', 'revenue_last_updated', 'last_stage_change_date', 'venture_type',
 ]);
 
 function getVentures() {
@@ -1462,6 +1781,20 @@ function getVentures() {
       const fmDocs = (fm.linked_docs as string[]) || [];
       const allDocs = [...new Set([...fmDocs, ...bodyDocs])];
       const unread = (unreadStmt.get(`venture:${f}`) as { cnt: number }).cnt;
+      // 2026-05-28: revenue + stage-age tracking for the autonomy reorientation.
+      // Compute days_since_stage_change so the UI can flag amber > 21d and red
+      // > 30d (Death Warrant zone, surfaced in Sunday weekly review).
+      const lastStageChange = fm.last_stage_change_date as string | undefined;
+      let daysSinceStageChange: number | null = null;
+      if (lastStageChange) {
+        const t = new Date(lastStageChange).getTime();
+        if (!isNaN(t)) daysSinceStageChange = Math.floor((Date.now() - t) / 86400000);
+      }
+      const revenueActual = typeof fm.revenue_actual_usd === 'number'
+        ? fm.revenue_actual_usd : Number(fm.revenue_actual_usd || 0);
+      const ventureType = typeof fm.venture_type === 'number'
+        ? fm.venture_type : Number(fm.venture_type || 0);
+
       return {
         file: f,
         name: f.replace('.md', '').replace(/-/g, ' '),
@@ -1482,6 +1815,13 @@ function getVentures() {
         unread,
         body: body.substring(0, 800),
         taskHealth: healthByVenture[f] || null,
+        // Autonomy-reorientation fields
+        revenue_actual_usd: revenueActual || 0,
+        revenue_last_updated: (fm.revenue_last_updated as string) || null,
+        last_stage_change_date: lastStageChange || null,
+        days_since_stage_change: daysSinceStageChange,
+        venture_type: ventureType || null,
+        death_warrant_zone: daysSinceStageChange !== null && daysSinceStageChange > 30 && (fm.stage as string) !== 'revenue',
       };
     });
   } catch (err) {
@@ -5784,9 +6124,50 @@ interface TokenBalance {
   priceUsd: number | null;
   valueUsd: number;
   contractAddress?: string;
+  isHidden?: boolean;
 }
 
-async function fetchWalletBalances(): Promise<{ ethBalance: number; ethPrice: number; tokens: TokenBalance[]; totalUsd: number }> {
+// Spam-token detection — airdrop dust uses unicode emoji, URLs, "claim" phrasing.
+// Hide rather than delete (per Gemini review) so a legit untracked token can be
+// shown again via a UI toggle.
+const TOKEN_WHITELIST = new Set(['ETH', 'WETH', 'USDC', 'USDT', 'DAI', 'cbETH', 'cbBTC', 'WBTC']);
+const SPAM_PATTERN = /[✅ ]|t\.me|https?:|www\.|\.com|\.net|\.org|\.xyz|claim|reserve|visit\s/i;
+
+function isSpamToken(t: { name: string; symbol: string; priceUsd: number | null; valueUsd: number }): boolean {
+  if (TOKEN_WHITELIST.has(t.symbol)) return false;
+  if (t.priceUsd != null && t.valueUsd > 0) return false; // priced + nonzero = real
+  // Obvious spam pattern (URL, emoji, "claim" phrasing) → hide.
+  if (SPAM_PATTERN.test(t.name) || SPAM_PATTERN.test(t.symbol)) return true;
+  // Catch-all per Gemini review: any unpriced token with zero USD value that
+  // isn't whitelisted is presumed dust — hide by default. `is_hidden` lets
+  // the UI surface them later if a legit untracked token gets misclassified.
+  return t.priceUsd == null && (t.valueUsd ?? 0) <= 0;
+}
+
+async function fetchHyperliquidBalance(addr: string): Promise<{ accountValue: number; partial: boolean } | null> {
+  // Hyperliquid clearinghouseState returns marginSummary.accountValue (USD equity:
+  // free USDC + open-position notional + unrealized PnL). For an account holding
+  // only stable USDC with no positions, accountValue == USDC balance.
+  try {
+    const resp = await fetch('https://api.hyperliquid.xyz/info', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'clearinghouseState', user: addr }),
+    });
+    if (!resp.ok) return { accountValue: 0, partial: true };
+    const data = await resp.json() as { marginSummary?: { accountValue?: string } };
+    const value = parseFloat(data?.marginSummary?.accountValue || '0');
+    if (Number.isNaN(value)) return { accountValue: 0, partial: true };
+    return { accountValue: value, partial: false };
+  } catch {
+    return { accountValue: 0, partial: true };
+  }
+}
+
+async function fetchWalletBalances(): Promise<{
+  ethBalance: number; ethPrice: number; tokens: TokenBalance[]; totalUsd: number;
+  externalBalances: Record<string, number>; partial: boolean;
+}> {
   // 1. Get native ETH balance
   const ethResp = await fetch(BASE_RPC, {
     method: 'POST',
@@ -5819,7 +6200,7 @@ async function fetchWalletBalances(): Promise<{ ethBalance: number; ethPrice: nu
         const balance = parseInt(t.value || '0') / (10 ** decimals);
         if (balance < 0.0001) continue;
         const priceUsd = t.token.exchange_rate ? parseFloat(t.token.exchange_rate) : null;
-        tokens.push({
+        const tok: TokenBalance = {
           symbol: t.token.symbol,
           name: t.token.name,
           balance,
@@ -5827,22 +6208,40 @@ async function fetchWalletBalances(): Promise<{ ethBalance: number; ethPrice: nu
           priceUsd,
           valueUsd: priceUsd ? balance * priceUsd : 0,
           contractAddress: t.token.address,
-        });
+        };
+        tok.isHidden = isSpamToken(tok);
+        tokens.push(tok);
       }
     }
   } catch (err) {
     console.error('Blockscout token fetch error:', err);
   }
 
-  const ethValue = ethBalance * ethPrice;
-  const tokenValue = tokens.reduce((sum, t) => sum + t.valueUsd, 0);
-  const totalUsd = ethValue + tokenValue;
+  // Hyperliquid balance (paper trading wallet shares the EVM address)
+  const hl = await fetchHyperliquidBalance(WALLET_ADDRESS);
+  const externalBalances: Record<string, number> = {};
+  let partial = false;
+  if (hl) {
+    externalBalances.hyperliquid = hl.accountValue;
+    if (hl.partial) partial = true;
+  } else {
+    partial = true;
+  }
 
-  return { ethBalance, ethPrice, tokens, totalUsd };
+  const ethValue = ethBalance * ethPrice;
+  // Real token value excludes hidden spam — they don't count toward total wealth.
+  const tokenValue = tokens.filter(t => !t.isHidden).reduce((sum, t) => sum + t.valueUsd, 0);
+  const externalValue = Object.values(externalBalances).reduce((a, b) => a + b, 0);
+  const totalUsd = ethValue + tokenValue + externalValue;
+
+  return { ethBalance, ethPrice, tokens, totalUsd, externalBalances, partial };
 }
 
 // In-memory cache for wallet data (refresh every 60s)
-let walletCache: { ethBalance: number; ethPrice: number; tokens: TokenBalance[]; totalUsd: number } | null = null;
+let walletCache: {
+  ethBalance: number; ethPrice: number; tokens: TokenBalance[]; totalUsd: number;
+  externalBalances: Record<string, number>; partial: boolean;
+} | null = null;
 let walletCacheTime = 0;
 const WALLET_CACHE_TTL = 60000;
 
@@ -5860,10 +6259,10 @@ async function getWallet() {
 
   // Get historical snapshots
   const wallet = db.prepare("SELECT id FROM wallet_assets WHERE address = ?").get(WALLET_ADDRESS) as { id: number } | undefined;
-  let snapshots: Array<{ timestamp: string; total_usd: number; eth_balance: number; eth_price: number; tokens: string }> = [];
+  let snapshots: Array<{ timestamp: string; total_usd: number; eth_balance: number; eth_price: number; tokens: string; external_balances: string | null; partial: number | null }> = [];
   if (wallet) {
     snapshots = db.prepare(`
-      SELECT timestamp, total_usd, eth_balance, eth_price, tokens
+      SELECT timestamp, total_usd, eth_balance, eth_price, tokens, external_balances, partial
       FROM wallet_snapshots WHERE wallet_id = ?
       ORDER BY timestamp DESC LIMIT 90
     `).all(wallet.id) as typeof snapshots;
@@ -5877,6 +6276,8 @@ async function getWallet() {
     snapshots: snapshots.map(s => ({
       ...s,
       tokens: s.tokens ? JSON.parse(s.tokens) : [],
+      external_balances: s.external_balances ? JSON.parse(s.external_balances) : {},
+      partial: !!s.partial,
     })),
   };
 }
@@ -5974,11 +6375,16 @@ async function postWalletSnapshot() {
 
   const now = new Date().toISOString();
   dbWrite.prepare(`
-    INSERT INTO wallet_snapshots (wallet_id, timestamp, total_usd, eth_balance, eth_price, tokens)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(wallet.id, now, live.totalUsd, live.ethBalance, live.ethPrice, JSON.stringify(live.tokens));
+    INSERT INTO wallet_snapshots (wallet_id, timestamp, total_usd, eth_balance, eth_price, tokens, external_balances, partial)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    wallet.id, now, live.totalUsd, live.ethBalance, live.ethPrice,
+    JSON.stringify(live.tokens),
+    JSON.stringify(live.externalBalances),
+    live.partial ? 1 : 0,
+  );
 
-  return { ok: true, totalUsd: live.totalUsd, timestamp: now };
+  return { ok: true, totalUsd: live.totalUsd, timestamp: now, partial: live.partial };
 }
 
 // Auto-snapshot scheduler: runs at 11:55 PM ET daily

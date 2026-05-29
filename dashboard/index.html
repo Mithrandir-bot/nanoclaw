@@ -1036,6 +1036,31 @@
   .wallet-tokens .wt-sym { font-weight: 600; font-size: 13px; }
   .wallet-tokens .wt-bal { font-size: 12px; color: var(--text-secondary); font-family: var(--mono); }
   .wallet-tokens .wt-usd { font-size: 12px; font-family: var(--mono); font-weight: 500; }
+  /* Composite-total venue strip — small caps row beneath the total */
+  .wallet-venue-strip { display: flex; justify-content: center; align-items: baseline;
+    flex-wrap: wrap; gap: 14px; margin-top: 12px; font-size: 11px; color: var(--text-tertiary);
+    letter-spacing: 0.4px; text-transform: uppercase; font-family: var(--mono); }
+  .wallet-venue-strip .wvs-venue { display: inline-flex; align-items: baseline; gap: 6px; }
+  .wallet-venue-strip .wvs-glyph { font-size: 9px; color: var(--green); transform: translateY(-1px); }
+  .wallet-venue-strip .wvs-amt { color: var(--text-secondary); font-weight: 500; letter-spacing: 0; }
+  .wallet-venue-strip .wvs-dot { color: var(--text-tertiary); opacity: 0.35; padding: 0 2px; }
+  /* Partial-fetch warning banner — single amber line above hero */
+  .wallet-partial-warn { display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+    margin-bottom: 14px; background: var(--yellow-muted); color: var(--yellow);
+    font-size: 11px; letter-spacing: 0.3px; border-left: 2px solid var(--yellow); border-radius: 2px; }
+  .wallet-partial-warn .wpw-glyph { font-size: 12px; line-height: 1; }
+  .wallet-partial-warn .wpw-ts { margin-left: auto; font-family: var(--mono); font-size: 10px; opacity: 0.7; }
+  /* Hidden-token disclosure — footer-style toggle line under holdings */
+  .wt-hidden-toggle { margin-top: 10px; padding-top: 8px; border-top: 1px dotted var(--border-light);
+    font-size: 11px; color: var(--text-tertiary); font-style: italic; cursor: pointer; user-select: none;
+    display: flex; justify-content: space-between; align-items: center; transition: color 0.15s; }
+  .wt-hidden-toggle:hover { color: var(--text-secondary); }
+  .wt-hidden-toggle .wth-caret { font-size: 9px; opacity: 0.6; font-style: normal; transition: transform 0.15s; }
+  .wt-hidden-toggle.expanded .wth-caret { transform: rotate(90deg); }
+  .wallet-tokens .wt-row.hidden { opacity: 0.42; }
+  .wallet-tokens .wt-row.hidden .wt-sym { font-weight: 400; }
+  .wt-hidden-list { display: none; }
+  .wt-hidden-list.open { display: block; }
   .wallet-snap-chart { display: flex; align-items: flex-end; gap: 3px; height: 100px; padding: 8px 0; }
   .wallet-snap-chart .snap-bar { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0; min-width: 6px;
     position: relative; cursor: pointer; opacity: 0.7; transition: opacity 0.15s; }
@@ -11165,16 +11190,34 @@ views.wallet = async () => {
   const fmtUsd = (v) => '$' + (v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const fmtBal = (v, dec) => (v || 0).toLocaleString('en-US', { minimumFractionDigits: Math.min(dec || 4, 6), maximumFractionDigits: Math.min(dec || 4, 6) });
 
-  const snapshots = (d.snapshots || []).slice().reverse(); // oldest first
+  // Defensive sort — don't trust API ordering for the chart X-axis.
+  const snapshots = (d.snapshots || []).slice().sort((a, b) =>
+    new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+  );
   const maxSnap = Math.max(...snapshots.map(s => s.total_usd), 1);
   const minSnap = Math.min(...snapshots.map(s => s.total_usd), 0);
-  const snapRange = maxSnap - minSnap || 1;
+
+  // Composite breakdown — Base wallet (ETH + visible tokens) and external venues.
+  const visibleTokens = tokens.filter(t => !t.isHidden);
+  const hiddenTokens = tokens.filter(t => t.isHidden);
+  const visibleTokenValue = visibleTokens.reduce((s, t) => s + (t.valueUsd || 0), 0);
+  const hasEth = (live.ethBalance || 0) > 0;
+  const baseValue = ethValue + visibleTokenValue;
+  const ext = live.externalBalances || {};
+  const hlValue = ext.hyperliquid || 0;
+  // Fall back to baseValue + hlValue if the server didn't provide totalUsd.
+  const totalUsd = (typeof live.totalUsd === 'number') ? live.totalUsd : (baseValue + hlValue);
+  const assetCount = (hasEth ? 1 : 0) + visibleTokens.length + (hlValue > 0 ? 1 : 0);
+
+  // Partial-fetch detection — current or latest snapshot.
+  const latestSnap = snapshots.length ? snapshots[snapshots.length - 1] : null;
+  const isPartial = !!live.partial || !!(latestSnap && latestSnap.partial);
 
   return `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
       <div>
-        <span class="section-title" style="margin:0">Base Wallet</span>
-        <span class="text-dim" style="font-size:11px;margin-left:8px">${d.chain?.toUpperCase() || 'BASE'}</span>
+        <span class="section-title" style="margin:0">Wallet</span>
+        <span class="text-dim" style="font-size:11px;margin-left:8px">BASE + HYPERLIQUID</span>
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn" onclick="refreshWallet()">↻ Refresh</button>
@@ -11182,29 +11225,64 @@ views.wallet = async () => {
       </div>
     </div>
 
+    ${isPartial ? `<div class="wallet-partial-warn">
+      <span class="wpw-glyph">⚠</span>
+      <span>Hyperliquid fetch partial — total may be stale</span>
+      ${latestSnap ? `<span class="wpw-ts">last full @ ${new Date(latestSnap.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>` : ''}
+    </div>` : ''}
+
     <div class="wallet-hero">
       <div class="card wallet-total">
         <div class="wt-label">Total Value</div>
-        <div class="wt-value" style="color:#4da870">${fmtUsd(live.totalUsd)}</div>
-        <div class="wt-label" style="margin-top:4px">${tokens.length + 1} Assets</div>
-        <div class="wt-addr" style="margin-top:12px">${esc(d.address || '')}</div>
+        <div class="wt-value" style="color:var(--green)">${fmtUsd(totalUsd)}</div>
+        <div class="wallet-venue-strip">
+          <span class="wvs-venue"><span class="wvs-glyph">◆</span>Base<span class="wvs-amt">${fmtUsd(baseValue)}</span></span>
+          <span class="wvs-dot">·</span>
+          <span class="wvs-venue"><span class="wvs-glyph">◇</span>HL<span class="wvs-amt">${fmtUsd(hlValue)}</span></span>
+        </div>
+        <div class="wt-label" style="margin-top:14px">${assetCount} Asset${assetCount === 1 ? '' : 's'}</div>
+        <div class="wt-addr" style="margin-top:10px">${esc(d.address || '')}</div>
       </div>
       <div class="card wallet-tokens">
         <div class="section-title" style="margin-bottom:8px">Holdings</div>
-        <div class="wt-row">
+        ${hasEth ? `<div class="wt-row">
           <div>
             <div class="wt-sym">ETH</div>
             <div class="wt-bal">${fmtBal(live.ethBalance, 6)} @ ${fmtUsd(live.ethPrice)}</div>
           </div>
           <div class="wt-usd">${fmtUsd(ethValue)}</div>
-        </div>
-        ${tokens.map(t => `<div class="wt-row">
+        </div>` : ''}
+        ${hlValue > 0 ? `<div class="wt-row">
+          <div>
+            <div class="wt-sym">USDC <span class="text-dim" style="font-weight:400;font-size:10px;letter-spacing:0.3px">· HYPERLIQUID</span></div>
+            <div class="wt-bal">${fmtBal(hlValue, 2)} @ ${fmtUsd(1)}</div>
+          </div>
+          <div class="wt-usd">${fmtUsd(hlValue)}</div>
+        </div>` : ''}
+        ${visibleTokens.map(t => `<div class="wt-row">
           <div>
             <div class="wt-sym">${esc(t.symbol)}</div>
             <div class="wt-bal">${fmtBal(t.balance, t.decimals > 6 ? 4 : 2)}${t.priceUsd ? ' @ ' + fmtUsd(t.priceUsd) : ''}</div>
           </div>
           <div class="wt-usd">${t.valueUsd ? fmtUsd(t.valueUsd) : '<span class="text-dim">—</span>'}</div>
         </div>`).join('')}
+        ${hiddenTokens.length ? `
+          <div class="wt-hidden-toggle" role="button" tabindex="0"
+               onclick="toggleHiddenTokens(this)"
+               onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleHiddenTokens(this)}">
+            <span>${hiddenTokens.length} hidden · suspected dust</span>
+            <span class="wth-caret">▶</span>
+          </div>
+          <div class="wt-hidden-list">
+            ${hiddenTokens.map(t => `<div class="wt-row hidden">
+              <div>
+                <div class="wt-sym">${esc(t.symbol)}</div>
+                <div class="wt-bal">${fmtBal(t.balance, t.decimals > 6 ? 4 : 2)}</div>
+              </div>
+              <div class="wt-usd"><span class="text-dim">—</span></div>
+            </div>`).join('')}
+          </div>
+        ` : ''}
       </div>
     </div>
 
@@ -11217,6 +11295,7 @@ views.wallet = async () => {
         y: pad.t + ph - ((s.total_usd - yMin) / yRange) * ph,
         val: s.total_usd,
         ts: s.timestamp,
+        partial: !!s.partial,
       }));
       const linePath = pts.map((p, i) => (i === 0 ? 'M' : 'L') + p.x.toFixed(1) + ',' + p.y.toFixed(1)).join(' ');
       const areaPath = linePath + ` L${pts[pts.length-1].x.toFixed(1)},${pad.t + ph} L${pts[0].x.toFixed(1)},${pad.t + ph} Z`;
@@ -11237,8 +11316,8 @@ views.wallet = async () => {
           <defs><linearGradient id="wg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#4da870" stop-opacity="0.3"/><stop offset="100%" stop-color="#4da870" stop-opacity="0.02"/></linearGradient></defs>
           <path d="${areaPath}" fill="url(#wg)"/>
           <path d="${linePath}" fill="none" stroke="#4da870" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-          ${pts.map(p => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3.5" fill="#1a1a2e" stroke="#4da870" stroke-width="1.5" style="cursor:pointer">
-            <title>${new Date(p.ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}: ${fmtUsd(p.val)}</title>
+          ${pts.map(p => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3.5" fill="${p.partial ? 'transparent' : '#1a1a2e'}" stroke="${p.partial ? 'var(--yellow)' : '#4da870'}" stroke-width="1.5" stroke-dasharray="${p.partial ? '2,1.5' : ''}" style="cursor:pointer">
+            <title>${new Date(p.ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}: ${fmtUsd(p.val)}${p.partial ? ' (partial)' : ''}</title>
           </circle>`).join('')}
         </svg>
       </div>`;
@@ -11247,6 +11326,13 @@ views.wallet = async () => {
     <div style="margin-top:16px;font-size:11px;color:var(--text-tertiary);text-align:center">
       Auto-snapshot daily at 11:55 PM ET &middot; Data refreshed every 60s
     </div>`;
+};
+
+window.toggleHiddenTokens = (toggleEl) => {
+  const list = toggleEl.nextElementSibling;
+  if (!list) return;
+  const open = list.classList.toggle('open');
+  toggleEl.classList.toggle('expanded', open);
 };
 
 window.refreshWallet = async () => {

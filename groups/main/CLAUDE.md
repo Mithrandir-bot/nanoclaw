@@ -189,8 +189,8 @@ You are the **chief of staff** coordinating a team of specialized agents across 
 | #ai-research | `dc:1476293323860869251` | AI trends, research, links analysis |
 | #business-ideas | `dc:1476293406375542876` | Business analysis, market sizing, automation |
 | #health-wellness | `dc:1476293450402889949` | Health, fitness, wellness insights |
-| #trading | `dc:1477676119007297678` | Trading strategies, market analysis |
-| #crypto | `dc:1477831148825477161` | Crypto research, on-chain analysis |
+| #trading | `dc:1477676119007297678` | Trading strategies, market analysis. **2026-05-28 update**: now auto-executes 8 strategies live on paper (added Wheel CSP on 10-name sub-$120 universe, Long LEAPS, DPMCC live across SPX/NDX/XND+5 equities). Wheel sized by 10% NLV collateral cap, LEAPS by 5% NLV premium cap. |
+| #crypto | `dc:1477831148825477161` | Crypto research, on-chain analysis. **2026-05-28 update**: HL paper-trader retuned after Gemini review (median P&L was actually -$0.78/trade — outlier-driven). New basis trader on BTC/ETH/SOL added as complementary delta-neutral strategy. Phase 3 live-trading gate now requires median > 0 over 100+ trades, not just total > 0. |
 | #contacts | `dc:1478496249257656533` | CRM, HubSpot sync, professional network |
 
 ### Delegating Work
