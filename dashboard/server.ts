@@ -1060,6 +1060,13 @@ function getServices(): ServiceStatus[] {
     services.push({ name: 'OptionAlpha', category: 'Trading', status: 'unconfigured', lastChecked: now });
   }
 
+  try {
+    const tvCreds = db.prepare("SELECT COUNT(*) as c FROM secrets WHERE name LIKE '%tradesviz%'").get() as { c: number };
+    services.push({ name: 'TradesViz Journal', category: 'Trading', status: tvCreds.c > 0 ? 'connected' : 'unconfigured', detail: tvCreds.c > 0 ? 'IBKR Flex auto-sync + agent tagging' : undefined, lastChecked: now });
+  } catch {
+    services.push({ name: 'TradesViz Journal', category: 'Trading', status: 'unconfigured', lastChecked: now });
+  }
+
   // --- IBKR ---
   try {
     const ibkrCreds = db.prepare("SELECT COUNT(*) as c FROM secrets WHERE name LIKE '%IBKR%'").get() as { c: number };
