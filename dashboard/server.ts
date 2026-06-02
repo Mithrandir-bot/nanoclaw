@@ -2044,10 +2044,40 @@ function getVentureKalshi() {
       analysis.tradeReasons = tradeReasons;
     }
 
-    return { trades: allTrades, summary: trades.summary || {}, backtestSummary, todayScan, scanOrders, scanDate, arbScan, analysis, weeklyPerf, dailyPnl };
+    // === LIVE (real-money) trading — read the Kalshi-authoritative live ledger ===
+    const live = (() => {
+      try {
+        const raw = readFileSafe(path.join(dataDir, 'live-trades.json'));
+        if (!raw) return null;
+        const lt = JSON.parse(raw);
+        const ltTrades = Array.isArray(lt.trades) ? lt.trades : [];
+        const openPositions = ltTrades.filter((t: Record<string, unknown>) => t.settlementStatus === 'open');
+        const settledLive = ltTrades.filter((t: Record<string, unknown>) => t.settlementStatus === 'settled');
+        // Daily live P&L, sorted, with cumulative — for the trend chart
+        const dailyObj = (lt.daily && typeof lt.daily === 'object') ? lt.daily : {};
+        const dailySeries = Object.keys(dailyObj).sort().map(day => ({
+          date: day,
+          trades: Number(dailyObj[day].trades || 0),
+          exposure: Number(dailyObj[day].exposure || 0),
+          realizedPnL: Number(dailyObj[day].realizedPnL || 0),
+        }));
+        return {
+          summary: lt.liveSummary || {},
+          account: lt.account || null,
+          daily: dailySeries,
+          openPositions,
+          settled: settledLive,
+        };
+      } catch (e) {
+        console.error('[venture-kalshi] live read', e);
+        return null;
+      }
+    })();
+
+    return { trades: allTrades, summary: trades.summary || {}, backtestSummary, todayScan, scanOrders, scanDate, arbScan, analysis, weeklyPerf, dailyPnl, live };
   } catch (err) {
     console.error('[venture-kalshi]', err);
-    return { trades: [], summary: {}, backtestSummary: null, todayScan: [], scanDate: '', arbScan: null };
+    return { trades: [], summary: {}, backtestSummary: null, todayScan: [], scanDate: '', arbScan: null, live: null };
   }
 }
 
