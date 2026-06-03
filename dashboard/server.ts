@@ -40,6 +40,11 @@ const DAILY_DIR = path.join(OBSIDIAN_VAULT, 'Daily');
 const CONVERSATIONS_DIR = path.join(OBSIDIAN_VAULT, 'Conversations');
 const GROUP_CONVERSATIONS_DIR = path.join(PROJECT_ROOT, 'groups');
 const RECEIPTS_DIR = path.join(DATA_DIR, 'receipts');
+const HEDGEROW_DB_PATH = '/root/hedgerow/waitlist.db';
+// Hedgerow self-insured pricing parameters (mirrors PRICING in /root/hedgerow/server.js).
+// Used only for read-only cap/utilization math in the analytics view.
+const HEDGEROW_BANKROLL = 250000;
+const HEDGEROW_CAPS = { promoPct: 0.005, clientPct: 0.03, clusterPct: 0.06, perilPct: 0.20 };
 const TZ = process.env.TZ || 'America/New_York';
 
 // --- Dashboard Auth Token ---
@@ -1481,7 +1486,195 @@ function getServices(): ServiceStatus[] {
     : 0;
   services.push({ name: 'Contacts Sync', category: 'CRM', status: contactNotes > 0 ? 'connected' : 'unconfigured', detail: `${contactNotes.toLocaleString()} contacts`, lastChecked: now });
 
+  // --- Hedgerow (event-based promo venture; analytics read from its SQLite) ---
+  try {
+    if (fs.existsSync(HEDGEROW_DB_PATH)) {
+      const hdb = new Database(HEDGEROW_DB_PATH, { readonly: true, fileMustExist: true });
+      try {
+        const wl = (hdb.prepare('SELECT COUNT(*) c FROM waitlist').get() as { c: number }).c;
+        const leads = (hdb.prepare('SELECT COUNT(*) c FROM leads').get() as { c: number }).c;
+        const interactions = (hdb.prepare('SELECT COUNT(*) c FROM research_events').get() as { c: number }).c;
+        const bound = (hdb.prepare("SELECT COUNT(*) c FROM promos WHERE status='bound'").get() as { c: number }).c;
+        services.push({
+          name: 'Hedgerow', category: 'Ventures', status: 'connected',
+          detail: `${wl} waitlist · ${leads} leads · ${interactions} calc interactions · ${bound} bound promos`,
+          lastChecked: now,
+        });
+      } finally {
+        hdb.close();
+      }
+    } else {
+      services.push({ name: 'Hedgerow', category: 'Ventures', status: 'unconfigured', detail: 'waitlist.db not found', lastChecked: now });
+    }
+  } catch (e) {
+    services.push({ name: 'Hedgerow', category: 'Ventures', status: 'disconnected', detail: `DB read failed: ${e instanceof Error ? e.message : 'unknown'}`, lastChecked: now });
+  }
+
   return services;
+}
+
+// ── HEDGEROW ANALYTICS (read-only from /root/hedgerow/waitlist.db) ──
+// Hedgerow is the event-based promo venture: a business pays one flat fee, and if a
+// real public exogenous event happens, Hedgerow funds a payout. For the HOUSE:
+//   win  = event did NOT happen, we keep the fee  (won = 0 in promos)
+//   loss = event happened, we paid out             (won = 1 in promos)
+// All numbers are read live from the venture's own SQLite. Nothing is fabricated; if a
+// table is empty (pre-launch), counts are 0 and the UI shows empty states.
+function getHedgerow() {
+  const empty = {
+    available: false,
+    leadGen: { waitlistTotal: 0, waitlistBySource: [], waitlistDaily: [], leadsTotal: 0, leadsByBusinessType: [], leadsByCity: [], leadsByEventInterest: [], interactionsTotal: 0, interactionsByCategory: [], interactionsBySource: [], topEvents: [], interactionsDaily: [] },
+    funnel: { interactions: 0, feeShown: 0, leadsWithEmail: 0, bound: 0, rates: {} as Record<string, number>, affiliatesTotal: 0, affiliatesByType: [], referredLeads: 0 },
+    accounting: { bankroll: HEDGEROW_BANKROLL, feesCollected: 0, payoutsPaid: 0, payoutsOwed: 0, expectedMargin: 0, outstandingCovered: 0, utilizationPct: 0, exposureByPeril: [], exposureByCluster: [], exposureByClient: [] },
+    pnl: { settledCount: 0, wins: 0, losses: 0, winRatePct: 0, feesFromSettled: 0, payoutsFromSettled: 0, netPnl: 0, daily: [], cumulative: [] },
+    demandIntel: { topBusinessTypes: [], topCities: [], topEventTypes: [], rejections: [] },
+    active: { activePromos: 0, byCategory: [], byPeril: [], byCity: [], upcomingSettlements: [] },
+  };
+  if (!fs.existsSync(HEDGEROW_DB_PATH)) return empty;
+  let hdb: InstanceType<typeof Database> | null = null;
+  try {
+    hdb = new Database(HEDGEROW_DB_PATH, { readonly: true, fileMustExist: true });
+    const q = <T = Record<string, unknown>>(sql: string, ...args: unknown[]): T[] => hdb!.prepare(sql).all(...args) as T[];
+    const one = <T = Record<string, unknown>>(sql: string, ...args: unknown[]): T => hdb!.prepare(sql).get(...args) as T;
+    const num = (v: unknown) => Number(v) || 0;
+
+    // ---------- LEAD GEN ----------
+    const waitlistTotal = num(one<{ c: number }>('SELECT COUNT(*) c FROM waitlist').c);
+    const waitlistBySource = q<{ label: string; n: number }>("SELECT COALESCE(source,'(none)') label, COUNT(*) n FROM waitlist GROUP BY source ORDER BY n DESC");
+    const waitlistDaily = q<{ day: string; n: number }>("SELECT substr(created_at,1,10) day, COUNT(*) n FROM waitlist GROUP BY day ORDER BY day ASC");
+
+    const leadsTotal = num(one<{ c: number }>('SELECT COUNT(*) c FROM leads').c);
+    const leadsByBusinessType = q<{ label: string; n: number }>("SELECT COALESCE(business_type,'(unspecified)') label, COUNT(*) n FROM leads GROUP BY business_type ORDER BY n DESC LIMIT 15");
+    const leadsByCity = q<{ label: string; n: number }>("SELECT COALESCE(city,'(unspecified)') label, COUNT(*) n FROM leads GROUP BY city ORDER BY n DESC LIMIT 15");
+    const leadsByEventInterest = q<{ label: string; n: number }>("SELECT COALESCE(event_interest,'(unspecified)') label, COUNT(*) n FROM leads WHERE event_interest IS NOT NULL GROUP BY event_interest ORDER BY n DESC LIMIT 15");
+
+    const interactionsTotal = num(one<{ c: number }>('SELECT COUNT(*) c FROM research_events').c);
+    const interactionsByCategory = q<{ label: string; n: number; avgExposure: number }>("SELECT COALESCE(category,'(none)') label, COUNT(*) n, ROUND(AVG(exposure)) avgExposure FROM research_events GROUP BY category ORDER BY n DESC");
+    const interactionsBySource = q<{ label: string; n: number }>("SELECT COALESCE(odds_source,'(none)') label, COUNT(*) n FROM research_events GROUP BY odds_source ORDER BY n DESC");
+    const topEvents = q<{ label: string; category: string; n: number }>("SELECT event label, COALESCE(category,'') category, COUNT(*) n FROM research_events WHERE event IS NOT NULL GROUP BY event ORDER BY n DESC LIMIT 15");
+    const interactionsDaily = q<{ day: string; n: number }>("SELECT substr(created_at,1,10) day, COUNT(*) n FROM research_events GROUP BY day ORDER BY day ASC");
+
+    // ---------- CONVERSION FUNNEL ----------
+    // calculator start (any tracked interaction) -> fee shown (fee computed) -> checkout/lead captured (email) -> bound
+    const feeShown = num(one<{ c: number }>('SELECT COUNT(*) c FROM research_events WHERE fee IS NOT NULL AND fee > 0').c);
+    const leadsWithEmail = num(one<{ c: number }>("SELECT COUNT(*) c FROM leads WHERE email IS NOT NULL AND email <> ''").c);
+    const boundPromos = num(one<{ c: number }>("SELECT COUNT(*) c FROM promos WHERE status='bound'").c);
+    const settledPromos = num(one<{ c: number }>("SELECT COUNT(*) c FROM promos WHERE status='settled' OR settled_at IS NOT NULL").c);
+    const allBound = boundPromos + settledPromos; // promos that ever reached a binding state
+    const rate = (a: number, b: number) => (b > 0 ? Math.round((a / b) * 1000) / 10 : 0);
+    const funnelRates = {
+      startToFee: rate(feeShown, interactionsTotal),
+      feeToLead: rate(leadsWithEmail, feeShown),
+      leadToBound: rate(allBound, leadsWithEmail),
+      startToBound: rate(allBound, interactionsTotal),
+    };
+
+    const affiliatesTotal = num(one<{ c: number }>('SELECT COUNT(*) c FROM affiliates').c);
+    const affiliatesByType = q<{ label: string; n: number }>("SELECT COALESCE(type,'(none)') label, COUNT(*) n FROM affiliates GROUP BY type ORDER BY n DESC");
+    const referredLeads = num(one<{ c: number }>("SELECT COUNT(*) c FROM leads WHERE ref IS NOT NULL AND ref <> ''").c);
+
+    // ---------- ACCOUNTING ----------
+    const boundAgg = one<{ fees: number; covered: number; n: number }>("SELECT COALESCE(SUM(fee),0) fees, COALESCE(SUM(covered),0) covered, COUNT(*) n FROM promos WHERE status='bound'");
+    const settledAgg = one<{ fees: number; payouts: number; n: number }>("SELECT COALESCE(SUM(fee),0) fees, COALESCE(SUM(payout),0) payouts, COUNT(*) n FROM promos WHERE status='settled' OR settled_at IS NOT NULL");
+    const feesCollected = num(boundAgg.fees) + num(settledAgg.fees); // fee is collected upfront on every bind
+    const payoutsPaid = num(settledAgg.payouts);
+    // expected payout owed on still-open book = sum(prob * covered)
+    const expectedOwed = num(one<{ ev: number }>("SELECT COALESCE(SUM(COALESCE(prob,0)*COALESCE(covered,0)),0) ev FROM promos WHERE status='bound'").ev);
+    const outstandingCovered = num(boundAgg.covered);
+    const expectedMargin = num(boundAgg.fees) - expectedOwed; // edge baked into open book
+    const utilizationPct = HEDGEROW_BANKROLL > 0 ? Math.round((outstandingCovered / HEDGEROW_BANKROLL) * 100) : 0;
+    const exposureByPeril = q<{ label: string; covered: number; n: number }>("SELECT COALESCE(peril,'(none)') label, COALESCE(SUM(covered),0) covered, COUNT(*) n FROM promos WHERE status='bound' GROUP BY peril ORDER BY covered DESC");
+    const exposureByCluster = q<{ label: string; covered: number; n: number }>("SELECT COALESCE(cluster_key,'(none)') label, COALESCE(SUM(covered),0) covered, COUNT(*) n FROM promos WHERE status='bound' GROUP BY cluster_key ORDER BY covered DESC LIMIT 15");
+    const exposureByClient = q<{ label: string; covered: number; n: number }>("SELECT COALESCE(client_id,'(none)') label, COALESCE(SUM(covered),0) covered, COUNT(*) n FROM promos WHERE status='bound' GROUP BY client_id ORDER BY covered DESC LIMIT 15");
+
+    // ---------- WINS / LOSSES (settled book P&L) ----------
+    const settledRows = q<{ settled_at: string; fee: number; payout: number; won: number }>("SELECT settled_at, COALESCE(fee,0) fee, COALESCE(payout,0) payout, COALESCE(won,0) won FROM promos WHERE settled_at IS NOT NULL ORDER BY settled_at ASC");
+    let wins = 0, losses = 0, feesFromSettled = 0, payoutsFromSettled = 0;
+    const dailyMap = new Map<string, number>();
+    for (const r of settledRows) {
+      // house win = event did NOT happen (won=0): we keep the fee. loss = won=1: we pay out.
+      if (num(r.won) === 1) losses++; else wins++;
+      feesFromSettled += num(r.fee);
+      payoutsFromSettled += num(r.payout);
+      const day = String(r.settled_at).slice(0, 10);
+      dailyMap.set(day, (dailyMap.get(day) || 0) + (num(r.fee) - num(r.payout)));
+    }
+    const settledCount = settledRows.length;
+    const winRatePct = settledCount > 0 ? Math.round((wins / settledCount) * 1000) / 10 : 0;
+    const netPnl = feesFromSettled - payoutsFromSettled;
+    const dailyPnl = Array.from(dailyMap.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([day, pnl]) => ({ day, pnl: Math.round(pnl * 100) / 100 }));
+    let cum = 0;
+    const cumulativePnl = dailyPnl.map(d => { cum += d.pnl; return { day: d.day, pnl: Math.round(cum * 100) / 100 }; });
+
+    // ---------- DEMAND INTEL ----------
+    // Product-gap / rejection signals come from leads.source (no_market_lead, too_soon_lead,
+    // fuel_quote_request) and research_events.odds_source (unresolved = could not price).
+    const leadSources = q<{ label: string; n: number }>("SELECT COALESCE(source,'(none)') label, COUNT(*) n FROM leads GROUP BY source ORDER BY n DESC");
+    const unresolved = num(one<{ c: number }>("SELECT COUNT(*) c FROM research_events WHERE odds_source IN ('unresolved','estimate','')").c);
+    const rejectionRows: Array<{ label: string; n: number; note: string }> = [];
+    const rejLabels: Record<string, string> = {
+      no_market_lead: 'No market / unpriceable',
+      too_soon_lead: 'Too soon (lead-time guard)',
+      too_far_lead: 'Too far out',
+      too_likely_lead: 'Too likely to price',
+      hurricane_blackout_lead: 'Hurricane blackout',
+      fuel_quote_request: 'Fuel (preview only, not bindable)',
+    };
+    for (const r of leadSources) {
+      if (rejLabels[r.label]) rejectionRows.push({ label: rejLabels[r.label], n: num(r.n), note: r.label });
+    }
+    if (unresolved > 0) rejectionRows.push({ label: 'Calculator: odds unresolvable', n: unresolved, note: 'research_events odds_source' });
+    rejectionRows.sort((a, b) => b.n - a.n);
+
+    const topBusinessTypes = q<{ label: string; n: number }>("SELECT business_type label, COUNT(*) n FROM leads WHERE business_type IS NOT NULL GROUP BY business_type ORDER BY n DESC LIMIT 10");
+    const demandTopCities = q<{ label: string; n: number }>("SELECT city label, COUNT(*) n FROM leads WHERE city IS NOT NULL GROUP BY city ORDER BY n DESC LIMIT 10");
+    const topEventTypes = q<{ label: string; n: number }>("SELECT COALESCE(category,'(none)') label, COUNT(*) n FROM research_events GROUP BY category ORDER BY n DESC");
+
+    // ---------- ACTIVE / UPCOMING ----------
+    const activePromos = boundPromos;
+    const activeByCategory = q<{ label: string; n: number }>("SELECT COALESCE(peril,'(none)') label, COUNT(*) n FROM promos WHERE status='bound' GROUP BY peril ORDER BY n DESC");
+    const activeByCity = q<{ label: string; n: number }>("SELECT COALESCE(city,'(none)') label, COUNT(*) n FROM promos WHERE status='bound' GROUP BY city ORDER BY n DESC LIMIT 15");
+    const upcomingSettlements = q<{ event: string; city: string; peril: string; covered: number; fee: number }>("SELECT COALESCE(event,'') event, COALESCE(city,'') city, COALESCE(peril,'') peril, COALESCE(covered,0) covered, COALESCE(fee,0) fee FROM promos WHERE status='bound' ORDER BY id DESC LIMIT 20");
+
+    return {
+      available: true,
+      leadGen: {
+        waitlistTotal, waitlistBySource, waitlistDaily,
+        leadsTotal, leadsByBusinessType, leadsByCity, leadsByEventInterest,
+        interactionsTotal, interactionsByCategory, interactionsBySource, topEvents, interactionsDaily,
+      },
+      funnel: {
+        interactions: interactionsTotal, feeShown, leadsWithEmail, bound: allBound,
+        rates: funnelRates, affiliatesTotal, affiliatesByType, referredLeads,
+      },
+      accounting: {
+        bankroll: HEDGEROW_BANKROLL, feesCollected, payoutsPaid, payoutsOwed: Math.round(expectedOwed * 100) / 100,
+        expectedMargin: Math.round(expectedMargin * 100) / 100, outstandingCovered, utilizationPct,
+        exposureByPeril, exposureByCluster, exposureByClient,
+        caps: {
+          perPromo: HEDGEROW_CAPS.promoPct * HEDGEROW_BANKROLL,
+          perClient: HEDGEROW_CAPS.clientPct * HEDGEROW_BANKROLL,
+          perCluster: HEDGEROW_CAPS.clusterPct * HEDGEROW_BANKROLL,
+          perPeril: HEDGEROW_CAPS.perilPct * HEDGEROW_BANKROLL,
+        },
+      },
+      pnl: {
+        settledCount, wins, losses, winRatePct,
+        feesFromSettled: Math.round(feesFromSettled * 100) / 100,
+        payoutsFromSettled: Math.round(payoutsFromSettled * 100) / 100,
+        netPnl: Math.round(netPnl * 100) / 100,
+        daily: dailyPnl, cumulative: cumulativePnl,
+      },
+      demandIntel: { topBusinessTypes, topCities: demandTopCities, topEventTypes, rejections: rejectionRows },
+      active: { activePromos, byCategory: activeByCategory, byPeril: activeByCategory, byCity: activeByCity, upcomingSettlements },
+      lastUpdated: new Date().toISOString(),
+    };
+  } catch (err) {
+    console.error('[hedgerow]', err);
+    return { ...empty, error: err instanceof Error ? err.message : 'read failed' };
+  } finally {
+    if (hdb) try { hdb.close(); } catch {}
+  }
 }
 
 function getReviews() {
@@ -7035,6 +7228,7 @@ const getRoutes: Record<string, Handler> = {
   '/api/venture/gsa': () => getVentureGsa(),
   '/api/venture/smb': () => getVentureSmb(),
   '/api/venture/realestate': () => getVentureRealestate(),
+  '/api/venture/hedgerow': () => getHedgerow(),
   '/api/venture/defi-carry': () => getVentureDefiCarry(),
   '/api/docs': (p) => getDocs(p.get('folder') || undefined),
   '/api/doc': (p) => getDocContent(p.get('path') || ''),

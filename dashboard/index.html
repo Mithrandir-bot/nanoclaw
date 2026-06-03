@@ -1302,6 +1302,7 @@
       <div class="nav-item" data-view="venture-grants"><span class="icon">&#9830;</span> Gov Grants</div>
       <div class="nav-item" data-view="venture-tradeschool"><span class="icon">&#9998;</span> Trade School</div>
       <div class="nav-item" data-view="venture-realestate"><span class="icon">&#9962;</span> Real Estate</div>
+      <div class="nav-item" data-view="venture-hedgerow"><span class="icon">&#9925;</span> Hedgerow</div>
       <div class="nav-item" data-view="venture-defi-carry"><span class="icon">&#8644;</span> DeFi Carry</div>
     </div>
     <div class="nav-section">
@@ -1578,7 +1579,7 @@ const GROUP_COLORS = {
   'real-estate': 'var(--grp-realestate)',
 };
 function switchView(v, pushState = true) {
-  const viewTitles = {'venture-kalshi':'Kalshi','venture-ibkr':'IBKR Trading','venture-gsa':'GSA Auctions','venture-smb':'SMB Acquisition','venture-grants':'Government Grants','venture-tradeschool':'Trade School','venture-realestate':'Real Estate','venture-defi-carry':'DeFi Carry Trade'};
+  const viewTitles = {'venture-kalshi':'Kalshi','venture-ibkr':'IBKR Trading','venture-gsa':'GSA Auctions','venture-smb':'SMB Acquisition','venture-grants':'Government Grants','venture-tradeschool':'Trade School','venture-realestate':'Real Estate','venture-hedgerow':'Hedgerow','venture-defi-carry':'DeFi Carry Trade'};
   currentView = v;
   $$('.nav-item').forEach(n => n.classList.toggle('active', n.dataset.view === v));
   $('#viewTitle').textContent = viewTitles[v] || v.charAt(0).toUpperCase() + v.slice(1);
@@ -8600,6 +8601,252 @@ views['venture-realestate'] = async () => {
           </div>`).join('')}
         </div>
       </div>
+    </div>`;
+};
+
+// --- Hedgerow analytics view (read-only ops dashboard for the event-promo venture) ---
+views['venture-hedgerow'] = async () => {
+  const d = await api('/api/venture/hedgerow');
+  if (!d || !d.available) {
+    return `
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+        <div class="vd-back" onclick="switchView('ventures')" style="margin:0">&#8592; Pipeline</div>
+      </div>
+      <div class="vdash-header"><div class="vdash-title">Hedgerow</div>
+        <div class="vdash-stage" style="color:var(--yellow);border-color:var(--yellow)">No data</div></div>
+      <div class="empty" style="padding:32px;text-align:center;color:var(--text-tertiary)">
+        Hedgerow data source not available${d && d.error ? ' (' + esc(d.error) + ')' : ''}. Expecting <span style="font-family:var(--mono)">/root/hedgerow/waitlist.db</span>.
+      </div>`;
+  }
+
+  const lg = d.leadGen, fn = d.funnel, ac = d.accounting, pl = d.pnl, di = d.demandIntel, av = d.active;
+  const pct = (v) => `${fmtNum(v, 1)}%`;
+  const pnlColor = (v) => v >= 0 ? 'var(--green)' : 'var(--red)';
+  const card = (val, label, color, title) =>
+    `<div class="vm-stat"${title ? ` title="${esc(title)}"` : ''}><div class="vm-val"${color ? ` style="color:${color}"` : ''}>${val}</div><div class="vm-label">${label}</div></div>`;
+  const emptyRow = (msg) => `<div style="padding:18px;text-align:center;color:var(--text-tertiary);font-size:11px">${msg}</div>`;
+
+  // Horizontal breakdown bars (responsive, no fixed widths) for a [{label,n}] list.
+  const breakdown = (rows, opts = {}) => {
+    if (!rows || !rows.length) return emptyRow(opts.empty || 'No data yet');
+    const valFn = opts.valFn || ((r) => r.n);
+    const fmtFn = opts.fmtFn || ((r) => fmtNum(valFn(r)));
+    const max = Math.max(...rows.map(valFn), 1);
+    const color = opts.color || 'var(--accent)';
+    return `<div style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto">` +
+      rows.map(r => {
+        const w = Math.max(2, Math.round((valFn(r) / max) * 100));
+        return `<div style="display:grid;grid-template-columns:minmax(90px,38%) 1fr auto;gap:8px;align-items:center;font-size:11px">
+          <span style="color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(String(r.label))}">${esc(String(r.label))}</span>
+          <span style="background:var(--bg-primary);border-radius:var(--radius-sm);height:14px;position:relative;overflow:hidden">
+            <span style="position:absolute;left:0;top:0;bottom:0;width:${w}%;background:${color};opacity:0.7;border-radius:var(--radius-sm)"></span>
+          </span>
+          <span style="font-family:var(--mono);color:var(--text-primary);text-align:right;min-width:54px">${fmtFn(r)}</span>
+        </div>`;
+      }).join('') + `</div>`;
+  };
+
+  // CONVERSION FUNNEL stages
+  const f = [
+    { label: 'Calculator interactions', n: fn.interactions, color: 'var(--text-tertiary)' },
+    { label: 'Fee shown', n: fn.feeShown, color: 'var(--accent)' },
+    { label: 'Lead captured (email)', n: fn.leadsWithEmail, color: 'var(--yellow)' },
+    { label: 'Promo bound', n: fn.bound, color: 'var(--green)' },
+  ];
+  const fMax = Math.max(...f.map(s => s.n), 1);
+  const funnelHtml = f.map((s, i) => {
+    const w = Math.max(8, Math.round((s.n / fMax) * 100));
+    const stepRate = i === 0 ? null : fn.rates[['startToFee','feeToLead','leadToBound'][i-1]];
+    return `<div class="funnel-stage">
+      <div class="funnel-label">${s.label}${stepRate != null ? ` <span style="color:var(--text-tertiary)">(${pct(stepRate)})</span>` : ''}</div>
+      <div class="funnel-bar" style="width:${w}%;background:${s.color}22;color:${s.color};border:1px solid ${s.color}44">
+        <span class="funnel-count">${fmtNum(s.n)}</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  // P&L charts
+  const dailyPnlData = (pl.daily || []).map(x => ({ label: (x.day || '').slice(5), y: x.pnl, color: x.pnl >= 0 ? 'var(--green)' : 'var(--red)' }));
+  const cumData = (pl.cumulative || []).map(x => x.pnl);
+  const cumLabels = (pl.cumulative || []).map(x => (x.day || '').slice(5));
+  const interDaily = (lg.interactionsDaily || []).map(x => x.n);
+  const interLabels = (lg.interactionsDaily || []).map(x => (x.day || '').slice(5));
+  const wlDaily = (lg.waitlistDaily || []).map(x => x.n);
+  const wlLabels = (lg.waitlistDaily || []).map(x => (x.day || '').slice(5));
+
+  const caps = ac.caps || {};
+
+  return `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <div class="vd-back" onclick="switchView('ventures')" style="margin:0">&#8592; Pipeline</div>
+      <div style="margin-left:auto;font-size:10px;color:var(--text-tertiary)">Read-only analytics &middot; source: /root/hedgerow/waitlist.db${d.lastUpdated ? ' &middot; ' + esc(String(d.lastUpdated).slice(0,16).replace('T',' ')) : ''}</div>
+    </div>
+    <div class="vdash-header">
+      <div class="vdash-title">Hedgerow</div>
+      <div class="vdash-stage" style="color:var(--green);border-color:var(--green)">Live</div>
+    </div>
+
+    <div class="vdash-metrics">
+      ${card(fmtNum(lg.waitlistTotal), 'Waitlist', null, 'Total waitlist signups (includes lead emails)')}
+      ${card(fmtNum(lg.leadsTotal), 'Identified Leads', null, 'Leads with business_type / city / event_interest captured')}
+      ${card(fmtNum(lg.interactionsTotal), 'Calc Interactions', null, 'Anonymous calculator interactions tracked (demand signal)')}
+      ${card(fmtNum(av.activePromos), 'Active Promos', 'var(--accent)', 'Currently bound promos (open exposure)')}
+      ${card(fmtUSD(ac.feesCollected), 'Fees Collected', 'var(--green)', 'Sum of flat fees collected upfront across bound + settled promos')}
+      ${card(fmtUSD(ac.outstandingCovered), 'Outstanding Exposure', 'var(--yellow)', 'Total covered amount on the open book')}
+      ${card(`${fmtUSD(pl.netPnl)}`, 'Settled P&L', pnlColor(pl.netPnl), 'Net house P&L on settled promos = fees kept minus payouts')}
+    </div>
+
+    <!-- LEAD GEN -->
+    <div class="vp-title" style="margin:8px 0 6px;font-size:13px">Lead Generation</div>
+    <div class="vdash-grid">
+      <div class="vdash-panel">
+        <div class="vp-title">Waitlist over time <span class="count">${fmtNum(lg.waitlistTotal)}</span></div>
+        ${wlDaily.length ? svgLineChart(wlDaily, { color: 'var(--accent)', yLabel: 'signups', labels: wlLabels, chartId: 'hgWl' }) : emptyRow('No signups yet')}
+        <div style="margin-top:10px">${breakdown(lg.waitlistBySource, { empty: 'No sources' })}</div>
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Calculator interactions over time <span class="count">${fmtNum(lg.interactionsTotal)}</span></div>
+        ${interDaily.length ? svgLineChart(interDaily, { color: 'var(--purple)', yLabel: 'interactions', labels: interLabels, chartId: 'hgInter' }) : emptyRow('No interactions yet')}
+        <div style="margin-top:10px">${breakdown(lg.interactionsByCategory, { empty: 'No category data' })}</div>
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Leads by business type</div>
+        ${breakdown(lg.leadsByBusinessType, { empty: 'No leads yet' })}
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Leads by city</div>
+        ${breakdown(lg.leadsByCity, { color: 'var(--yellow)', empty: 'No leads yet' })}
+      </div>
+    </div>
+
+    <!-- CONVERSION FUNNEL -->
+    <div class="vp-title" style="margin:14px 0 6px;font-size:13px">Conversion Funnel</div>
+    <div class="vdash-grid">
+      <div class="vdash-panel">
+        <div class="vp-title">Calculator &rarr; Bound</div>
+        <div class="vdash-funnel">${funnelHtml}</div>
+        <div style="display:flex;gap:18px;margin-top:10px;font-size:11px;color:var(--text-tertiary);flex-wrap:wrap">
+          <span>Start&rarr;Bound: <b style="color:var(--text-primary)">${pct(fn.rates.startToBound)}</b></span>
+          <span>Lead&rarr;Bound: <b style="color:var(--text-primary)">${pct(fn.rates.leadToBound)}</b></span>
+        </div>
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Affiliates <span class="count">${fmtNum(fn.affiliatesTotal)}</span></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:6px 0 10px">
+          <div style="text-align:center;padding:12px;background:var(--bg-primary);border-radius:var(--radius)">
+            <div style="font-family:var(--mono);font-size:20px;font-weight:700;color:var(--accent)">${fmtNum(fn.affiliatesTotal)}</div>
+            <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px">Signed up</div>
+          </div>
+          <div style="text-align:center;padding:12px;background:var(--bg-primary);border-radius:var(--radius)">
+            <div style="font-family:var(--mono);font-size:20px;font-weight:700;color:var(--green)">${fmtNum(fn.referredLeads)}</div>
+            <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px">Referred leads</div>
+          </div>
+        </div>
+        ${breakdown(fn.affiliatesByType, { color: 'var(--purple)', empty: 'No affiliates' })}
+      </div>
+    </div>
+
+    <!-- ACCOUNTING -->
+    <div class="vp-title" style="margin:14px 0 6px;font-size:13px">Accounting &amp; Bankroll</div>
+    <div class="vdash-metrics">
+      ${card(fmtUSD(ac.bankroll), 'Bankroll', null, 'Capital committed to the book; caps scale from it')}
+      ${card(fmtUSD(ac.feesCollected), 'Fees Collected', 'var(--green)')}
+      ${card(fmtUSD(ac.payoutsPaid), 'Payouts Paid', 'var(--red)', 'Payouts disbursed on settled losing promos')}
+      ${card(fmtUSD(ac.payoutsOwed), 'Expected Owed', 'var(--yellow)', 'Probability-weighted expected payout on the open book (sum of prob x covered)')}
+      ${card(fmtUSD(ac.expectedMargin), 'Expected Margin', pnlColor(ac.expectedMargin), 'Open-book fees minus expected payouts (the baked-in edge)')}
+      ${card(`${fmtNum(ac.utilizationPct)}%`, 'Bankroll Util', ac.utilizationPct > 80 ? 'var(--red)' : ac.utilizationPct > 50 ? 'var(--yellow)' : 'var(--green)', 'Outstanding covered / bankroll')}
+    </div>
+    <div class="vdash-grid">
+      <div class="vdash-panel">
+        <div class="vp-title">Exposure by peril <span class="count">cap ${fmtUSD(caps.perPeril || 0)}</span></div>
+        ${breakdown(ac.exposureByPeril, { valFn: r => r.covered, fmtFn: r => fmtUSD(r.covered), color: 'var(--orange)', empty: 'No open exposure' })}
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Exposure by cluster <span class="count">cap ${fmtUSD(caps.perCluster || 0)}</span></div>
+        ${breakdown(ac.exposureByCluster, { valFn: r => r.covered, fmtFn: r => fmtUSD(r.covered), color: 'var(--accent)', empty: 'No open exposure' })}
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Exposure by client <span class="count">cap ${fmtUSD(caps.perClient || 0)}</span></div>
+        ${breakdown(ac.exposureByClient, { valFn: r => r.covered, fmtFn: r => fmtUSD(r.covered), color: 'var(--purple)', empty: 'No open exposure' })}
+      </div>
+    </div>
+
+    <!-- WINS / LOSSES -->
+    <div class="vp-title" style="margin:14px 0 6px;font-size:13px">Wins &amp; Losses (settled book)</div>
+    <div class="vdash-metrics">
+      ${card(fmtNum(pl.settledCount), 'Settled', null, 'Promos that have settled (won column set)')}
+      ${card(fmtNum(pl.wins), 'Wins (kept fee)', 'var(--green)', 'Event did NOT happen, Hedgerow kept the fee')}
+      ${card(fmtNum(pl.losses), 'Losses (paid out)', 'var(--red)', 'Event happened, Hedgerow paid out')}
+      ${card(`${fmtNum(pl.winRatePct)}%`, 'Win Rate', pl.winRatePct >= 50 ? 'var(--green)' : 'var(--yellow)')}
+      ${card(fmtUSD(pl.feesFromSettled), 'Fees (settled)', 'var(--green)')}
+      ${card(fmtUSD(pl.payoutsFromSettled), 'Payouts (settled)', 'var(--red)')}
+      ${card(fmtUSD(pl.netPnl), 'Net P&L', pnlColor(pl.netPnl))}
+    </div>
+    <div class="vdash-grid">
+      <div class="vdash-panel">
+        <div class="vp-title">Daily P&L (fees minus payouts)</div>
+        ${dailyPnlData.length ? svgBarChart(dailyPnlData, { valueFmt: (v) => (v >= 0 ? '' : '-') + '$' + Math.abs(v).toFixed(0) }) : emptyRow('No settled promos yet')}
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Cumulative P&L</div>
+        ${cumData.length ? svgLineChart(cumData, { color: pl.netPnl >= 0 ? 'var(--green)' : 'var(--red)', yLabel: 'USD', labels: cumLabels, chartId: 'hgCum' }) : emptyRow('No settled promos yet')}
+      </div>
+    </div>
+
+    <!-- DEMAND INTEL -->
+    <div class="vp-title" style="margin:14px 0 6px;font-size:13px">Demand Intel &amp; Product Gaps</div>
+    <div class="vdash-grid">
+      <div class="vdash-panel">
+        <div class="vp-title">Top requested business types</div>
+        ${breakdown(di.topBusinessTypes, { empty: 'No demand data' })}
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Top requested cities</div>
+        ${breakdown(di.topCities, { color: 'var(--yellow)', empty: 'No demand data' })}
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Top event categories</div>
+        ${breakdown(di.topEventTypes, { color: 'var(--purple)', empty: 'No demand data' })}
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Rejections / product gaps</div>
+        ${breakdown(di.rejections, { color: 'var(--red)', empty: 'No rejections recorded' })}
+        <div style="margin-top:8px;font-size:10px;color:var(--text-tertiary)">Each rejection is a demand signal for an unserved or unpriceable promo type.</div>
+      </div>
+    </div>
+
+    <!-- ACTIVE / UPCOMING -->
+    <div class="vp-title" style="margin:14px 0 6px;font-size:13px">Active &amp; Upcoming</div>
+    <div class="vdash-grid">
+      <div class="vdash-panel">
+        <div class="vp-title">Active promos by peril</div>
+        ${breakdown(av.byPeril, { color: 'var(--orange)', empty: 'No active promos' })}
+      </div>
+      <div class="vdash-panel">
+        <div class="vp-title">Active promos by city</div>
+        ${breakdown(av.byCity, { color: 'var(--accent)', empty: 'No active promos' })}
+      </div>
+    </div>
+    <div class="vdash-panel" style="margin-top:12px">
+      <div class="vp-title">Open book / upcoming settlements <span class="count">${fmtNum((av.upcomingSettlements||[]).length)}</span></div>
+      ${(av.upcomingSettlements && av.upcomingSettlements.length) ? `
+        <div style="overflow-x:auto">
+          <table class="vdash-table" style="width:100%;font-size:11px">
+            <thead><tr>
+              <th style="text-align:left">Event</th><th style="text-align:left">City</th><th style="text-align:left">Peril</th>
+              <th style="text-align:right">Covered</th><th style="text-align:right">Fee</th>
+            </tr></thead>
+            <tbody>
+              ${av.upcomingSettlements.map(p => `<tr>
+                <td>${esc(p.event || '(unspecified)')}</td>
+                <td>${esc(p.city || '-')}</td>
+                <td>${esc(p.peril || '-')}</td>
+                <td style="text-align:right;font-family:var(--mono)">${fmtUSD(p.covered)}</td>
+                <td style="text-align:right;font-family:var(--mono);color:var(--green)">${fmtUSD(p.fee)}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>` : emptyRow('No active promos on the book')}
     </div>`;
 };
 
