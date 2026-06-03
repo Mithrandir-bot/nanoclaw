@@ -8622,26 +8622,30 @@ views['venture-hedgerow'] = async () => {
   const lg = d.leadGen, fn = d.funnel, ac = d.accounting, pl = d.pnl, di = d.demandIntel, av = d.active;
   const pct = (v) => `${fmtNum(v, 1)}%`;
   const pnlColor = (v) => v >= 0 ? 'var(--green)' : 'var(--red)';
-  const card = (val, label, color, title) =>
-    `<div class="vm-stat"${title ? ` title="${esc(title)}"` : ''}><div class="vm-val"${color ? ` style="color:${color}"` : ''}>${val}</div><div class="vm-label">${label}</div></div>`;
+  const card = (val, label, color, title, extra) =>
+    `<div class="vm-stat"${title ? ` title="${esc(title)}"` : ''}${extra ? ` style="${extra}"` : ''}><div class="vm-val"${color ? ` style="color:${color}"` : ''}>${val}</div><div class="vm-label">${label}</div></div>`;
   const emptyRow = (msg) => `<div style="padding:18px;text-align:center;color:var(--text-tertiary);font-size:11px">${msg}</div>`;
 
   // Horizontal breakdown bars (responsive, no fixed widths) for a [{label,n}] list.
+  // opts.cap: if set, any row whose value exceeds it is flagged as a CAP breach (red bar + label).
   const breakdown = (rows, opts = {}) => {
     if (!rows || !rows.length) return emptyRow(opts.empty || 'No data yet');
     const valFn = opts.valFn || ((r) => r.n);
     const fmtFn = opts.fmtFn || ((r) => fmtNum(valFn(r)));
     const max = Math.max(...rows.map(valFn), 1);
     const color = opts.color || 'var(--accent)';
+    const cap = opts.cap;
     return `<div style="display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto">` +
       rows.map(r => {
         const w = Math.max(2, Math.round((valFn(r) / max) * 100));
+        const over = cap != null && cap > 0 && valFn(r) > cap;
+        const barColor = over ? 'var(--red)' : color;
         return `<div style="display:grid;grid-template-columns:minmax(90px,38%) 1fr auto;gap:8px;align-items:center;font-size:11px">
-          <span style="color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(String(r.label))}">${esc(String(r.label))}</span>
+          <span style="color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(String(r.label))}${over ? ' — over cap of ' + fmtUSD(cap) : ''}">${esc(String(r.label))}${over ? ' <span style="color:var(--red);font-weight:600">CAP</span>' : ''}</span>
           <span style="background:var(--bg-primary);border-radius:var(--radius-sm);height:14px;position:relative;overflow:hidden">
-            <span style="position:absolute;left:0;top:0;bottom:0;width:${w}%;background:${color};opacity:0.7;border-radius:var(--radius-sm)"></span>
+            <span style="position:absolute;left:0;top:0;bottom:0;width:${w}%;background:${barColor};opacity:${over ? '0.9' : '0.7'};border-radius:var(--radius-sm)"></span>
           </span>
-          <span style="font-family:var(--mono);color:var(--text-primary);text-align:right;min-width:54px">${fmtFn(r)}</span>
+          <span style="font-family:var(--mono);${over ? 'color:var(--red);font-weight:600' : 'color:var(--text-primary)'};text-align:right;min-width:54px">${fmtFn(r)}</span>
         </div>`;
       }).join('') + `</div>`;
   };
@@ -8657,8 +8661,9 @@ views['venture-hedgerow'] = async () => {
   const funnelHtml = f.map((s, i) => {
     const w = Math.max(8, Math.round((s.n / fMax) * 100));
     const stepRate = i === 0 ? null : fn.rates[['startToFee','feeToLead','leadToBound'][i-1]];
+    const dropOff = stepRate != null ? Math.max(0, Math.round((100 - stepRate) * 10) / 10) : null;
     return `<div class="funnel-stage">
-      <div class="funnel-label">${s.label}${stepRate != null ? ` <span style="color:var(--text-tertiary)">(${pct(stepRate)})</span>` : ''}</div>
+      <div class="funnel-label">${s.label}${stepRate != null ? ` <span style="color:var(--text-tertiary)">(${pct(stepRate)})</span>${dropOff > 0 ? ` <span style="color:var(--red)" title="Drop-off from previous step">&#8595;${pct(dropOff)}</span>` : ''}` : ''}</div>
       <div class="funnel-bar" style="width:${w}%;background:${s.color}22;color:${s.color};border:1px solid ${s.color}44">
         <span class="funnel-count">${fmtNum(s.n)}</span>
       </div>
@@ -8675,6 +8680,11 @@ views['venture-hedgerow'] = async () => {
   const wlLabels = (lg.waitlistDaily || []).map(x => (x.day || '').slice(5));
 
   const caps = ac.caps || {};
+  // Pre-launch: nothing has ever been bound or settled, so the ops half is empty by design.
+  const preLaunch = (av.activePromos || 0) === 0 && (pl.settledCount || 0) === 0;
+  const opsEmptyNote = preLaunch
+    ? `<div style="margin:14px 0 6px;padding:10px 12px;background:var(--bg-primary);border:1px dashed var(--border);border-radius:var(--radius);font-size:11px;color:var(--text-tertiary)">Pre-launch &middot; no promos bound yet. Accounting, exposure, P&amp;L, wins/losses, and active-book panels populate once the first promo is bound.</div>`
+    : '';
 
   return `
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
@@ -8747,6 +8757,7 @@ views['venture-hedgerow'] = async () => {
     </div>
 
     <!-- ACCOUNTING -->
+    ${opsEmptyNote}
     <div class="vp-title" style="margin:14px 0 6px;font-size:13px">Accounting &amp; Bankroll</div>
     <div class="vdash-metrics">
       ${card(fmtUSD(ac.bankroll), 'Bankroll', null, 'Capital committed to the book; caps scale from it')}
@@ -8754,20 +8765,20 @@ views['venture-hedgerow'] = async () => {
       ${card(fmtUSD(ac.payoutsPaid), 'Payouts Paid', 'var(--red)', 'Payouts disbursed on settled losing promos')}
       ${card(fmtUSD(ac.payoutsOwed), 'Expected Owed', 'var(--yellow)', 'Probability-weighted expected payout on the open book (sum of prob x covered)')}
       ${card(fmtUSD(ac.expectedMargin), 'Expected Margin', pnlColor(ac.expectedMargin), 'Open-book fees minus expected payouts (the baked-in edge)')}
-      ${card(`${fmtNum(ac.utilizationPct)}%`, 'Bankroll Util', ac.utilizationPct > 80 ? 'var(--red)' : ac.utilizationPct > 50 ? 'var(--yellow)' : 'var(--green)', 'Outstanding covered / bankroll')}
+      ${card(`${fmtNum(ac.utilizationPct)}%`, 'Bankroll Util', ac.utilizationPct > 80 ? 'var(--red)' : ac.utilizationPct > 50 ? 'var(--yellow)' : 'var(--green)', 'Outstanding covered / bankroll', ac.utilizationPct > 90 ? 'border:1px solid var(--red)' : '')}
     </div>
     <div class="vdash-grid">
       <div class="vdash-panel">
         <div class="vp-title">Exposure by peril <span class="count">cap ${fmtUSD(caps.perPeril || 0)}</span></div>
-        ${breakdown(ac.exposureByPeril, { valFn: r => r.covered, fmtFn: r => fmtUSD(r.covered), color: 'var(--orange)', empty: 'No open exposure' })}
+        ${breakdown(ac.exposureByPeril, { valFn: r => r.covered, fmtFn: r => fmtUSD(r.covered), color: 'var(--orange)', cap: caps.perPeril, empty: 'No open exposure' })}
       </div>
       <div class="vdash-panel">
         <div class="vp-title">Exposure by cluster <span class="count">cap ${fmtUSD(caps.perCluster || 0)}</span></div>
-        ${breakdown(ac.exposureByCluster, { valFn: r => r.covered, fmtFn: r => fmtUSD(r.covered), color: 'var(--accent)', empty: 'No open exposure' })}
+        ${breakdown(ac.exposureByCluster, { valFn: r => r.covered, fmtFn: r => fmtUSD(r.covered), color: 'var(--accent)', cap: caps.perCluster, empty: 'No open exposure' })}
       </div>
       <div class="vdash-panel">
         <div class="vp-title">Exposure by client <span class="count">cap ${fmtUSD(caps.perClient || 0)}</span></div>
-        ${breakdown(ac.exposureByClient, { valFn: r => r.covered, fmtFn: r => fmtUSD(r.covered), color: 'var(--purple)', empty: 'No open exposure' })}
+        ${breakdown(ac.exposureByClient, { valFn: r => r.covered, fmtFn: r => fmtUSD(r.covered), color: 'var(--purple)', cap: caps.perClient, empty: 'No open exposure' })}
       </div>
     </div>
 

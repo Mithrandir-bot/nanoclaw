@@ -1634,7 +1634,7 @@ function getHedgerow() {
     const activePromos = boundPromos;
     const activeByCategory = q<{ label: string; n: number }>("SELECT COALESCE(peril,'(none)') label, COUNT(*) n FROM promos WHERE status='bound' GROUP BY peril ORDER BY n DESC");
     const activeByCity = q<{ label: string; n: number }>("SELECT COALESCE(city,'(none)') label, COUNT(*) n FROM promos WHERE status='bound' GROUP BY city ORDER BY n DESC LIMIT 15");
-    const upcomingSettlements = q<{ event: string; city: string; peril: string; covered: number; fee: number }>("SELECT COALESCE(event,'') event, COALESCE(city,'') city, COALESCE(peril,'') peril, COALESCE(covered,0) covered, COALESCE(fee,0) fee FROM promos WHERE status='bound' ORDER BY id DESC LIMIT 20");
+    const upcomingSettlements = q<{ event: string; city: string; peril: string; covered: number; fee: number }>("SELECT COALESCE(event,'') event, COALESCE(city,'') city, COALESCE(peril,'') peril, COALESCE(covered,0) covered, COALESCE(fee,0) fee FROM promos WHERE status='bound' ORDER BY covered DESC, id DESC LIMIT 20");
 
     return {
       available: true,
