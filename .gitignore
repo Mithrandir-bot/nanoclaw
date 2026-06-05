@@ -18,6 +18,11 @@ groups/global/*
 !groups/main/CLAUDE.md
 !groups/global/CLAUDE.md
 
+# Hedgerow venture docs - track the full research/legal doc set
+!groups/business-ideas/
+groups/business-ideas/*
+!groups/business-ideas/hedgerow/
+
 # Secrets & local config with credentials
 *.keys.json
 .env
