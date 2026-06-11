@@ -539,8 +539,11 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
-  // Per-task model routing: input.model wins, then env var, then Opus default.
-  const activeModel = containerInput.model || process.env.CLAUDE_MODEL || 'claude-opus-4-6';
+  // Per-task model routing: explicit input.model wins, then env var, else split by
+  // task type — interactive sessions get Fable 5 (most capable), scheduled/cron tasks
+  // get Opus 4.8 (half the price, ample for routine monitoring/exports).
+  const activeModel = containerInput.model || process.env.CLAUDE_MODEL
+    || (containerInput.isScheduledTask ? 'claude-opus-4-8' : 'claude-fable-5');
   // Effort: scheduled tasks default to 'low' (token savings on routine work),
   // interactive sessions default to 'medium'. Caller can override via input.
   const activeEffort = containerInput.effort
