@@ -18,6 +18,7 @@ const SESSIONS_DIR = path.join(PROJECT_ROOT, 'data', 'sessions');
 // Opus 4.6 pricing (per token, not per MTok)
 const PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
   'claude-fable-5': { input: 10 / 1e6, output: 50 / 1e6, cacheRead: 1.25 / 1e6, cacheWrite: 12.5 / 1e6 },
+  'claude-opus-4-8': { input: 15 / 1e6, output: 75 / 1e6, cacheRead: 1.875 / 1e6, cacheWrite: 18.75 / 1e6 },
   'claude-opus-4-6': { input: 15 / 1e6, output: 75 / 1e6, cacheRead: 1.875 / 1e6, cacheWrite: 18.75 / 1e6 },
   'claude-sonnet-4-6': { input: 3 / 1e6, output: 15 / 1e6, cacheRead: 0.3 / 1e6, cacheWrite: 3.75 / 1e6 },
   'claude-sonnet-4-5-20250929': { input: 3 / 1e6, output: 15 / 1e6, cacheRead: 0.3 / 1e6, cacheWrite: 3.75 / 1e6 },

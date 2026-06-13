@@ -540,10 +540,11 @@ async function runQuery(
   }
 
   // Per-task model routing: explicit input.model wins, then env var, else split by
-  // task type — interactive sessions get Fable 5 (most capable), scheduled/cron tasks
-  // get Opus 4.8 (half the price, ample for routine monitoring/exports).
+  // task type — interactive sessions get Opus 4.8 (the default), scheduled/cron tasks
+  // get Sonnet 4.6 (cheaper, ample for routine monitoring/exports). Crons that need
+  // Opus set input.model/CLAUDE_MODEL per task to override.
   const activeModel = containerInput.model || process.env.CLAUDE_MODEL
-    || (containerInput.isScheduledTask ? 'claude-opus-4-8' : 'claude-fable-5');
+    || (containerInput.isScheduledTask ? 'claude-sonnet-4-6' : 'claude-opus-4-8');
   // Effort: scheduled tasks default to 'low' (token savings on routine work),
   // interactive sessions default to 'medium'. Caller can override via input.
   const activeEffort = containerInput.effort

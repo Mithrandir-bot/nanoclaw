@@ -3714,7 +3714,7 @@ function getOffice() {
 
     // Detect model: check for OpenRouter flag, else default
     const orFlagPath = path.join(GROUPS_DIR, g.folder, '.openrouter_mode');
-    let model = 'claude-fable-5';
+    let model = 'claude-opus-4-8';
     try {
       if (fs.existsSync(orFlagPath)) {
         const flag = JSON.parse(fs.readFileSync(orFlagPath, 'utf-8'));
